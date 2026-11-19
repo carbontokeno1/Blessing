@@ -25,4 +25,47 @@ function historyView(){return '<div class="heading"><div><h1>ประวัต�
 function settingsView(){return '<div class="heading"><div><h1>ตั้งค่าระบบ</h1><div class="muted">ข้อมูลการตั้งค่าต้นแบบ</div></div></div><div class="card"><div class="riskline"><span>ชื่อแพลตฟอร์ม</span><b class="gold">BLESSING</b></div><div class="riskline"><span>ธีม</span><b>Black & Gold</b></div><div class="riskline"><span>ระบบสมาชิก</span><b class="gold">รอ Supabase Auth</b></div><div class="riskline"><span>ฐานข้อมูลและสิทธิ์ RLS</span><b class="gold">ยังไม่เชื่อมต่อ</b></div><div class="riskline"><span>โหมดเงินจริง</span><b class="negative">ปิดใช้งาน</b></div></div><div class="notice">ขั้นตอนถัดไปเมื่อบัญชี Supabase พร้อม: สร้างตารางโปรไฟล์และบทบาท, เปิด Row Level Security ทุกตาราง, สร้าง Edge Function สำหรับผู้ดูแล, และทดสอบว่าแต่ละสมาชิกอ่านได้เฉพาะข้อมูลของตนเอง</div>'}
 function esc(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 render();setInterval(()=>{for(let k in prices)prices[k]=Math.max(.1,prices[k]*(1+(Math.random()-.5)*.001));if(active==='paper'||active==='overview')render()},7000);
-</script></body></html>
+</script>
+<style>
+#authGate{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;padding:20px;background:radial-gradient(ellipse at 50% -20%,#29334a 0,transparent 55%),#080b12}
+#authGate .authbox{width:min(420px,100%);padding:28px;border:1px solid #705a30;border-radius:22px;background:linear-gradient(145deg,#182235,#0d1420);box-shadow:0 25px 80px #0009}
+#authGate .authbrand{text-align:center;color:#e8bd62;font-size:25px;letter-spacing:4px;font-weight:900;margin-bottom:8px}
+#authGate .authsub{text-align:center;color:#9aa8bc;font-size:11px;letter-spacing:2px;margin-bottom:24px}
+#authGate .authmsg{min-height:22px;color:#ff9bad;font-size:12px;line-height:1.5;margin-top:10px}
+#authGate .authhint{font-size:11px;color:#9aa8bc;line-height:1.7;margin-top:16px}
+</style>
+<section id="authGate">
+ <form class="authbox" id="authForm">
+  <div class="authbrand">BLESSING</div><div class="authsub">SECURE TRADING PLATFORM</div>
+  <h1 style="text-align:center;font-size:21px;margin:0 0 20px">เข้าสู่ระบบ</h1>
+  <div class="field"><label for="authEmail">อีเมล</label><input id="authEmail" type="email" autocomplete="username" required placeholder="name@example.com"></div>
+  <div class="field"><label for="authPassword">รหัสผ่าน</label><input id="authPassword" type="password" autocomplete="current-password" required placeholder="รหัสผ่าน Supabase"></div>
+  <button class="full" id="authSubmit" type="submit">เข้าสู่ระบบอย่างปลอดภัย</button>
+  <div id="authMessage" class="authmsg" role="status"></div>
+  <div class="authhint">บัญชีต้องได้รับการอนุมัติและเปิดใช้งานโดยผู้ดูแลระบบก่อนเข้าใช้งาน หากยังไม่มีบัญชี โปรดติดต่อผู้ดูแลระบบ</div>
+ </form>
+</section>
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.0';
+const sb = createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
+const gate=document.getElementById('authGate'), form=document.getElementById('authForm'), msg=document.getElementById('authMessage'), submit=document.getElementById('authSubmit');
+function say(t){msg.textContent=t}
+async function enter(session){
+ if(!session?.user){gate.style.display='grid';return}
+ const {data:profile,error}=await sb.from('profiles').select('email,display_name,role,status').eq('user_id',session.user.id).maybeSingle();
+ if(error){say('ตรวจสอบสิทธิ์ไม่สำเร็จ กรุณาลองใหม่');await sb.auth.signOut();return}
+ if(!profile||profile.status!=='active'||!['super_admin','admin','member'].includes(profile.role)){say('บัญชียังไม่ได้รับอนุมัติหรือถูกระงับ');await sb.auth.signOut();return}
+ window.BLESSING_AUTH={client:sb,user:session.user,profile};
+ role=profile.role==='member'?'member':'admin';
+ const userbox=document.querySelector('.userbox');
+ if(userbox)userbox.innerHTML='<span class="pill">'+(role==='admin'?'ADMIN WORKSPACE':'MEMBER WORKSPACE')+'</span><div class="avatar">'+(profile.display_name||profile.email||'U').slice(0,1).toUpperCase()+'</div><div><b>'+((profile.display_name||profile.email||'สมาชิก').replace(/[<>]/g,''))+'</b><div class="small muted">'+profile.role.toUpperCase()+'</div></div><button class="secondary" id="signOutBtn">ออกจากระบบ</button>';
+ document.getElementById('signOutBtn')?.addEventListener('click',async()=>{await sb.auth.signOut();location.reload()});
+ gate.style.display='none';
+ if(role==='member'&&active==='members')active='overview';
+ render();
+}
+form.addEventListener('submit',async e=>{e.preventDefault();submit.disabled=true;say('กำลังตรวจสอบบัญชี...');const {data,error}=await sb.auth.signInWithPassword({email:document.getElementById('authEmail').value.trim(),password:document.getElementById('authPassword').value});submit.disabled=false;if(error){say('เข้าสู่ระบบไม่สำเร็จ: อีเมลหรือรหัสผ่านไม่ถูกต้อง');return}await enter(data.session)});
+const {data:{session}}=await sb.auth.getSession();await enter(session);
+sb.auth.onAuthStateChange((_event,session)=>{if(!session){gate.style.display='grid'}});
+</script>
+</body></html>
