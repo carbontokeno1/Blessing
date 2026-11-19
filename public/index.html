@@ -34,14 +34,22 @@ render();setInterval(()=>{for(let k in prices)prices[k]=Math.max(.1,prices[k]*(1
 #authGate .authsub{text-align:center;color:#9aa8bc;font-size:11px;letter-spacing:2px;margin-bottom:24px}
 #authGate .authmsg{min-height:22px;color:#ff9bad;font-size:12px;line-height:1.5;margin-top:10px}
 #authGate .authhint{font-size:11px;color:#9aa8bc;line-height:1.7;margin-top:16px}
+#authGate .password-wrap{position:relative;display:flex;align-items:center}
+#authGate .password-wrap input{padding-right:72px}
+#authGate .eye-btn{position:absolute;right:6px;top:50%;transform:translateY(-50%);padding:6px 9px;border:1px solid #46536a;border-radius:8px;background:#202c40;color:#e8bd62;font-size:11px}
+#authGate .forgot-link{display:block;width:100%;margin:12px 0 4px;padding:5px;border:0;background:transparent;color:#e8bd62;text-decoration:underline;font-size:12px}
+#authGate #forgotPanel{margin-top:12px;padding:12px;border:1px solid #344258;border-radius:12px;background:#0b1220}
+#authGate #forgotPanel .authmsg{color:#e8bd62}
 </style>
 <section id="authGate">
  <form class="authbox" id="authForm">
   <div class="authbrand">BLESSING</div><div class="authsub">SECURE TRADING PLATFORM</div>
   <h1 style="text-align:center;font-size:21px;margin:0 0 20px">เข้าสู่ระบบ</h1>
   <div class="field"><label for="authEmail">อีเมล</label><input id="authEmail" type="email" autocomplete="username" required placeholder="name@example.com"></div>
-  <div class="field"><label for="authPassword">รหัสผ่าน</label><input id="authPassword" type="password" autocomplete="current-password" required placeholder="รหัสผ่าน Supabase"></div>
+  <div class="field"><label for="authPassword">รหัสผ่าน</label><div class="password-wrap"><input id="authPassword" type="password" autocomplete="current-password" required placeholder="รหัสผ่าน Supabase"><button class="eye-btn" type="button" data-toggle-password="authPassword" aria-label="แสดงรหัสผ่าน" aria-pressed="false">แสดง</button></div></div>
   <button class="full" id="authSubmit" type="submit">เข้าสู่ระบบอย่างปลอดภัย</button>
+  <button class="forgot-link" type="button" id="showForgot">ลืมรหัสผ่าน?</button>
+  <div id="forgotPanel" class="hidden"><div class="field"><label for="forgotEmail">อีเมลสำหรับรับลิงก์ตั้งรหัสผ่านใหม่</label><input id="forgotEmail" type="email" autocomplete="email" placeholder="name@example.com"></div><button class="secondary full" type="button" id="sendReset">ส่งลิงก์ตั้งรหัสผ่านใหม่</button><div id="forgotMessage" class="authmsg" role="status"></div></div>
   <div id="authMessage" class="authmsg" role="status"></div>
   <div class="authhint">บัญชีต้องได้รับการอนุมัติและเปิดใช้งานโดยผู้ดูแลระบบก่อนเข้าใช้งาน หากยังไม่มีบัญชี โปรดติดต่อผู้ดูแลระบบ</div>
  </form>
@@ -65,7 +73,34 @@ async function enter(session){
  if(role==='member'&&['members','live'].includes(active))active='overview';
  render();
 }
-form.addEventListener('submit',async e=>{e.preventDefault();submit.disabled=true;say('กำลังตรวจสอบบัญชี...');const {data,error}=await sb.auth.signInWithPassword({email:document.getElementById('authEmail').value.trim(),password:document.getElementById('authPassword').value});submit.disabled=false;if(error){say('เข้าสู่ระบบไม่สำเร็จ: อีเมลหรือรหัสผ่านไม่ถูกต้อง');return}await enter(data.session)});
+let recoveryMode=location.hash.includes('type=recovery')||location.search.includes('code=');
+document.addEventListener('click',e=>{
+ const t=e.target.closest('[data-toggle-password]');
+ if(t){const input=document.getElementById(t.dataset.togglePassword);if(!input)return;const show=input.type==='password';input.type=show?'text':'password';t.textContent=show?'ซ่อน':'แสดง';t.setAttribute('aria-label',show?'ซ่อนรหัสผ่าน':'แสดงรหัสผ่าน');t.setAttribute('aria-pressed',String(show))}
+});
+document.getElementById('showForgot').addEventListener('click',()=>{document.getElementById('forgotPanel').classList.toggle('hidden');document.getElementById('forgotEmail').value=document.getElementById('authEmail').value.trim()});
+document.getElementById('sendReset').addEventListener('click',async()=>{
+ const email=document.getElementById('forgotEmail').value.trim(),out=document.getElementById('forgotMessage'),btn=document.getElementById('sendReset');
+ if(!email){out.textContent='กรุณากรอกอีเมลก่อน';return}
+ btn.disabled=true;out.textContent='กำลังส่งลิงก์...';
+ const {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo:location.origin+'/'});
+ btn.disabled=false;
+ out.textContent=error?'ส่งลิงก์ไม่สำเร็จ: '+error.message:'หากอีเมลนี้มีบัญชีอยู่ ระบบจะส่งลิงก์ตั้งรหัสผ่านใหม่ให้ กรุณาตรวจสอบกล่องจดหมายและ Spam';
+});
+function showRecoveryForm(){
+ gate.style.display='grid';
+ form.innerHTML='<div class="authbrand">BLESSING</div><div class="authsub">SECURE ACCOUNT RECOVERY</div><h1 style="text-align:center;font-size:21px">ตั้งรหัสผ่านใหม่</h1><div class="field"><label for="recoveryPassword">รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร)</label><div class="password-wrap"><input id="recoveryPassword" type="password" minlength="8" autocomplete="new-password" required placeholder="กรอกรหัสผ่านใหม่"><button class="eye-btn" type="button" data-toggle-password="recoveryPassword">แสดง</button></div></div><div class="field"><label for="recoveryConfirm">ยืนยันรหัสผ่านใหม่</label><div class="password-wrap"><input id="recoveryConfirm" type="password" minlength="8" autocomplete="new-password" required placeholder="กรอกรหัสผ่านอีกครั้ง"><button class="eye-btn" type="button" data-toggle-password="recoveryConfirm">แสดง</button></div></div><button class="full" id="saveRecovery" type="submit">บันทึกรหัสผ่านใหม่</button><div id="authMessage" class="authmsg" role="status"></div>';
+ form.onsubmit=async e=>{
+  e.preventDefault();const p=document.getElementById('recoveryPassword').value,q=document.getElementById('recoveryConfirm').value;
+  if(p.length<8){say('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร');return}
+  if(p!==q){say('รหัสผ่านทั้งสองช่องไม่ตรงกัน');return}
+  const b=document.getElementById('saveRecovery');b.disabled=true;say('กำลังบันทึกรหัสผ่าน...');const {error}=await sb.auth.updateUser({password:p});b.disabled=false;
+  if(error){say('ตั้งรหัสผ่านไม่สำเร็จ: '+error.message);return}
+  say('ตั้งรหัสผ่านใหม่สำเร็จ กำลังเข้าสู่ระบบ...');history.replaceState(null,'',location.pathname);recoveryMode=false;const {data}=await sb.auth.getSession();await enter(data.session);
+ };
+}
+form.addEventListener('submit',async e=>{if(recoveryMode)return;e.preventDefault();submit.disabled=true;say('กำลังตรวจสอบบัญชี...');const {data,error}=await sb.auth.signInWithPassword({email:document.getElementById('authEmail').value.trim(),password:document.getElementById('authPassword').value});submit.disabled=false;if(error){say('เข้าสู่ระบบไม่สำเร็จ: อีเมลหรือรหัสผ่านไม่ถูกต้อง');return}await enter(data.session)});
+document.getElementById('authEmail').addEventListener('input',e=>{const x=document.getElementById('forgotEmail');if(x&&!x.value)x.value=e.target.value});
 document.addEventListener('submit',async e=>{
  if(e.target?.id!=='changePasswordForm')return;
  e.preventDefault();
@@ -82,7 +117,12 @@ document.addEventListener('submit',async e=>{
  if(error){out.textContent='เปลี่ยนรหัสผ่านไม่สำเร็จ: '+error.message;out.style.color='#ff9bad';return}
  e.target.reset();out.textContent='เปลี่ยนรหัสผ่านเรียบร้อยแล้ว';out.style.color='#43d6a0';
 });
-const {data:{session}}=await sb.auth.getSession();await enter(session);
-sb.auth.onAuthStateChange((_event,session)=>{if(!session){gate.style.display='grid'}});
+sb.auth.onAuthStateChange((event,session)=>{
+ if(event==='PASSWORD_RECOVERY'){recoveryMode=true;showRecoveryForm();return}
+ if(event==='SIGNED_OUT'){gate.style.display='grid';return}
+ if(event==='SIGNED_IN'&&session&&!recoveryMode)enter(session);
+});
+const {data:{session}}=await sb.auth.getSession();
+if(recoveryMode){showRecoveryForm()}else{await enter(session)}
 </script>
 </body></html>
