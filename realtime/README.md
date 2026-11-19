@@ -6,7 +6,7 @@ This service uses the official Webull OpenAPI Python SDK to subscribe to US stoc
 
 - `WEBULL_APP_KEY` — Webull App Key
 - `WEBULL_APP_SECRET` — Webull App Secret
-- `WEBULL_REGION` — defaults to `th` for Webull Thailand
+- `WEBULL_REGION` — defaults to `us` for US equities (as shown in Webull US SDK examples)
 - `WEBULL_HTTP_HOST` — defaults to `api.webull.com`
 - `WEBULL_MQTT_HOST` — defaults to `data-api.webull.com`
 - `WEBULL_SYMBOLS` — defaults to AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD
