@@ -22,7 +22,7 @@ function trade(s,side){if(side>0){if(cash<prices[s])return alert('เงิน�
 function resetSim(){if(confirm('ต้องการรีเซ็ตพอร์ตทดลองใช่หรือไม่?')){cash=100000;holdings={};orders=[];render()}}
 function liveView(){return '<div class="heading"><div><h1>Real Trading</h1><div class="muted">ระบบซื้อขายเงินจริงผ่านโบรกเกอร์</div></div><span class="pill">NOT CONNECTED</span></div><div class="card"><div style="font-size:42px;text-align:center;padding:20px">🔒</div><h3 style="text-align:center">ระบบเงินจริงยังไม่เปิดใช้งาน</h3><p class="muted" style="text-align:center;line-height:1.8">รอการเชื่อมต่อ Broker API, การจัดเก็บ API Key ฝั่งเซิร์ฟเวอร์, การทดสอบคำสั่ง, การกำหนดวงเงิน และการอนุมัติจากเจ้าของระบบ</p><button class="full" disabled>เชื่อมต่อโบรกเกอร์ (ปิดไว้ก่อน)</button></div><div class="notice dangerbox">เพื่อป้องกันความเสียหาย จะไม่มีการส่งคำสั่งเงินจริงจากต้นแบบนี้ และจะไม่ขอให้ใส่ API Secret ในหน้าเว็บ</div>'}
 function historyView(){return '<div class="heading"><div><h1>ประวัติการเทรด</h1><div class="muted">รายการคำสั่งทดลองในเซสชันนี้</div></div></div><div class="card tablewrap"><table><thead><tr><th>เวลา</th><th>ประเภท</th><th>สินทรัพย์</th><th>จำนวน</th><th>ราคา</th><th>มูลค่า</th></tr></thead><tbody>'+(orders.map(o=>'<tr><td>'+o.time+'</td><td class="'+(o.side==='ซื้อ'?'positive':'negative')+'">'+o.side+'</td><td>'+o.s+'</td><td>'+o.qty+'</td><td>'+money(o.price)+'</td><td>'+money(o.price*o.qty)+'</td></tr>').join('')||'<tr><td colspan="6" class="empty">ยังไม่มีรายการ</td></tr>')+'</tbody></table></div>'}
-function settingsView(){return '<div class="heading"><div><h1>ตั้งค่าระบบ</h1><div class="muted">ข้อมูลการตั้งค่าต้นแบบ</div></div></div><div class="card"><div class="riskline"><span>ชื่อแพลตฟอร์ม</span><b class="gold">BLESSING</b></div><div class="riskline"><span>ธีม</span><b>Black & Gold</b></div><div class="riskline"><span>ระบบสมาชิก</span><b class="gold">รอ Supabase Auth</b></div><div class="riskline"><span>ฐานข้อมูลและสิทธิ์ RLS</span><b class="gold">ยังไม่เชื่อมต่อ</b></div><div class="riskline"><span>โหมดเงินจริง</span><b class="negative">ปิดใช้งาน</b></div></div><div class="notice">ขั้นตอนถัดไปเมื่อบัญชี Supabase พร้อม: สร้างตารางโปรไฟล์และบทบาท, เปิด Row Level Security ทุกตาราง, สร้าง Edge Function สำหรับผู้ดูแล, และทดสอบว่าแต่ละสมาชิกอ่านได้เฉพาะข้อมูลของตนเอง</div>'}
+function settingsView(){return '<div class="heading"><div><h1>ตั้งค่าระบบ</h1><div class="muted">จัดการบัญชีและความปลอดภัย</div></div></div><div class="card"><div class="riskline"><span>ชื่อแพลตฟอร์ม</span><b class="gold">BLESSING</b></div><div class="riskline"><span>ธีม</span><b>Black & Gold</b></div><div class="riskline"><span>ระบบสมาชิก</span><b class="positive">Supabase Auth</b></div><div class="riskline"><span>โหมดเงินจริง</span><b class="negative">ปิดใช้งาน</b></div></div><div class="card section"><h3>เปลี่ยนรหัสผ่าน</h3><p class="muted small">ตั้งรหัสผ่านใหม่สำหรับบัญชีที่กำลังเข้าสู่ระบบ รหัสผ่านจะถูกบันทึกอย่างปลอดภัยผ่าน Supabase Auth</p><form id="changePasswordForm"><div class="field"><label for="newPassword">รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร)</label><input id="newPassword" type="password" minlength="8" autocomplete="new-password" required placeholder="กรอกรหัสผ่านใหม่"></div><div class="field"><label for="confirmPassword">ยืนยันรหัสผ่านใหม่</label><input id="confirmPassword" type="password" minlength="8" autocomplete="new-password" required placeholder="กรอกรหัสผ่านอีกครั้ง"></div><button type="submit" id="changePasswordBtn">บันทึกรหัสผ่านใหม่</button><div id="passwordMessage" class="small muted" role="status" style="margin-top:12px;line-height:1.6"></div></form></div><div class="notice">อย่าใช้รหัสผ่านซ้ำกับบริการอื่น และอย่าแชร์รหัสผ่านหรือรหัสยืนยันกับผู้อื่น</div>'}
 function esc(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 render();setInterval(()=>{for(let k in prices)prices[k]=Math.max(.1,prices[k]*(1+(Math.random()-.5)*.001));if(active==='paper'||active==='overview')render()},7000);
 </script>
@@ -65,6 +65,22 @@ async function enter(session){
  render();
 }
 form.addEventListener('submit',async e=>{e.preventDefault();submit.disabled=true;say('กำลังตรวจสอบบัญชี...');const {data,error}=await sb.auth.signInWithPassword({email:document.getElementById('authEmail').value.trim(),password:document.getElementById('authPassword').value});submit.disabled=false;if(error){say('เข้าสู่ระบบไม่สำเร็จ: อีเมลหรือรหัสผ่านไม่ถูกต้อง');return}await enter(data.session)});
+document.addEventListener('submit',async e=>{
+ if(e.target?.id!=='changePasswordForm')return;
+ e.preventDefault();
+ const p=document.getElementById('newPassword')?.value||'';
+ const q=document.getElementById('confirmPassword')?.value||'';
+ const out=document.getElementById('passwordMessage');
+ const btn=document.getElementById('changePasswordBtn');
+ if(p.length<8){out.textContent='รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร';out.style.color='#ff9bad';return}
+ if(p!==q){out.textContent='รหัสผ่านทั้งสองช่องไม่ตรงกัน';out.style.color='#ff9bad';return}
+ if(!window.BLESSING_AUTH?.client){out.textContent='กรุณาเข้าสู่ระบบใหม่ก่อนเปลี่ยนรหัสผ่าน';out.style.color='#ff9bad';return}
+ btn.disabled=true;out.textContent='กำลังบันทึกรหัสผ่านใหม่...';out.style.color='#9aa8bc';
+ const {error}=await window.BLESSING_AUTH.client.auth.updateUser({password:p});
+ btn.disabled=false;
+ if(error){out.textContent='เปลี่ยนรหัสผ่านไม่สำเร็จ: '+error.message;out.style.color='#ff9bad';return}
+ e.target.reset();out.textContent='เปลี่ยนรหัสผ่านเรียบร้อยแล้ว';out.style.color='#43d6a0';
+});
 const {data:{session}}=await sb.auth.getSession();await enter(session);
 sb.auth.onAuthStateChange((_event,session)=>{if(!session){gate.style.display='grid'}});
 </script>
