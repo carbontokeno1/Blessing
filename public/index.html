@@ -58,7 +58,7 @@ render();setInterval(()=>{for(let k in prices)prices[k]=Math.max(.1,prices[k]*(1
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb = createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
 const gate=document.getElementById('authGate'), form=document.getElementById('authForm'), msg=document.getElementById('authMessage'), submit=document.getElementById('authSubmit');
-function say(t){msg.textContent=t}
+function say(t){const m=document.getElementById('authMessage');if(m)m.textContent=t}
 async function enter(session){
  if(!session?.user){gate.style.display='grid';return}
  const {data:profile,error}=await sb.from('profiles').select('email,display_name,role,status').eq('user_id',session.user.id).maybeSingle();
