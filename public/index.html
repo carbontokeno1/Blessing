@@ -42,12 +42,12 @@ async function refreshStocks(){
   const pts=cs.map((p,i)=>({p:Number(p),t:Number(ts[i])*1000,v:Number(q.volume?.[i])||0})).filter(x=>x.p>0&&x.t>0).sort((a,b)=>a.t-b.t);
   const last=pts.at(-1);
   if(!last)throw Error('ไม่มีแท่งราคาล่าสุด');
-  const move=seconds=>{const old=pts.find(x=>x.t<=last.t-seconds*1000);return old&&old.p>0?(last.p/old.p-1)*100:null};
+  const move=seconds=>{const old=pts.slice().reverse().find(x=>x.t<=last.t-seconds*1000);return old&&old.p>0?(last.p/old.p-1)*100:null};
   const prev=Number(meta.chartPreviousClose||meta.previousClose);
   return stockQuotes[symbol]={symbol,price:last.p,change:prev>0?(last.p/prev-1)*100:null,volume:last.v,m1:move(60),m5:move(300),receivedAt:Date.now(),session:meta.marketState||'UNKNOWN',priceTime:last.t};
  }));
  const ok=results.filter(x=>x.status==='fulfilled').length;
- const errors=results.filter(x=>x.status==='rejected').map((x,i)=>stockSymbols[i]+': '+String(x.reason?.message||x.reason)).slice(0,2);
+ const errors=results.map((x,i)=>x.status==='rejected'?stockSymbols[i]+': '+String(x.reason?.message||x.reason):null).filter(Boolean).slice(0,2);
  stockStatus=ok+'/'+stockSymbols.length+' หุ้น · แท่งราคา 1 นาที รวมพรีมาเก็ต · '+new Date().toLocaleTimeString('th-TH')+(errors.length?' · ข้อผิดพลาด: '+errors.join(' | '):'');
  stockBusy=false;renderStocks();
 }
