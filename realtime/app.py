@@ -256,7 +256,7 @@ def build_momentum_scanner() -> dict:
 
     merged: dict[str, dict] = {}
     errors = []
-    for rank_type in ("PRE_MARKET", "MIN_3", "MIN_5"):
+    for rank_type in ("PRE_MARKET", "MIN_3", "MIN_5", "DAY_1", "AFTER_MARKET"):
         try:
             for row in webull_screener(rank_type):
                 symbol = str(row.get("symbol", "")).upper()
@@ -272,25 +272,30 @@ def build_momentum_scanner() -> dict:
         pre = item.get("pre_market", {})
         m3 = item.get("min_3", {})
         m5 = item.get("min_5", {})
-        price = float(pre.get("price") or m3.get("price") or m5.get("price") or 0)
+        day = item.get("day_1", {})
+        after = item.get("after_market", {})
+        price = float(m3.get("price") or m5.get("price") or pre.get("price") or day.get("price") or after.get("price") or 0)
         volume = int(float(pre.get("volume") or m3.get("volume") or m5.get("volume") or 0))
         pre_pct = float(pre.get("change_ratio") or 0) * 100
+        day_pct = float(day.get("change_ratio") or 0) * 100
+        after_pct = float(after.get("change_ratio") or 0) * 100
+        session_pct = max(pre_pct, day_pct, after_pct)
         m3_pct = float(m3.get("change_ratio") or 0) * 100
         m5_pct = float(m5.get("change_ratio") or 0) * 100
         rvol = float(pre.get("relative_volume_10d") or m3.get("relative_volume_10d") or m5.get("relative_volume_10d") or 0)
         if price < 2 or volume < 100000:
             continue
-        if not (pre_pct >= 2 or m3_pct >= 0.8 or m5_pct >= 1.2):
+        if not (session_pct >= 2 or m3_pct >= 0.8 or m5_pct >= 1.2):
             continue
         # Entry is a confirmation trigger, not a promise that the order will fill.
         entry = round(price * 1.001, 4)
         target_pct = min(10.0, max(3.0, 3.0 + max(m3_pct, m5_pct, 0) * 0.8 + min(rvol, 5) * 0.4))
         stop_pct = 2.5
-        fast = pre_pct >= 3 and m3_pct >= 0.8 and m5_pct >= 1.2 and rvol >= 2
+        fast = session_pct >= 3 and m3_pct >= 0.8 and m5_pct >= 1.2 and rvol >= 2
         score = min(100, round(max(pre_pct, 0) * 3 + max(m3_pct, 0) * 8 + max(m5_pct, 0) * 5 + min(rvol, 5) * 5))
         candidates.append({
             "symbol": symbol, "name": item.get("name", symbol), "price": price,
-            "premarketPct": round(pre_pct, 2), "m3Pct": round(m3_pct, 2),
+            "premarketPct": round(pre_pct, 2), "dayPct": round(day_pct, 2), "afterMarketPct": round(after_pct, 2), "m3Pct": round(m3_pct, 2),
             "m5Pct": round(m5_pct, 2), "relativeVolume10d": round(rvol, 2),
             "volume": volume, "entry": entry,
             "target": round(entry * (1 + target_pct / 100), 4),
