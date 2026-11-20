@@ -15,7 +15,6 @@ const cryptoSymbols=['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','DOGEUSDT
 const cryptoNames={BTCUSDT:'Bitcoin',ETHUSDT:'Ethereum',BNBUSDT:'BNB',SOLUSDT:'Solana',XRPUSDT:'XRP',DOGEUSDT:'Dogecoin'};
 let cryptoQuotes={},cryptoStatus={Binance:'กำลังเชื่อมต่อ',Bybit:'กำลังเชื่อมต่อ',OKX:'กำลังเชื่อมต่อ'},cryptoBusy=false,cryptoTimer=null,cryptoExchange='ALL';
 let marketSocket=null,marketReconnectTimer=null,marketBridgeStarted=false;
-const money=n=>'฿'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 
 function nav(){let keys=role==='admin'?['overview','crypto','members','paper','live','history','settings']:['overview','crypto','paper','live','history','settings'];$('tabs').innerHTML=keys.map(k=>'<button class="tab '+(active===k?'active':'')+'" onclick="go(\''+k+'\')">'+names[k]+'</button>').join('')}
 function go(k){active=k;render()}
