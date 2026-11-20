@@ -195,176 +195,48 @@ async def startup():
 
 
 
-# No-key experimental US stock scanner using Yahoo Finance public web endpoints.
-# Yahoo's endpoints are undocumented and may be delayed, rate-limited, changed, or blocked.
-# This is a read-only prototype, not a licensed real-time trading feed.
-YAHOO_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; BlessingMarketResearch/1.0)",
-    "Accept": "application/json",
-}
-SCANNER_CACHE: dict[str, Any] = {"at": 0.0, "payload": None}
-SCANNER_CACHE_SECONDS = 25
+# Webull official market screener.
+# API credentials are intentionally read only from Render environment variables.
+SCANNER_TYPES = {"PRE_MARKET", "AFTER_MARKET", "MIN_3", "MIN_5", "DAY_1"}
+SCANNER_CACHE: dict[str, Any] = {}
+SCANNER_CACHE_SECONDS = 15
 SCANNER_LOCK = threading.Lock()
 
 
-def yahoo_json(url: str, params: dict | None = None) -> dict:
-    response = requests.get(url, params=params, headers=YAHOO_HEADERS, timeout=12)
-    response.raise_for_status()
-    return response.json()
-
-
-def yahoo_screener(scr_id: str, count: int = 60) -> list[dict]:
-    payload = yahoo_json(
-        "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved",
-        {"formatted": "false", "scrIds": scr_id, "count": count, "start": 0, "region": "US", "lang": "en-US"},
-    )
-    return payload.get("finance", {}).get("result", [{}])[0].get("quotes", []) or []
-
-
-def yahoo_intraday(symbol: str) -> dict:
-    now = int(time.time())
-    payload = yahoo_json(
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol, safe='')}",
-        {"period1": now - 86400, "period2": now, "interval": "1m", "includePrePost": "true", "events": "div,splits"},
-    )
-    result = payload.get("chart", {}).get("result") or []
-    if not result:
-        return {}
-    item = result[0]
-    timestamps = item.get("timestamp") or []
-    quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
-    closes = quote.get("close") or []
-    points = [(int(t), float(c)) for t, c in zip(timestamps, closes) if c is not None]
-    if not points:
-        return {}
-    latest_t, latest = points[-1]
-    def momentum(minutes: int) -> float | None:
-        cutoff = latest_t - minutes * 60
-        prior = next((p for p in reversed(points[:-1]) if p[0] <= cutoff), None)
-        return round((latest / prior[1] - 1) * 100, 3) if prior and prior[1] else None
-    return {
-        "lastPrice": latest,
-        "momentum3m": momentum(3),
-        "momentum5m": momentum(5),
-        "priceTime": datetime.fromtimestamp(latest_t, timezone.utc).isoformat(),
-        "barCount": len(points),
-    }
-
-
-def build_momentum_scanner() -> dict:
-    updated = datetime.now(timezone.utc).isoformat()
-    try:
-        # Screeners discover the current market leaders without a user API key.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-            gainers_f = pool.submit(yahoo_screener, "day_gainers", 60)
-            losers_f = pool.submit(yahoo_screener, "day_losers", 60)
-            active_f = pool.submit(yahoo_screener, "most_actives", 60)
-            gainers, losers, actives = gainers_f.result(), losers_f.result(), active_f.result()
-
-        by_symbol: dict[str, dict] = {}
-        for label, rows in (("DAY GAINERS", gainers), ("DAY LOSERS", losers), ("MOST ACTIVE", actives)):
-            for rank, row in enumerate(rows, 1):
-                symbol = str(row.get("symbol") or "").upper()
-                if not symbol:
-                    continue
-                item = by_symbol.setdefault(symbol, {
-                    "symbol": symbol,
-                    "name": row.get("shortName") or row.get("longName") or symbol,
-                    "price": row.get("regularMarketPrice"),
-                    "changePct": row.get("regularMarketChangePercent"),
-                    "volume": row.get("regularMarketVolume") or 0,
-                    "rankings": [],
-                    "gainerHits": 0,
-                    "loserHits": 0,
-                    "activeHits": 0,
-                })
-                item["rankings"].append(label + " #" + str(rank))
-                if label == "DAY GAINERS":
-                    item["gainerHits"] += 1
-                elif label == "DAY LOSERS":
-                    item["loserHits"] += 1
-                else:
-                    item["activeHits"] += 1
-
-        symbols = list(by_symbol.keys())[:100]
-        def enrich(symbol: str):
-            try:
-                return symbol, yahoo_intraday(symbol), None
-            except Exception as exc:
-                return symbol, {}, type(exc).__name__
-        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
-            enriched = list(pool.map(enrich, symbols))
-
-        candidates = []
-        for symbol, intraday, error in enriched:
-            item = by_symbol[symbol]
-            item["momentum3m"] = intraday.get("momentum3m")
-            item["momentum5m"] = intraday.get("momentum5m")
-            item["priceTime"] = intraday.get("priceTime")
-            item["relativeVolume"] = None
-            item["intradayStatus"] = "available" if intraday else ("unavailable" if error else "no_intraday_bars")
-            price = item.get("price") or intraday.get("lastPrice") or 0
-            item["price"] = price
-            m3 = item["momentum3m"] or 0
-            m5 = item["momentum5m"] or 0
-            score = max(0, min(100, round(
-                max(float(item.get("changePct") or 0), 0) * 2
-                + max(m3, 0) * 8
-                + max(m5, 0) * 5
-                + item["activeHits"] * 5
-                - item["loserHits"] * 20
-            )))
-            item["score"] = score
-            item["signal"] = "WATCH" if item["loserHits"] else ("MOMENTUM" if score >= 35 else "EARLY")
-            item["riskFlag"] = "ALSO_IN_LOSERS" if item["loserHits"] else None
-            candidates.append(item)
-
-        candidates.sort(key=lambda x: (x["score"], float(x.get("changePct") or 0)), reverse=True)
-        return {
-            "provider": "Yahoo Finance public endpoints (unofficial; no API key)",
-            "status": "experimental" if candidates else "empty",
-            "message": "ทดลองสแกนจาก Day Gainers / Day Losers / Most Active · แหล่งข้อมูลไม่เป็นทางการและอาจล่าช้า",
-            "scanned": len(by_symbol),
-            "candidateCount": len(candidates),
-            "candidates": candidates[:100],
-            "rankings": [
-                {"key": "day_gainers", "label": "DAY GAINERS", "count": len(gainers)},
-                {"key": "day_losers", "label": "DAY LOSERS", "count": len(losers)},
-                {"key": "most_actives", "label": "MOST ACTIVE", "count": len(actives)},
-            ],
-            "lastError": None,
-            "refreshEverySeconds": 5,
-            "upstreamRefreshSeconds": SCANNER_CACHE_SECONDS,
-            "dataDisclaimer": "Unofficial public endpoints; data may be delayed, incomplete, rate-limited, or unavailable. Not for execution or redistribution.",
-            "updatedAt": updated,
-        }
-    except Exception as exc:
-        return {
-            "provider": "Yahoo Finance public endpoints (unofficial; no API key)",
-            "status": "error",
-            "message": "แหล่งข้อมูลทดลองไม่พร้อมใช้งาน · อาจถูกจำกัดการเรียก",
-            "scanned": 0,
-            "candidateCount": 0,
-            "candidates": [],
-            "rankings": [],
-            "lastError": f"{type(exc).__name__}: {str(exc)[:180]}",
-            "refreshEverySeconds": 5,
-            "updatedAt": updated,
-        }
-
-
 @app.get("/scanner")
-def scanner():
+def scanner(rank_type: str = "PRE_MARKET", direction: str = "DESC"):
+    rank_type = rank_type.upper()
+    direction = direction.upper()
+    if rank_type not in SCANNER_TYPES or direction not in {"ASC", "DESC"}:
+        return {"status": "error", "message": "พารามิเตอร์การสแกนไม่ถูกต้อง", "candidates": [], "scanned": 0}
+    cache_key = rank_type + ":" + direction
     now = time.time()
-    if SCANNER_CACHE["payload"] is not None and now - SCANNER_CACHE["at"] < SCANNER_CACHE_SECONDS:
-        return SCANNER_CACHE["payload"]
-    with SCANNER_LOCK:
-        now = time.time()
-        if SCANNER_CACHE["payload"] is not None and now - SCANNER_CACHE["at"] < SCANNER_CACHE_SECONDS:
-            return SCANNER_CACHE["payload"]
-        payload = build_momentum_scanner()
-        SCANNER_CACHE.update({"at": time.time(), "payload": payload})
-        return payload
+    cached = SCANNER_CACHE.get(cache_key)
+    if cached and now - cached["at"] < SCANNER_CACHE_SECONDS:
+        return cached["payload"]
+    # Do not fall back to unofficial sources or fabricate market data.
+    if not APP_KEY or not APP_SECRET or not os.getenv("WEBULL_ACCESS_TOKEN"):
+        return {
+            "provider": "Webull OpenAPI",
+            "status": "waiting_credentials",
+            "message": "รอ Webull อนุมัติ OpenAPI และตั้งค่า App Key / Secret / Access Token",
+            "rankType": rank_type,
+            "direction": direction,
+            "scanned": 0,
+            "candidates": [],
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "dataDisclaimer": "No market data is shown until official Webull authentication and market-data entitlement are verified.",
+        }
+    return {
+        "provider": "Webull OpenAPI",
+        "status": "credentials_configured_pending_validation",
+        "message": "พบค่าการเชื่อมต่อแล้ว แต่ยังต้องตรวจสอบสิทธิ์ Market Data และการยืนยันลายเซ็นก่อนแสดงข้อมูล",
+        "rankType": rank_type,
+        "direction": direction,
+        "scanned": 0,
+        "candidates": [],
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @app.get("/health")
