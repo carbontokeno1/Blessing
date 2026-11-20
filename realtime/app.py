@@ -217,9 +217,14 @@ def webull_signature(path: str, params: dict, timestamp: str, nonce: str) -> str
     return base64.b64encode(digest).decode()
 
 
-def webull_screener(rank_type: str) -> list[dict]:
+def webull_screener(rank_type: str, direction: str) -> list[dict]:
     path = "/market-data/screeners/gainers-losers/list"
-    params = {"rank_type": rank_type, "category": "US_STOCK", "sort_by": "CHANGE_RATIO", "direction": "DESC"}
+    params = {
+        "rank_type": rank_type,
+        "category": "US_STOCK",
+        "order": "CHANGE_RATIO",
+        "direction": direction,
+    }
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nonce = uuid.uuid4().hex
     headers = {
@@ -233,12 +238,45 @@ def webull_screener(rank_type: str) -> list[dict]:
         "x-version": "v3",
         "x-access-token": WEBULL_ACCESS_TOKEN,
     }
-    response = requests.get(f"https://{WEBULL_HOST}{path}", params=params, headers=headers, timeout=15)
+    response = requests.get(f"https://{WEBULL_HOST}{path}", params=params, headers=headers, timeout=12)
     response.raise_for_status()
     payload = response.json()
     if isinstance(payload, dict):
         payload = payload.get("data", payload.get("list", []))
+        if isinstance(payload, dict):
+            payload = payload.get("list", payload.get("items", payload.get("data", [])))
     return payload if isinstance(payload, list) else []
+
+
+SCANNER_LOCK = threading.Lock()
+SCANNER_CACHE: dict[str, Any] = {
+    "at": 0.0, "payload": None, "cursor": 0,
+    "rankings": {}, "lastError": None,
+}
+SCANNER_CYCLE = [
+    ("PRE_MARKET", "DESC", "PRE-MARKET GAINERS"),
+    ("PRE_MARKET", "ASC", "PRE-MARKET LOSERS"),
+    ("MIN_3", "DESC", "3-MIN GAINERS"),
+    ("MIN_3", "ASC", "3-MIN LOSERS"),
+    ("MIN_5", "DESC", "5-MIN GAINERS"),
+    ("MIN_5", "ASC", "5-MIN LOSERS"),
+]
+
+
+def row_symbol(row: dict) -> str:
+    ticker = row.get("ticker") if isinstance(row.get("ticker"), dict) else {}
+    return str(row.get("symbol") or row.get("ticker_symbol") or ticker.get("symbol") or ticker.get("ticker_symbol") or "").upper()
+
+
+def row_number(row: dict, *keys: str) -> float:
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
 
 
 def build_momentum_scanner() -> dict:
@@ -248,70 +286,105 @@ def build_momentum_scanner() -> dict:
     ) if not value]
     if missing:
         return {
-            "provider": "Webull OpenAPI", "status": "waiting_credentials",
-            "message": "รอ Webull อนุมัติ App Key / App Secret และตั้งค่า Access Token ใน Render",
+            "provider": "Webull OpenAPI Top Gainers/Losers",
+            "status": "waiting_credentials",
+            "message": "รอตั้งค่า Webull API credentials ใน Render",
             "missing": missing, "scanned": 0, "candidates": [],
+            "rankings": [], "refreshEverySeconds": 5,
             "updatedAt": datetime.now(timezone.utc).isoformat(),
         }
 
-    merged: dict[str, dict] = {}
-    errors = []
-    for rank_type in ("PRE_MARKET", "MIN_3", "MIN_5", "DAY_1", "AFTER_MARKET"):
+    now = time.time()
+    if SCANNER_CACHE["payload"] is not None and now - SCANNER_CACHE["at"] < 4.5:
+        return SCANNER_CACHE["payload"]
+
+    with SCANNER_LOCK:
+        now = time.time()
+        if SCANNER_CACHE["payload"] is not None and now - SCANNER_CACHE["at"] < 4.5:
+            return SCANNER_CACHE["payload"]
+        rank_type, direction, label = SCANNER_CYCLE[SCANNER_CACHE["cursor"] % len(SCANNER_CYCLE)]
+        SCANNER_CACHE["cursor"] += 1
         try:
-            for row in webull_screener(rank_type):
-                symbol = str(row.get("symbol", "")).upper()
+            rows = webull_screener(rank_type, direction)
+            normalized = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                symbol = row_symbol(row)
                 if not symbol:
                     continue
-                item = merged.setdefault(symbol, {"symbol": symbol, "name": row.get("name", symbol)})
-                item[rank_type.lower()] = row
+                item = {
+                    "symbol": symbol,
+                    "name": row.get("name") or row.get("company_name") or symbol,
+                    "rankType": rank_type,
+                    "direction": direction,
+                    "rankLabel": label,
+                    "price": row_number(row, "price", "close", "latest_price", "last_price"),
+                    "changePct": row_number(row, "change_ratio", "change_percent", "change_ratio_pct") * (100 if abs(row_number(row, "change_ratio", "change_percent")) <= 1 else 1),
+                    "volume": int(row_number(row, "volume", "turnover_volume")),
+                    "relativeVolume": row_number(row, "relative_volume_10d", "rvol_10d"),
+                    "rank": row.get("rank") or row.get("rank_no"),
+                    "raw": row,
+                }
+                normalized.append(item)
+            SCANNER_CACHE["rankings"][f"{rank_type}:{direction}"] = {
+                "label": label, "rankType": rank_type, "direction": direction,
+                "rows": normalized[:200], "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }
+            SCANNER_CACHE["lastError"] = None
         except Exception as exc:
-            errors.append(f"{rank_type}:{type(exc).__name__}")
+            SCANNER_CACHE["lastError"] = f"{type(exc).__name__}: {str(exc)[:180]}"
 
-    candidates = []
-    for symbol, item in merged.items():
-        pre = item.get("pre_market", {})
-        m3 = item.get("min_3", {})
-        m5 = item.get("min_5", {})
-        day = item.get("day_1", {})
-        after = item.get("after_market", {})
-        price = float(m3.get("price") or m5.get("price") or pre.get("price") or day.get("price") or after.get("price") or 0)
-        volume = int(float(pre.get("volume") or m3.get("volume") or m5.get("volume") or 0))
-        pre_pct = float(pre.get("change_ratio") or 0) * 100
-        day_pct = float(day.get("change_ratio") or 0) * 100
-        after_pct = float(after.get("change_ratio") or 0) * 100
-        session_pct = max(pre_pct, day_pct, after_pct)
-        m3_pct = float(m3.get("change_ratio") or 0) * 100
-        m5_pct = float(m5.get("change_ratio") or 0) * 100
-        rvol = float(pre.get("relative_volume_10d") or m3.get("relative_volume_10d") or m5.get("relative_volume_10d") or 0)
-        if price < 2 or volume < 100000:
-            continue
-        if not (session_pct >= 2 or m3_pct >= 0.8 or m5_pct >= 1.2):
-            continue
-        # Entry is a confirmation trigger, not a promise that the order will fill.
-        entry = round(price * 1.001, 4)
-        target_pct = min(10.0, max(3.0, 3.0 + max(m3_pct, m5_pct, 0) * 0.8 + min(rvol, 5) * 0.4))
-        stop_pct = 2.5
-        fast = session_pct >= 3 and m3_pct >= 0.8 and m5_pct >= 1.2 and rvol >= 2
-        score = min(100, round(max(pre_pct, 0) * 3 + max(m3_pct, 0) * 8 + max(m5_pct, 0) * 5 + min(rvol, 5) * 5))
-        candidates.append({
-            "symbol": symbol, "name": item.get("name", symbol), "price": price,
-            "premarketPct": round(pre_pct, 2), "dayPct": round(day_pct, 2), "afterMarketPct": round(after_pct, 2), "m3Pct": round(m3_pct, 2),
-            "m5Pct": round(m5_pct, 2), "relativeVolume10d": round(rvol, 2),
-            "volume": volume, "entry": entry,
-            "target": round(entry * (1 + target_pct / 100), 4),
-            "targetPct": round(target_pct, 1),
-            "stop": round(entry * (1 - stop_pct / 100), 4),
-            "stopPct": stop_pct, "score": score,
-            "signal": "FAST_ENTRY" if fast else "WATCH",
-        })
-    candidates.sort(key=lambda x: (x["signal"] == "FAST_ENTRY", x["score"]), reverse=True)
-    return {
-        "provider": "Webull OpenAPI", "status": "live" if not errors else "partial",
-        "message": "คัดกรองจากอันดับ Pre-market, 3 นาที และ 5 นาที",
-        "scanned": len(merged), "candidateCount": len(candidates),
-        "candidates": candidates[:100], "errors": errors,
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-    }
+        merged: dict[str, dict] = {}
+        for ranking in SCANNER_CACHE["rankings"].values():
+            for row in ranking["rows"]:
+                symbol = row["symbol"]
+                entry = merged.setdefault(symbol, {
+                    "symbol": symbol, "name": row["name"], "price": row["price"],
+                    "changePct": row["changePct"], "volume": row["volume"],
+                    "relativeVolume": row["relativeVolume"], "rankings": [],
+                    "gainerHits": 0, "loserHits": 0,
+                })
+                entry.update({k: row[k] for k in ("price", "changePct", "volume", "relativeVolume") if row.get(k)})
+                entry["rankings"].append(row["rankLabel"])
+                if row["direction"] == "DESC":
+                    entry["gainerHits"] += 1
+                else:
+                    entry["loserHits"] += 1
+
+        candidates = []
+        for item in merged.values():
+            # Loser appearances are retained as context, not mislabeled as buy signals.
+            if item["gainerHits"] == 0:
+                continue
+            score = min(100, round(
+                max(item["changePct"], 0) * 4
+                + min(item["relativeVolume"], 5) * 8
+                + item["gainerHits"] * 8
+                - item["loserHits"] * 15
+            ))
+            item["score"] = score
+            item["signal"] = "WATCH" if item["loserHits"] else ("MOMENTUM" if score >= 35 else "EARLY")
+            item["riskFlag"] = "ALSO_IN_LOSERS" if item["loserHits"] else None
+            candidates.append(item)
+        candidates.sort(key=lambda x: (x["score"], x["changePct"]), reverse=True)
+        payload = {
+            "provider": "Webull OpenAPI Top Gainers/Losers",
+            "status": "live" if SCANNER_CACHE["rankings"] and not SCANNER_CACHE["lastError"] else ("partial" if SCANNER_CACHE["rankings"] else "error"),
+            "message": f"อัปเดตชุดล่าสุด: {label} · หมุนสแกน 6 รายการ",
+            "scanned": len(merged), "candidateCount": len(candidates),
+            "candidates": candidates[:200],
+            "rankings": [{
+                "key": key, "label": value["label"], "count": len(value["rows"]),
+                "updatedAt": value["updatedAt"],
+            } for key, value in SCANNER_CACHE["rankings"].items()],
+            "lastError": SCANNER_CACHE["lastError"],
+            "refreshEverySeconds": 5,
+            "upstreamCycleSeconds": 30,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        SCANNER_CACHE.update({"at": time.time(), "payload": payload})
+        return payload
 
 
 @app.get("/scanner")
