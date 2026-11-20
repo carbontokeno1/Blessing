@@ -1,8 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-<defs><linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff0b0"/><stop offset=".48" stop-color="#e9b94f"/><stop offset="1" stop-color="#98651b"/></linearGradient></defs>
-<rect width="512" height="512" rx="110" fill="#080d18"/>
-<circle cx="256" cy="256" r="215" fill="none" stroke="#d8ad4c" stroke-opacity=".22" stroke-width="3"/>
-<path d="M112 320c-26-24-15-59 14-84l64-54 26 30-57 49c-15 13-9 34 10 38l166 34c19 4 33-9 29-28l-14-73 42-8 17 84c10 52-31 91-82 81l-190-39c-10-2-19-12-25-30z" fill="url(#gold)"/>
-<path d="M174 335l49-181c9-31 47-44 73-24l57 44-27 35-49-37-31 114 84-22 11 42-129 32c-25 6-45-9-38-33z" fill="url(#gold)"/>
-<path d="M313 122l91-35-35 90-11-40-67 54-24-29 67-54z" fill="#fff0b0"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+<title id="title">Blessing Trade</title><desc id="desc">Gold B emblem with bull, upward arrow and market candles on midnight navy.</desc>
+<defs>
+ <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff4c8"/><stop offset=".32" stop-color="#f5d47d"/><stop offset=".68" stop-color="#d59b32"/><stop offset="1" stop-color="#87551a"/></linearGradient>
+ <linearGradient id="gold2" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff1b0"/><stop offset="1" stop-color="#a86d1d"/></linearGradient>
+ <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1c477c"/><stop offset="1" stop-color="#07101f"/></linearGradient>
+ <filter id="glow"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+ <filter id="shadow"><feGaussianBlur stdDeviation="5"/></filter>
+</defs>
+<rect width="512" height="512" rx="112" fill="#080d18"/>
+<rect x="9" y="9" width="494" height="494" rx="103" fill="url(#blue)" stroke="url(#gold)" stroke-width="8"/>
+<circle cx="256" cy="232" r="190" fill="none" stroke="#4c8acb" stroke-opacity=".35" stroke-width="2"/>
+<path d="M73 341 73 286h19v55M108 341V260h19v81M143 341v-99h19v99M178 341v-131h19v131" fill="#22d68a" opacity=".85"/>
+<path d="M82 286v-20m35-6v-23m35-9v-24m35-15v-22" stroke="#b7f7dc" stroke-width="4"/>
+<path d="M335 340v-75h19v75m25 0v-111h19v111m25 0v-142h19v142m25 0v-184h19v184" fill="#23c8ff" opacity=".85"/>
+<path d="M344 265v-22m35-14v-22m35-15v-22m35-28v-24" stroke="#bcecff" stroke-width="4"/>
+<path d="M166 90c-17-8-31-3-39 11 18-5 30 0 37 14 4-13 15-20 29-18-6-13-15-17-27-7Zm13 28c-15 6-21 18-18 34 10-10 21-13 34-7-5-12-2-22 9-31-11-3-20-2-25 4Z" fill="url(#gold)"/>
+<path d="M178 143c-25 3-39 21-35 44l-17-7c-13-6-26-3-34 8 19-3 29 5 34 19 4-12 15-18 29-15l15 5c-7 23 1 46 22 57l-7 23c-5 18 3 31 19 39-5-19 0-32 15-39l21-10 24 15c15 9 29 5 38-9-19 4-31-3-36-18l-7-20c20-20 21-48 4-69-17-21-46-30-85-23Z" fill="url(#gold)" stroke="#fff0b4" stroke-width="3"/>
+<path d="M153 166c-31-29-57-28-77-2 28-8 44 0 50 24 4-15 14-23 27-22Zm60-13c26-34 54-39 82-14-31-2-48 10-52 35-8-14-18-21-30-21Z" fill="url(#gold2)" stroke="#f9df9c" stroke-width="3"/>
+<path d="M182 207c9-11 21-12 31-3m32 1c10-11 22-11 31-1" fill="none" stroke="#53320e" stroke-width="7" stroke-linecap="round"/>
+<path d="M221 239c15 10 29 10 43-1" fill="none" stroke="#704318" stroke-width="6" stroke-linecap="round"/>
+<path d="M210 105h122c62 0 99 33 99 84 0 31-16 55-43 68 35 13 54 39 54 76 0 62-47 99-120 99H210V105Zm72 62v75h46c27 0 42-13 42-38 0-24-15-37-42-37h-46Zm0 134v69h55c29 0 45-12 45-35 0-22-16-34-45-34h-55Z" fill="none" stroke="url(#gold)" stroke-width="10" stroke-linejoin="round" opacity=".95"/>
+<path d="M70 405c117 34 247 36 372-5" fill="none" stroke="url(#gold)" stroke-width="5" stroke-linecap="round"/>
+<path d="m402 111 44-48 7 66-16-19c-48 55-96 87-152 107" fill="none" stroke="#f1c65d" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+<path d="M402 111 446 63l7 66-16-19c-48 55-96 87-152 107" fill="none" stroke="#fff1b4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M256 452h-90m180 0h-90" stroke="#dcae4e" stroke-width="2"/>
+<text x="256" y="480" text-anchor="middle" fill="#f1d58b" font-family="Arial,sans-serif" font-size="20" font-weight="700" letter-spacing="4">BLESSING TRADE</text>
 </svg>
