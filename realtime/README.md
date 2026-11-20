@@ -6,6 +6,7 @@ This service uses the official Webull OpenAPI Python SDK to subscribe to US stoc
 
 - `WEBULL_APP_KEY` — Webull App Key
 - `WEBULL_APP_SECRET` — Webull App Secret
+- `WEBULL_ACCESS_TOKEN` — active Webull OpenAPI access token
 - `WEBULL_REGION` — defaults to `us` for US equities (as shown in Webull US SDK examples)
 - `WEBULL_HTTP_HOST` — defaults to `api.webull.com`
 - `WEBULL_MQTT_HOST` — defaults to `data-api.webull.com`
@@ -26,8 +27,9 @@ uvicorn app:app --app-dir realtime --host 0.0.0.0 --port 10000
 - `GET /health` — process health
 - `GET /status` — connection and freshness status
 - `GET /quotes` — latest raw decoded quote payloads
+- `GET /scanner` — read-only US stock screener: pre-market, 3-minute, 5-minute, daily and after-hours gainers (cached for 20 seconds)
 - `WS /stream` — read-only live stream for the UI
 
-No synthetic prices are generated. If credentials or the OpenAPI market-data entitlement are missing, the service stays in a waiting/error state and publishes no quotes.
+No synthetic prices are generated. If credentials or the OpenAPI market-data entitlement are missing, the service stays in a waiting/error state and publishes no quotes. The `/scanner` endpoint also returns `waiting_credentials` until App Key, App Secret and Access Token are configured; it never fabricates candidates.
 
 The official SDK streaming callback payload schema can evolve. The bridge preserves decoded payloads and only maps a symbol when it can identify one confidently. Validate the exact quote fields against the approved Webull account before using them for strategy calculations.
