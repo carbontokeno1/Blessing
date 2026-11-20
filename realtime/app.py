@@ -6,6 +6,7 @@ import hmac
 import urllib.parse
 import requests
 import json
+import websockets
 import logging
 import os
 import threading
@@ -23,12 +24,15 @@ log = logging.getLogger("blessing-realtime")
 SYMBOLS = [s.strip().upper() for s in os.getenv("WEBULL_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD").split(",") if s.strip()]
 APP_KEY = os.getenv("WEBULL_APP_KEY", "")
 APP_SECRET = os.getenv("WEBULL_APP_SECRET", "")
+ALPACA_KEY = os.getenv("ALPACA_API_KEY", "")
+ALPACA_SECRET = os.getenv("ALPACA_API_SECRET", "")
+ALPACA_FEED = os.getenv("ALPACA_FEED", "iex").lower()
 REGION = os.getenv("WEBULL_REGION", "us")
 HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.com")
 MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.com")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://blessing.carbontokeno1.workers.dev").split(",")
 
-app = FastAPI(title="Blessing Webull Market Data Bridge", version="0.1.0")
+app = FastAPI(title="Blessing Market Data Bridge", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in ALLOWED_ORIGINS if x.strip()], allow_credentials=False, allow_methods=["GET"], allow_headers=["*"])
 
 state = {
@@ -169,6 +173,77 @@ def stream_main():
         log.exception("Webull stream stopped")
 
 
+def alpaca_stream_main():
+    """Connect to Alpaca's real-time stock stream (IEX on the free Basic plan)."""
+    feed = ALPACA_FEED if ALPACA_FEED in {"iex", "sip", "delayed_sip"} else "iex"
+    url = f"wss://stream.data.alpaca.markets/v2/{feed}"
+    while True:
+        try:
+            async def run_stream():
+                state["provider"] = "alpaca"
+                state["marketDataEntitlement"] = f"{feed.upper()} feed; entitlement depends on Alpaca plan"
+                state["connection"] = "connecting"
+                async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=5, max_size=2**20) as ws:
+                    await ws.send(json.dumps({"action": "auth", "key": ALPACA_KEY, "secret": ALPACA_SECRET}))
+                    auth = json.loads(await ws.recv())
+                    auth_items = auth if isinstance(auth, list) else [auth]
+                    if not any(x.get("T") == "success" and x.get("msg") == "authenticated" for x in auth_items if isinstance(x, dict)):
+                        raise RuntimeError("Alpaca authentication was not confirmed")
+                    await ws.send(json.dumps({
+                        "action": "subscribe",
+                        "trades": SYMBOLS,
+                        "quotes": SYMBOLS,
+                        "bars": SYMBOLS
+                    }))
+                    state["connection"] = "connected"
+                    state["lastError"] = None
+                    log.info("Alpaca %s stream authenticated; subscribed to %d watchlist symbols", feed, len(SYMBOLS))
+                    async for raw_message in ws:
+                        messages = json.loads(raw_message)
+                        if not isinstance(messages, list):
+                            messages = [messages]
+                        changed = False
+                        now = datetime.now(timezone.utc).isoformat()
+                        for msg in messages:
+                            if not isinstance(msg, dict):
+                                continue
+                            kind = msg.get("T")
+                            symbol = msg.get("S")
+                            if kind not in {"t", "q", "b"} or symbol not in SYMBOLS:
+                                if kind == "error":
+                                    state["lastError"] = str(msg.get("msg", "Alpaca stream error"))[:180]
+                                    log.warning("Alpaca stream reported an error: %s", state["lastError"])
+                                continue
+                            prior = state["quotes"].get(symbol, {})
+                            quote = dict(prior.get("raw") or {})
+                            if kind == "t":
+                                quote.update({"price": msg.get("p"), "last_price": msg.get("p"), "trade_size": msg.get("s"), "timestamp": msg.get("t")})
+                            elif kind == "q":
+                                quote.update({"bid": msg.get("bp"), "ask": msg.get("ap"), "bid_size": msg.get("bs"), "ask_size": msg.get("as"), "quote_timestamp": msg.get("t")})
+                                if quote.get("price") is None and msg.get("bp") is not None and msg.get("ap") is not None:
+                                    quote["price"] = (float(msg["bp"]) + float(msg["ap"])) / 2
+                            elif kind == "b":
+                                quote.update({"open": msg.get("o"), "high": msg.get("h"), "low": msg.get("l"), "price": msg.get("c"), "last_price": msg.get("c"), "volume": msg.get("v"), "timestamp": msg.get("t"), "bar_interval": "1m"})
+                            state["quotes"][symbol] = {
+                                "symbol": symbol, "topic": kind, "receivedAt": now,
+                                "source": f"Alpaca {feed.upper()} real-time stream", "raw": quote
+                            }
+                            changed = True
+                        if changed:
+                            state["lastMessageAt"] = now
+                            state["connection"] = "streaming"
+                            if loop and loop.is_running():
+                                asyncio.run_coroutine_threadsafe(
+                                    broadcast({"type": "quotes", "data": state["quotes"], "status": public_status()}), loop
+                                )
+            asyncio.run(run_stream())
+        except Exception as exc:
+            state["connection"] = "reconnecting"
+            state["lastError"] = type(exc).__name__
+            log.warning("Alpaca stream disconnected (%s); retrying shortly", type(exc).__name__)
+            time.sleep(5)
+
+
 def public_status() -> dict:
     return {
         "provider": state["provider"],
@@ -185,13 +260,21 @@ def public_status() -> dict:
 async def startup():
     global loop, stream_thread
     loop = asyncio.get_running_loop()
-    if not APP_KEY or not APP_SECRET:
-        state["connection"] = "waiting_credentials"
-        log.warning("Webull credentials are not configured; no market data will be fabricated.")
+    if ALPACA_KEY and ALPACA_SECRET:
+        state["provider"] = "alpaca"
+        state["connection"] = "connecting"
+        stream_thread = threading.Thread(target=alpaca_stream_main, name="alpaca-websocket", daemon=True)
+        stream_thread.start()
         return
-    state["connection"] = "connecting"
-    stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
-    stream_thread.start()
+    if APP_KEY and APP_SECRET:
+        state["provider"] = "webull"
+        state["connection"] = "connecting"
+        stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
+        stream_thread.start()
+        return
+    state["provider"] = "alpaca"
+    state["connection"] = "waiting_credentials"
+    log.warning("Alpaca credentials are not configured; no market data will be fabricated.")
 
 
 
@@ -415,6 +498,28 @@ def quotes(symbols: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD"):
     requested = requested[:20]
     if not requested:
         return {"status": "error", "message": "ไม่มีสัญลักษณ์หุ้นที่ถูกต้อง", "quotes": [], "count": 0}
+
+    # Prefer actual Alpaca/Webull stream data when available; never label cached Yahoo data as live.
+    live_rows = []
+    for symbol in requested:
+        live = state["quotes"].get(symbol)
+        if live and live.get("raw"):
+            raw = live["raw"]
+            price = raw.get("price") or raw.get("last_price")
+            if price is not None:
+                live_rows.append({
+                    "symbol": symbol, "price": price, "bid": raw.get("bid"), "ask": raw.get("ask"),
+                    "volume": raw.get("volume"), "priceTime": raw.get("timestamp") or raw.get("quote_timestamp"),
+                    "receivedAt": live.get("receivedAt"), "source": live.get("source") or state["provider"],
+                    "stale": False
+                })
+    if live_rows:
+        return {
+            "status": "ok", "provider": state["provider"],
+            "message": f"ข้อมูลจากสตรีม {state['provider']} สำหรับหุ้นในรายการติดตามเท่านั้น",
+            "quotes": live_rows, "count": len(live_rows),
+            "streamStatus": public_status(), "updatedAt": datetime.now(timezone.utc).isoformat()
+        }
 
     fresh = {}
     now = time.time()
