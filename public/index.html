@@ -28,7 +28,7 @@ function connectMarketBridge(){
  if(marketBridgeStarted)return;marketBridgeStarted=true;
  fetch(MARKET_BRIDGE_URL+'/status',{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject()).then(s=>{marketStatus=s.connection==='streaming'?'รับข้อมูล Webull สด':s.connection==='connected'?'เชื่อม Webull แล้ว':'Webull: '+s.connection;renderMarketCards()}).catch(()=>{marketStatus='รอเปิดบริการข้อมูลสด';renderMarketCards()});
  const schedule=()=>{if(marketReconnectTimer)clearTimeout(marketReconnectTimer);marketReconnectTimer=setTimeout(open,5000)};
- const open=()=>{try{marketSocket=new WebSocket(MARKET_BRIDGE_URL.replace(/^http/,'ws')+'/stream');marketSocket.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.status){const s=m.status;marketStatus=s.connection==='streaming'?'รับข้อมูล Webull สด':s.connection==='connected'?'เชื่อม Webull แล้ว':'Webull: '+s.connection}if(m.data)marketQuotes=m.data;renderMarketCards()}catch(err){}};marketSocket.onclose=schedule;marketSocket.onerror=()=>{try{marketSocket.close()}catch(e){}}}catch(e){schedule()}};
+ const open=()=>{try{marketSocket=new WebSocket(MARKET_BRIDGE_URL.replace(/^http/,'ws')+'/stream');marketSocket.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.status){const s=m.status;marketStatus=s.connection==='streaming'?'รับข้อมูล Webull สด':s.connection==='connected'?'เชื่อม Webull แล้ว':'Webull: '+s.connection}if(m.data)marketQuotes=m.data;scanMarketAlerts();renderMarketCards()}catch(err){}};marketSocket.onclose=schedule;marketSocket.onerror=()=>{try{marketSocket.close()}catch(e){}}}catch(e){schedule()}};
  open();window.addEventListener('beforeunload',()=>{if(marketSocket)marketSocket.close()});
 }
 function formatUsd(v){const n=Number(v);return Number.isFinite(n)?'$'+n.toFixed(2):'—'}
@@ -53,6 +53,49 @@ function evaluateFastEntry(snapshot,bars){
  if(prior.length<5||price<=Math.max(...prior))return fail('ยังไม่ยืนยัน Breakout');
  return {eligible:true,reason:'ผ่านเกณฑ์ Fast Entry',spreadPct,targetPct:adaptiveProfitTarget({atrPct:snapshot.atrPct,relativeVolume:rv,momentumPct:change})};
 }
+
+
+let marketAlerts=[],alertCooldown={},alertNotificationReady=false;
+function alertNumber(raw,keys){const v=quoteField(raw,keys);const n=Number(v);return Number.isFinite(n)?n:NaN}
+function pushMarketAlert(key,item){
+ const now=Date.now();if(alertCooldown[key]&&now-alertCooldown[key]<600000)return;
+ alertCooldown[key]=now;marketAlerts.unshift({...item,at:now});marketAlerts=marketAlerts.slice(0,20);
+ if(alertNotificationReady&&'Notification'in window&&Notification.permission==='granted'){try{new Notification('BLESSING · '+item.kind,{body:item.symbol+' · '+item.message,tag:key})}catch(e){}}
+ renderAlertPanel();
+}
+function scanMarketAlerts(){
+ // หุ้น: แจ้งเฉพาะเมื่อ Webull ส่งข้อมูลครบและผ่าน FAST ENTRY จริง
+ for(const symbol of stockSymbols){
+  const q=marketQuotes[symbol];if(!q)continue;const raw=q.raw||q;
+  const price=alertNumber(raw,['price','last_price','lastprice','close','trade_price']);
+  const snapshot={provider:q.provider||raw.provider||'webull',price,
+   changePct:alertNumber(raw,['changePct','change_percent','priceChangePercent','changePercent','pct_change']),
+   relativeVolume:alertNumber(raw,['relativeVolume','relative_volume','rvol']),
+   bid:alertNumber(raw,['bid','bid_price','bidprice']),ask:alertNumber(raw,['ask','ask_price','askprice']),
+   volume:alertNumber(raw,['volume','total_volume','day_volume']),session:raw.session||q.session,
+   timestampMs:Number(q.timestampMs||q.receivedAt||raw.timestampMs||raw.timestamp||0),
+   atrPct:alertNumber(raw,['atrPct','atr_pct'])};
+  const bars=q.bars||raw.bars||raw.candles;
+  const result=evaluateFastEntry(snapshot,bars);
+  if(result.eligible)pushMarketAlert('stock:'+symbol,{kind:'หุ้นเข้าเป้า',symbol,message:'FAST ENTRY ผ่านเกณฑ์ · เป้าหมายปรับตามความผันผวน '+result.targetPct+'%',direction:'up'});
+ }
+ // คริปโต: ใช้ค่าเปลี่ยนแปลง 24 ชม. เป็นสัญญาณเฝ้าระวัง ไม่ใช่สัญญาณเข้าเทรด
+ for(const symbol of cryptoSymbols){
+  const candidates=['Binance','Bybit','OKX'].map(ex=>({ex,q:cryptoQuotes[ex]?.[symbol]})).filter(x=>x.q&&Date.now()-x.q.ts<60000&&Number.isFinite(x.q.change));
+  if(!candidates.length)continue;
+  const valid=candidates.filter(x=>x.q.bid>0&&x.q.ask>=x.q.bid&&((x.q.ask-x.q.bid)/x.q.last)*100<=0.5);
+  if(!valid.length)continue;
+  const best=valid.sort((a,b)=>b.q.change-a.q.change)[0];
+  if(best.q.change>=3)pushMarketAlert('crypto:'+symbol,{kind:'คริปโต Momentum',symbol:symbol.replace('USDT','')+'/USDT',message:'บวก '+best.q.change.toFixed(2)+'% ใน 24 ชม. · '+best.ex+' · Spread ผ่านเกณฑ์เบื้องต้น',direction:'up'});
+  else if(best.q.change<=-3)pushMarketAlert('crypto-down:'+symbol,{kind:'คริปโตเฝ้าระวัง',symbol:symbol.replace('USDT','')+'/USDT',message:'ติดลบ '+best.q.change.toFixed(2)+'% ใน 24 ชม. · '+best.ex,direction:'down'});
+ }
+}
+function renderAlertPanel(){
+ const el=document.getElementById('marketAlertRows');if(!el)return;
+ el.innerHTML=marketAlerts.length?marketAlerts.map(a=>'<div class="riskline"><span><b class="'+(a.direction==='down'?'negative':'positive')+'">'+esc(a.kind)+'</b> · '+esc(a.symbol)+'<div class="small muted">'+esc(a.message)+'</div></span><small class="muted">'+new Date(a.at).toLocaleTimeString('th-TH')+'</small></div>').join(''):'<div class="empty">ยังไม่พบสินทรัพย์ที่ผ่านเงื่อนไข · ระบบกำลังสแกนตลาด</div>';
+}
+function marketAlertPanel(){return '<div class="card section"><div class="heading"><div><h3>Market Alert · แจ้งเตือนสินทรัพย์เข้าเป้า</h3><div class="small muted">สแกนหุ้น Webull และคริปโตจาก Binance / Bybit / OKX</div></div><button class="secondary" onclick="enableMarketNotifications()">เปิดการแจ้งเตือน</button></div><div id="marketAlertRows"><div class="empty">กำลังสแกนตลาด...</div></div><div class="small muted" style="margin-top:8px">หุ้นจะแจ้งเมื่อข้อมูล Webull ครบและผ่าน FAST ENTRY; คริปโตใช้การเปลี่ยนแปลง 24 ชม. ≥ ±3% และ Spread ≤ 0.50% เป็นสัญญาณเฝ้าระวังเท่านั้น</div></div>'}
+async function enableMarketNotifications(){if(!('Notification'in window)){alert('เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน');return}const p=await Notification.requestPermission();alertNotificationReady=p==='granted';alert(p==='granted'?'เปิดการแจ้งเตือนแล้ว':'ยังไม่ได้อนุญาตการแจ้งเตือน')}
 
 function cryptoView(){
  return '<div class="heading"><div><h1>ตลาดคริปโต · Multi-Exchange</h1><div class="muted">เปรียบเทียบตลาด Spot จาก Binance · Bybit · OKX</div></div><span class="pill">PUBLIC MARKET DATA</span></div>'+
@@ -87,7 +130,7 @@ async function refreshCrypto(){
   fetch(urlBy,{cache:'no-store'}).then(r=>{if(!r.ok)throw Error('HTTP '+r.status);return r.json()}).then(data=>{if(data.retCode!==0)throw Error(data.retMsg||'API error');const map={};for(const x of data.result?.list||[]){if(cryptoSymbols.includes(x.symbol))map[x.symbol]={last:Number(x.lastPrice),bid:Number(x.bid1Price),ask:Number(x.ask1Price),change:Number(x.price24hPcnt)*100,ts:Number(data.time)||ts};}cryptoQuotes.Bybit=map;cryptoStatus.Bybit='เชื่อมต่อสำเร็จ'}).catch(e=>{cryptoStatus.Bybit='เชื่อมต่อไม่ได้';console.warn('Bybit public market data',e)}),
   fetch(urlOk,{cache:'no-store'}).then(r=>{if(!r.ok)throw Error('HTTP '+r.status);return r.json()}).then(data=>{if(data.code!=='0')throw Error(data.msg||'API error');const map={};for(const x of data.data||[]){const sym=String(x.instId||'').replace('-','');if(cryptoSymbols.includes(sym)){const last=Number(x.last),open=Number(x.open24h);map[sym]={last,bid:Number(x.bidPx),ask:Number(x.askPx),change:open>0?(last/open-1)*100:NaN,ts:Number(x.ts)||ts};}}cryptoQuotes.OKX=map;cryptoStatus.OKX='เชื่อมต่อสำเร็จ'}).catch(e=>{cryptoStatus.OKX='เชื่อมต่อไม่ได้';console.warn('OKX public market data',e)})
  ];
- await Promise.all(jobs);cryptoBusy=false;renderCryptoRows();
+ await Promise.all(jobs);cryptoBusy=false;scanMarketAlerts();renderCryptoRows();
  if(!cryptoTimer)cryptoTimer=setInterval(refreshCrypto,20000);
 }
 
@@ -96,7 +139,7 @@ function strategyPanel(){
 }
 
 function marketRows(){return '<div class="card section"><div class="heading"><div><h3>กระดานหุ้นสหรัฐฯ · NASDAQ / NYSE</h3><div class="small muted">ผู้ให้บริการข้อมูล: Webull Thailand OpenAPI · Nasdaq Basic</div></div><span class="pill">'+esc(marketStatus)+'</span></div><div class="tablewrap"><table><thead><tr><th>Symbol</th><th>ราคาล่าสุด (USD)</th><th>Bid</th><th>Ask</th><th>เวลารับข้อมูล</th></tr></thead><tbody>'+stockSymbols.map(s=>{const q=quoteDisplay(s);return '<tr><td><b>'+s+'</b></td><td>'+q.price+'</td><td>'+q.bid+'</td><td>'+q.ask+'</td><td>'+q.time+'</td></tr>'}).join('')+'</tbody></table></div><div class="small muted" style="margin-top:10px">แสดงเฉพาะข้อมูลที่ได้รับจาก Webull Bridge จริงเท่านั้น หากไม่มีข้อมูลจะคงเครื่องหมาย — ไว้</div></div>'}
-function renderMarketCards(){const el=document.getElementById('marketLiveMount');if(el)el.innerHTML=marketRows()}
+function renderMarketCards(){const el=document.getElementById('marketLiveMount');if(el)el.innerHTML=marketRows();renderAlertPanel()}
 function overview(){if(role==='member')return memberOverview();return '<div class="heading"><div><h1>ภาพรวมตลาดหุ้นสหรัฐฯ</h1><div class="muted">NASDAQ / NYSE · ข้อมูลจาก Webull OpenAPI</div></div><span class="pill">US EQUITIES</span></div><div class="grid"><div class="card metric"><label>ตลาด</label><strong style="font-size:18px">NASDAQ / NYSE</strong></div><div class="card metric"><label>ผู้ให้บริการ</label><strong style="font-size:18px">Webull</strong></div><div class="card metric"><label>สถานะข้อมูลจริง</label><strong style="font-size:17px">'+esc(marketStatus)+'</strong></div><div class="card metric"><label>Trading API</label><strong class="negative" style="font-size:17px">รอเชื่อมต่อ</strong></div></div><div id="marketLiveMount">'+marketRows()+'</div>'+strategyPanel()+'<div class="notice">ระบบจะไม่สร้างราคาหุ้นขึ้นเอง ข้อมูลราคาและกราฟจะแสดงเมื่อเชื่อม Webull OpenAPI และตรวจสอบสิทธิ์ข้อมูลจริงแล้ว</div>'}
 function memberOverview(){const p=window.BLESSING_AUTH?.profile||{};return '<div class="heading"><div><h1>พื้นที่สมาชิก</h1><div class="muted">บัญชีส่วนตัวและตลาดหุ้นสหรัฐฯ</div></div><span class="pill">MEMBER PORTAL</span></div><div class="grid"><div class="card metric"><label>ชื่อสมาชิก</label><strong style="font-size:18px">'+esc(p.display_name||p.email||'สมาชิก')+'</strong></div><div class="card metric"><label>สถานะบัญชี</label><strong class="positive" style="font-size:18px">ใช้งาน</strong></div><div class="card metric"><label>กระเป๋าจริง</label><strong id="memberBalance" style="font-size:17px">กำลังโหลด</strong></div><div class="card metric"><label>คำสั่งจริงในระบบ</label><strong id="memberTradeCount">กำลังโหลด</strong></div></div><div class="layout"><div class="card"><h3>ข้อมูลบัญชีของฉัน</h3><div class="riskline"><span>อีเมล</span><b>'+esc(p.email||'')+'</b></div><div class="riskline"><span>ประเภทบัญชี</span><b>สมาชิก</b></div><div class="riskline"><span>สิทธิ์ข้อมูล</span><b class="positive">เฉพาะข้อมูลของฉัน</b></div><div class="row"><span>เปลี่ยนรหัสผ่าน</span><button onclick="go(\'settings\')">ตั้งค่า</button></div></div><div class="card"><h3>รายการคำสั่งล่าสุด</h3><div id="memberRecent" class="empty">กำลังโหลดข้อมูลจากฐานข้อมูล...</div></div></div><div id="marketLiveMount">'+marketRows()+'</div>'}
 function membersView(){return '<div class="heading"><div><h1>จัดการสมาชิก</h1><div class="muted">รายชื่อจากฐานข้อมูลบัญชีจริง</div></div><span class="pill">ADMIN ONLY</span></div><div class="card"><h3>บัญชีสมาชิก</h3><div id="adminMembersTable" class="empty">กำลังโหลดรายชื่อจากฐานข้อมูล...</div></div><div class="notice">การสร้าง อนุมัติ หรือระงับบัญชีจะเปิดผ่าน API ฝั่งเซิร์ฟเวอร์ที่ตรวจสิทธิ์ Super Admin เท่านั้น</div>'}
