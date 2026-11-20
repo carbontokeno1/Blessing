@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import base64
 import hashlib
 import hmac
@@ -194,197 +195,162 @@ async def startup():
 
 
 
-# Read-only US stock momentum scanner. Credentials are server-side only.
-WEBULL_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.com")
-WEBULL_ACCESS_TOKEN = os.getenv("WEBULL_ACCESS_TOKEN", "")
-SCANNER_CACHE: dict[str, Any] = {"at": 0.0, "payload": None}
-SCANNER_CACHE_SECONDS = 20
-
-
-def webull_signature(path: str, params: dict, timestamp: str, nonce: str) -> str:
-    signing = {
-        **{str(k): str(v) for k, v in params.items()},
-        "x-app-key": APP_KEY,
-        "x-timestamp": timestamp,
-        "x-signature-algorithm": "HMAC-SHA1",
-        "x-signature-version": "1.0",
-        "x-signature-nonce": nonce,
-        "host": WEBULL_HOST,
-    }
-    raw = path + "&" + "&".join(f"{k}={signing[k]}" for k in sorted(signing))
-    encoded = urllib.parse.quote(raw, safe="")
-    digest = hmac.new((APP_SECRET + "&").encode(), encoded.encode(), hashlib.sha1).digest()
-    return base64.b64encode(digest).decode()
-
-
-def webull_screener(rank_type: str, direction: str) -> list[dict]:
-    path = "/market-data/screeners/gainers-losers/list"
-    params = {
-        "rank_type": rank_type,
-        "category": "US_STOCK",
-        "order": "CHANGE_RATIO",
-        "direction": direction,
-    }
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    nonce = uuid.uuid4().hex
-    headers = {
-        "Accept": "application/json",
-        "x-app-key": APP_KEY,
-        "x-timestamp": timestamp,
-        "x-signature": webull_signature(path, params, timestamp, nonce),
-        "x-signature-algorithm": "HMAC-SHA1",
-        "x-signature-version": "1.0",
-        "x-signature-nonce": nonce,
-        "x-version": "v3",
-        "x-access-token": WEBULL_ACCESS_TOKEN,
-    }
-    response = requests.get(f"https://{WEBULL_HOST}{path}", params=params, headers=headers, timeout=12)
-    response.raise_for_status()
-    payload = response.json()
-    if isinstance(payload, dict):
-        payload = payload.get("data", payload.get("list", []))
-        if isinstance(payload, dict):
-            payload = payload.get("list", payload.get("items", payload.get("data", [])))
-    return payload if isinstance(payload, list) else []
-
-
-SCANNER_LOCK = threading.Lock()
-SCANNER_CACHE: dict[str, Any] = {
-    "at": 0.0, "payload": None, "cursor": 0,
-    "rankings": {}, "lastError": None,
+# No-key experimental US stock scanner using Yahoo Finance public web endpoints.
+# Yahoo's endpoints are undocumented and may be delayed, rate-limited, changed, or blocked.
+# This is a read-only prototype, not a licensed real-time trading feed.
+YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; BlessingMarketResearch/1.0)",
+    "Accept": "application/json",
 }
-SCANNER_CYCLE = [
-    ("PRE_MARKET", "DESC", "PRE-MARKET GAINERS"),
-    ("PRE_MARKET", "ASC", "PRE-MARKET LOSERS"),
-    ("MIN_3", "DESC", "3-MIN GAINERS"),
-    ("MIN_3", "ASC", "3-MIN LOSERS"),
-    ("MIN_5", "DESC", "5-MIN GAINERS"),
-    ("MIN_5", "ASC", "5-MIN LOSERS"),
-]
+SCANNER_CACHE: dict[str, Any] = {"at": 0.0, "payload": None}
+SCANNER_CACHE_SECONDS = 25
+SCANNER_LOCK = threading.Lock()
 
 
-def row_symbol(row: dict) -> str:
-    ticker = row.get("ticker") if isinstance(row.get("ticker"), dict) else {}
-    return str(row.get("symbol") or row.get("ticker_symbol") or ticker.get("symbol") or ticker.get("ticker_symbol") or "").upper()
+def yahoo_json(url: str, params: dict | None = None) -> dict:
+    response = requests.get(url, params=params, headers=YAHOO_HEADERS, timeout=12)
+    response.raise_for_status()
+    return response.json()
 
 
-def row_number(row: dict, *keys: str) -> float:
-    for key in keys:
-        value = row.get(key)
-        if value is not None:
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                continue
-    return 0.0
+def yahoo_screener(scr_id: str, count: int = 60) -> list[dict]:
+    payload = yahoo_json(
+        "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved",
+        {"formatted": "false", "scrIds": scr_id, "count": count, "start": 0, "region": "US", "lang": "en-US"},
+    )
+    return payload.get("finance", {}).get("result", [{}])[0].get("quotes", []) or []
+
+
+def yahoo_intraday(symbol: str) -> dict:
+    now = int(time.time())
+    payload = yahoo_json(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol, safe='')}",
+        {"period1": now - 86400, "period2": now, "interval": "1m", "includePrePost": "true", "events": "div,splits"},
+    )
+    result = payload.get("chart", {}).get("result") or []
+    if not result:
+        return {}
+    item = result[0]
+    timestamps = item.get("timestamp") or []
+    quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
+    closes = quote.get("close") or []
+    points = [(int(t), float(c)) for t, c in zip(timestamps, closes) if c is not None]
+    if not points:
+        return {}
+    latest_t, latest = points[-1]
+    def momentum(minutes: int) -> float | None:
+        cutoff = latest_t - minutes * 60
+        prior = next((p for p in reversed(points[:-1]) if p[0] <= cutoff), None)
+        return round((latest / prior[1] - 1) * 100, 3) if prior and prior[1] else None
+    return {
+        "lastPrice": latest,
+        "momentum3m": momentum(3),
+        "momentum5m": momentum(5),
+        "priceTime": datetime.fromtimestamp(latest_t, timezone.utc).isoformat(),
+        "barCount": len(points),
+    }
 
 
 def build_momentum_scanner() -> dict:
-    missing = [name for name, value in (
-        ("WEBULL_APP_KEY", APP_KEY), ("WEBULL_APP_SECRET", APP_SECRET),
-        ("WEBULL_ACCESS_TOKEN", WEBULL_ACCESS_TOKEN),
-    ) if not value]
-    if missing:
-        return {
-            "provider": "Webull OpenAPI Top Gainers/Losers",
-            "status": "waiting_credentials",
-            "message": "รอตั้งค่า Webull API credentials ใน Render",
-            "missing": missing, "scanned": 0, "candidates": [],
-            "rankings": [], "refreshEverySeconds": 5,
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-        }
+    updated = datetime.now(timezone.utc).isoformat()
+    try:
+        # Screeners discover the current market leaders without a user API key.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            gainers_f = pool.submit(yahoo_screener, "day_gainers", 60)
+            losers_f = pool.submit(yahoo_screener, "day_losers", 60)
+            active_f = pool.submit(yahoo_screener, "most_actives", 60)
+            gainers, losers, actives = gainers_f.result(), losers_f.result(), active_f.result()
 
-    now = time.time()
-    if SCANNER_CACHE["payload"] is not None and now - SCANNER_CACHE["at"] < 4.5:
-        return SCANNER_CACHE["payload"]
-
-    with SCANNER_LOCK:
-        now = time.time()
-        if SCANNER_CACHE["payload"] is not None and now - SCANNER_CACHE["at"] < 4.5:
-            return SCANNER_CACHE["payload"]
-        rank_type, direction, label = SCANNER_CYCLE[SCANNER_CACHE["cursor"] % len(SCANNER_CYCLE)]
-        SCANNER_CACHE["cursor"] += 1
-        try:
-            rows = webull_screener(rank_type, direction)
-            normalized = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                symbol = row_symbol(row)
+        by_symbol: dict[str, dict] = {}
+        for label, rows in (("DAY GAINERS", gainers), ("DAY LOSERS", losers), ("MOST ACTIVE", actives)):
+            for rank, row in enumerate(rows, 1):
+                symbol = str(row.get("symbol") or "").upper()
                 if not symbol:
                     continue
-                item = {
+                item = by_symbol.setdefault(symbol, {
                     "symbol": symbol,
-                    "name": row.get("name") or row.get("company_name") or symbol,
-                    "rankType": rank_type,
-                    "direction": direction,
-                    "rankLabel": label,
-                    "price": row_number(row, "price", "close", "latest_price", "last_price"),
-                    "changePct": row_number(row, "change_ratio", "change_percent", "change_ratio_pct") * (100 if abs(row_number(row, "change_ratio", "change_percent")) <= 1 else 1),
-                    "volume": int(row_number(row, "volume", "turnover_volume")),
-                    "relativeVolume": row_number(row, "relative_volume_10d", "rvol_10d"),
-                    "rank": row.get("rank") or row.get("rank_no"),
-                    "raw": row,
-                }
-                normalized.append(item)
-            SCANNER_CACHE["rankings"][f"{rank_type}:{direction}"] = {
-                "label": label, "rankType": rank_type, "direction": direction,
-                "rows": normalized[:200], "updatedAt": datetime.now(timezone.utc).isoformat(),
-            }
-            SCANNER_CACHE["lastError"] = None
-        except Exception as exc:
-            SCANNER_CACHE["lastError"] = f"{type(exc).__name__}: {str(exc)[:180]}"
-
-        merged: dict[str, dict] = {}
-        for ranking in SCANNER_CACHE["rankings"].values():
-            for row in ranking["rows"]:
-                symbol = row["symbol"]
-                entry = merged.setdefault(symbol, {
-                    "symbol": symbol, "name": row["name"], "price": row["price"],
-                    "changePct": row["changePct"], "volume": row["volume"],
-                    "relativeVolume": row["relativeVolume"], "rankings": [],
-                    "gainerHits": 0, "loserHits": 0,
+                    "name": row.get("shortName") or row.get("longName") or symbol,
+                    "price": row.get("regularMarketPrice"),
+                    "changePct": row.get("regularMarketChangePercent"),
+                    "volume": row.get("regularMarketVolume") or 0,
+                    "rankings": [],
+                    "gainerHits": 0,
+                    "loserHits": 0,
+                    "activeHits": 0,
                 })
-                entry.update({k: row[k] for k in ("price", "changePct", "volume", "relativeVolume") if row.get(k)})
-                entry["rankings"].append(row["rankLabel"])
-                if row["direction"] == "DESC":
-                    entry["gainerHits"] += 1
+                item["rankings"].append(label + " #" + str(rank))
+                if label == "DAY GAINERS":
+                    item["gainerHits"] += 1
+                elif label == "DAY LOSERS":
+                    item["loserHits"] += 1
                 else:
-                    entry["loserHits"] += 1
+                    item["activeHits"] += 1
+
+        symbols = list(by_symbol.keys())[:100]
+        def enrich(symbol: str):
+            try:
+                return symbol, yahoo_intraday(symbol), None
+            except Exception as exc:
+                return symbol, {}, type(exc).__name__
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            enriched = list(pool.map(enrich, symbols))
 
         candidates = []
-        for item in merged.values():
-            # Loser appearances are retained as context, not mislabeled as buy signals.
-            if item["gainerHits"] == 0:
-                continue
-            score = min(100, round(
-                max(item["changePct"], 0) * 4
-                + min(item["relativeVolume"], 5) * 8
-                + item["gainerHits"] * 8
-                - item["loserHits"] * 15
-            ))
+        for symbol, intraday, error in enriched:
+            item = by_symbol[symbol]
+            item["momentum3m"] = intraday.get("momentum3m")
+            item["momentum5m"] = intraday.get("momentum5m")
+            item["priceTime"] = intraday.get("priceTime")
+            item["relativeVolume"] = None
+            item["intradayStatus"] = "available" if intraday else ("unavailable" if error else "no_intraday_bars")
+            price = item.get("price") or intraday.get("lastPrice") or 0
+            item["price"] = price
+            m3 = item["momentum3m"] or 0
+            m5 = item["momentum5m"] or 0
+            score = max(0, min(100, round(
+                max(float(item.get("changePct") or 0), 0) * 2
+                + max(m3, 0) * 8
+                + max(m5, 0) * 5
+                + item["activeHits"] * 5
+                - item["loserHits"] * 20
+            )))
             item["score"] = score
             item["signal"] = "WATCH" if item["loserHits"] else ("MOMENTUM" if score >= 35 else "EARLY")
             item["riskFlag"] = "ALSO_IN_LOSERS" if item["loserHits"] else None
             candidates.append(item)
-        candidates.sort(key=lambda x: (x["score"], x["changePct"]), reverse=True)
-        payload = {
-            "provider": "Webull OpenAPI Top Gainers/Losers",
-            "status": "live" if SCANNER_CACHE["rankings"] and not SCANNER_CACHE["lastError"] else ("partial" if SCANNER_CACHE["rankings"] else "error"),
-            "message": f"อัปเดตชุดล่าสุด: {label} · หมุนสแกน 6 รายการ",
-            "scanned": len(merged), "candidateCount": len(candidates),
-            "candidates": candidates[:200],
-            "rankings": [{
-                "key": key, "label": value["label"], "count": len(value["rows"]),
-                "updatedAt": value["updatedAt"],
-            } for key, value in SCANNER_CACHE["rankings"].items()],
-            "lastError": SCANNER_CACHE["lastError"],
+
+        candidates.sort(key=lambda x: (x["score"], float(x.get("changePct") or 0)), reverse=True)
+        return {
+            "provider": "Yahoo Finance public endpoints (unofficial; no API key)",
+            "status": "experimental" if candidates else "empty",
+            "message": "ทดลองสแกนจาก Day Gainers / Day Losers / Most Active · แหล่งข้อมูลไม่เป็นทางการและอาจล่าช้า",
+            "scanned": len(by_symbol),
+            "candidateCount": len(candidates),
+            "candidates": candidates[:100],
+            "rankings": [
+                {"key": "day_gainers", "label": "DAY GAINERS", "count": len(gainers)},
+                {"key": "day_losers", "label": "DAY LOSERS", "count": len(losers)},
+                {"key": "most_actives", "label": "MOST ACTIVE", "count": len(actives)},
+            ],
+            "lastError": None,
             "refreshEverySeconds": 5,
-            "upstreamCycleSeconds": 30,
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "upstreamRefreshSeconds": SCANNER_CACHE_SECONDS,
+            "dataDisclaimer": "Unofficial public endpoints; data may be delayed, incomplete, rate-limited, or unavailable. Not for execution or redistribution.",
+            "updatedAt": updated,
         }
-        SCANNER_CACHE.update({"at": time.time(), "payload": payload})
-        return payload
+    except Exception as exc:
+        return {
+            "provider": "Yahoo Finance public endpoints (unofficial; no API key)",
+            "status": "error",
+            "message": "แหล่งข้อมูลทดลองไม่พร้อมใช้งาน · อาจถูกจำกัดการเรียก",
+            "scanned": 0,
+            "candidateCount": 0,
+            "candidates": [],
+            "rankings": [],
+            "lastError": f"{type(exc).__name__}: {str(exc)[:180]}",
+            "refreshEverySeconds": 5,
+            "updatedAt": updated,
+        }
 
 
 @app.get("/scanner")
@@ -392,9 +358,13 @@ def scanner():
     now = time.time()
     if SCANNER_CACHE["payload"] is not None and now - SCANNER_CACHE["at"] < SCANNER_CACHE_SECONDS:
         return SCANNER_CACHE["payload"]
-    payload = build_momentum_scanner()
-    SCANNER_CACHE.update({"at": now, "payload": payload})
-    return payload
+    with SCANNER_LOCK:
+        now = time.time()
+        if SCANNER_CACHE["payload"] is not None and now - SCANNER_CACHE["at"] < SCANNER_CACHE_SECONDS:
+            return SCANNER_CACHE["payload"]
+        payload = build_momentum_scanner()
+        SCANNER_CACHE.update({"at": time.time(), "payload": payload})
+        return payload
 
 
 @app.get("/health")
