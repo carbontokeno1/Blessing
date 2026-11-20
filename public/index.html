@@ -20,7 +20,8 @@
 <script>
 const $=id=>document.getElementById(id);let role='admin',active='overview',members=[],marketQuotes={},marketStatus='รอเชื่อม Webull OpenAPI';
 window.BLESSING_SET_CONTEXT=(nextRole,nextActive)=>{role=nextRole;if(nextActive)active=nextActive};
-window.BLESSING_RENDER=()=>render();const money=n=>'฿'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});const names={overview:'ภาพรวมตลาด',stocks:'ตลาดหุ้น FAST',crypto:'ตลาดคริปโต',members:'จัดการสมาชิก',paper:'ทดสอบกลยุทธ์',live:'เทรดเงินจริง',history:'ประวัติ',settings:'ตั้งค่า'};
+window.BLESSING_RENDER=()=>render();
+window.BLESSING_GET_ACTIVE=()=>active;const money=n=>'฿'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});const names={overview:'ภาพรวมตลาด',stocks:'ตลาดหุ้น FAST',crypto:'ตลาดคริปโต',members:'จัดการสมาชิก',paper:'ทดสอบกลยุทธ์',live:'เทรดเงินจริง',history:'ประวัติ',settings:'ตั้งค่า'};
 const stockSymbols=['AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','AMD'];
 const STRATEGY_CONFIG=Object.freeze({entryMode:'FAST',profitMode:'ADAPTIVE',minChangePct:3,minRelativeVolume:2,maxSpreadPct:0.5,minPrice:2,minVolume:100000,minTargetPct:30,maxTargetPct:50,allowedSessions:['PRE_MARKET','CORE','AFTER_HOURS']});
 const cryptoSymbols=['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','DOGEUSDT'];
