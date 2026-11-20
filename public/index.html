@@ -108,12 +108,13 @@ function marketAlertPanel(){return '<div class="card section"><div class="headin
 async function enableMarketNotifications(){if(!('Notification'in window)){alert('เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน');return}const p=await Notification.requestPermission();alertNotificationReady=p==='granted';alert(p==='granted'?'เปิดการแจ้งเตือนแล้ว':'ยังไม่ได้อนุญาตการแจ้งเตือน')}
 
 
-let cryptoSockets={},cryptoReconnect={},cryptoTape={},cryptoStreamActive=false,cryptoTargetPct=3,cryptoNearPct=2,cryptoImpulsePct=0.25;
-function cryptoWsStatus(ex,status){cryptoStatus[ex]=status;const el=document.getElementById('cryptoStatusRow');if(el)renderCryptoRows()}
+let cryptoSockets={},cryptoReconnect={},cryptoTape={},cryptoHeartbeat={},cryptoStreamActive=false,cryptoTargetPct=3,cryptoNearPct=2,cryptoImpulsePct=0.25;
+function cryptoWsStatus(ex,status){cryptoStatus[ex]=status;renderCryptoRows()}
+function cryptoSetLive(ex){cryptoStatus[ex]='REAL-TIME · รับข้อมูลแล้ว';renderCryptoRows()}
 function cryptoRemember(ex,sym,q){
  if(!cryptoQuotes[ex])cryptoQuotes[ex]={};cryptoQuotes[ex][sym]=q;
  const key=ex+':'+sym,arr=cryptoTape[key]||(cryptoTape[key]=[]);
- if(Number.isFinite(q.last)&&q.last>0){arr.push({t:Date.now(),p:q.last});while(arr.length&&Date.now()-arr[0].t>360000)arr.shift();}
+ if(Number.isFinite(q.last)&&q.last>0){arr.push({t:Date.now(),p:q.last});while(arr.length&&Date.now()-arr[0].t>360000)arr.shift();cryptoSetLive(ex)}
  scanMarketAlerts();renderCryptoRows();
 }
 function cryptoWindowMove(ex,sym,seconds){
@@ -148,18 +149,18 @@ function startCryptoStreams(){
  const retry=(ex,open)=>{clearTimeout(cryptoReconnect[ex]);cryptoReconnect[ex]=setTimeout(open,5000)};
  const openBinance=()=>{
   try{const streams=symbols.map(s=>s.toLowerCase()+'@ticker').join('/');const ws=new WebSocket('wss://stream.binance.com/stream?streams='+streams);cryptoSockets.Binance=ws;cryptoWsStatus('Binance','กำลังเชื่อม WebSocket');
-   ws.onopen=()=>cryptoWsStatus('Binance','REAL-TIME · เชื่อมแล้ว');
+   ws.onopen=()=>cryptoWsStatus('Binance','เชื่อม WebSocket แล้ว · รอราคา');
    ws.onmessage=e=>{try{const d=JSON.parse(e.data).data;if(!d?.s||!symbols.includes(d.s))return;cryptoRemember('Binance',d.s,{last:Number(d.c),bid:Number(d.b),ask:Number(d.a),change:Number(d.P),volume:Number(d.v),turnover:Number(d.q),ts:Number(d.E)||Date.now()})}catch(err){}};
-   ws.onerror=()=>cryptoWsStatus('Binance','สตรีมมีปัญหา');
+   ws.onerror=()=>{cryptoWsStatus('Binance','สตรีมมีปัญหา · กำลังเชื่อมใหม่');try{ws.close()}catch(e){}};
    ws.onclose=()=>{cryptoWsStatus('Binance','กำลังเชื่อมใหม่');if(cryptoStreamActive)retry('Binance',openBinance)};
   }catch(e){cryptoWsStatus('Binance','เชื่อมต่อไม่ได้');if(cryptoStreamActive)retry('Binance',openBinance)}
  };
  const openBybit=()=>{
   try{const ws=new WebSocket('wss://stream.bybit.com/v5/public/spot');cryptoSockets.Bybit=ws;cryptoWsStatus('Bybit','กำลังเชื่อม WebSocket');
-   ws.onopen=()=>{cryptoWsStatus('Bybit','REAL-TIME · เชื่อมแล้ว');ws.send(JSON.stringify({op:'subscribe',args:symbols.map(s=>'tickers.'+s)}));};
+   ws.onopen=()=>{cryptoWsStatus('Bybit','เชื่อม WebSocket แล้ว · สมัครรับข้อมูล');ws.send(JSON.stringify({op:'subscribe',args:symbols.map(s=>'tickers.'+s)}));clearInterval(cryptoHeartbeat.Bybit);cryptoHeartbeat.Bybit=setInterval(()=>{if(ws.readyState===1)ws.send(JSON.stringify({op:'ping'}))},20000)};
    ws.onmessage=e=>{try{const d=JSON.parse(e.data);if(d.op==='ping'){ws.send(JSON.stringify({op:'pong'}));return}const x=d.data;if(!x)return;const list=Array.isArray(x)?x:[x];for(const q of list){if(!symbols.includes(q.symbol))continue;cryptoRemember('Bybit',q.symbol,{last:Number(q.lastPrice),bid:Number(q.bid1Price),ask:Number(q.ask1Price),change:Number(q.price24hPcnt)*100,volume:Number(q.volume24h),turnover:Number(q.turnover24h),ts:Number(d.ts)||Date.now()})}}catch(err){}};
-   ws.onerror=()=>cryptoWsStatus('Bybit','สตรีมมีปัญหา');
-   ws.onclose=()=>{cryptoWsStatus('Bybit','กำลังเชื่อมใหม่');if(cryptoStreamActive)retry('Bybit',openBybit)};
+   ws.onerror=()=>{cryptoWsStatus('Bybit','สตรีมมีปัญหา · กำลังเชื่อมใหม่');try{ws.close()}catch(e){}};
+   ws.onclose=()=>{clearInterval(cryptoHeartbeat.Bybit);cryptoWsStatus('Bybit','กำลังเชื่อมใหม่');if(cryptoStreamActive)retry('Bybit',openBybit)};
   }catch(e){cryptoWsStatus('Bybit','เชื่อมต่อไม่ได้');if(cryptoStreamActive)retry('Bybit',openBybit)}
  };
  const openOkx=()=>{
@@ -173,7 +174,7 @@ function startCryptoStreams(){
  };
  openBinance();openBybit();openOkx();
 }
-function stopCryptoStreams(){cryptoStreamActive=false;for(const ex of ['Binance','Bybit','OKX']){clearTimeout(cryptoReconnect[ex]);try{cryptoSockets[ex]?.close()}catch(e){}cryptoSockets[ex]=null}}
+function stopCryptoStreams(){cryptoStreamActive=false;for(const ex of ['Binance','Bybit','OKX']){clearTimeout(cryptoReconnect[ex]);clearInterval(cryptoHeartbeat[ex]);try{cryptoSockets[ex]?.close()}catch(e){}cryptoSockets[ex]=null;cryptoStatus[ex]='หยุดสตรีมเมื่อออกจากหน้า'}}
 
 function cryptoView(){
  return '<div class="heading"><div><h1>ตลาดคริปโต · Multi-Exchange</h1><div class="muted">วิเคราะห์ราคา Spot จาก Binance · Bybit · OKX พร้อมเปิด Binance เพื่อยืนยันคำสั่งเอง</div></div><span class="pill">PUBLIC MARKET DATA</span></div>'+
@@ -197,7 +198,7 @@ function renderCryptoRows(){
  }}
  rows.innerHTML=out.join('');
  const updated=document.getElementById('cryptoUpdated');if(updated){const stamps=Object.values(cryptoQuotes).flatMap(x=>Object.values(x)).map(x=>x.ts);updated.textContent=stamps.length?'อัปเดต '+new Date(Math.max(...stamps)).toLocaleTimeString('th-TH'):'ยังไม่มีข้อมูล';}
- const st=document.getElementById('cryptoStatusRow');if(st)st.innerHTML=['Binance','Bybit','OKX'].map(ex=>'<div class="card"><div class="riskline"><b>'+ex+'</b><span class="status '+(cryptoStatus[ex]==='เชื่อมต่อสำเร็จ'?'':'pending')+'">'+cryptoStatus[ex]+'</span></div></div>').join('');
+ const st=document.getElementById('cryptoStatusRow');if(st)st.innerHTML=['Binance','Bybit','OKX'].map(ex=>{const live=String(cryptoStatus[ex]||'').includes('REAL-TIME')||cryptoStatus[ex]==='เชื่อมต่อสำเร็จ';return '<div class="card"><div class="riskline"><b>'+ex+'</b><span class="status '+(live?'':'pending')+'">'+cryptoStatus[ex]+'</span></div></div>'}).join('');
 }
 async function refreshCrypto(){
  if(cryptoBusy)return;cryptoBusy=true;
