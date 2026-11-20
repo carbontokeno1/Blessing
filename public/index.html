@@ -587,19 +587,29 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb = createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
 const gate=document.getElementById('authGate'), form=document.getElementById('authForm'), msg=document.getElementById('authMessage'), submit=document.getElementById('authSubmit');
 function say(t){const m=document.getElementById('authMessage');if(m)m.textContent=t}
+let authEntryPromise=null;
 async function enter(session){
  if(!session?.user){gate.style.display='grid';return}
- const {data:profile,error}=await sb.from('profiles').select('email,display_name,role,status').eq('user_id',session.user.id).maybeSingle();
- if(error){say('ตรวจสอบสิทธิ์ไม่สำเร็จ กรุณาลองใหม่');await sb.auth.signOut();return}
- if(!profile||profile.status!=='active'||!['super_admin','admin','member'].includes(profile.role)){say('บัญชียังไม่ได้รับอนุมัติหรือถูกระงับ');await sb.auth.signOut();return}
- window.BLESSING_AUTH={client:sb,user:session.user,profile};
- role=profile.role==='member'?'member':'admin';
- const userbox=document.querySelector('.userbox');
- if(userbox)userbox.innerHTML='<span class="pill">'+(role==='admin'?'ADMIN WORKSPACE':'MEMBER WORKSPACE')+'</span><div class="avatar">'+(profile.display_name||profile.email||'U').slice(0,1).toUpperCase()+'</div><div><b>'+((profile.display_name||profile.email||'สมาชิก').replace(/[<>]/g,''))+'</b><div class="small muted">'+profile.role.toUpperCase()+'</div></div><button class="secondary" id="signOutBtn">ออกจากระบบ</button>';
- document.getElementById('signOutBtn')?.addEventListener('click',async()=>{await sb.auth.signOut();location.reload()});
- gate.style.display='none';
- if(role==='member'&&['members','live'].includes(active))active='overview';
- render();
+ if(authEntryPromise)return authEntryPromise;
+ authEntryPromise=(async()=>{
+  try{
+   const {data:profile,error}=await sb.from('profiles').select('email,display_name,role,status').eq('user_id',session.user.id).maybeSingle();
+   if(error){gate.style.display='grid';say('ตรวจสอบสิทธิ์ไม่สำเร็จ: '+error.message);return}
+   if(!profile||profile.status!=='active'||!['super_admin','admin','member'].includes(profile.role)){
+    gate.style.display='grid';say('บัญชียังไม่ได้รับอนุมัติหรือถูกระงับ กรุณาติดต่อผู้ดูแลระบบ');await sb.auth.signOut();return
+   }
+   window.BLESSING_AUTH={client:sb,user:session.user,profile};
+   role=profile.role==='member'?'member':'admin';
+   const userbox=document.querySelector('.userbox');
+   if(userbox)userbox.innerHTML='<span class="pill">'+(role==='admin'?'ADMIN WORKSPACE':'MEMBER WORKSPACE')+'</span><div class="avatar">'+(profile.display_name||profile.email||'U').slice(0,1).toUpperCase()+'</div><div><b>'+((profile.display_name||profile.email||'สมาชิก').replace(/[<>]/g,''))+'</b><div class="small muted">'+profile.role.toUpperCase()+'</div></div><button class="secondary" id="signOutBtn">ออกจากระบบ</button>';
+   document.getElementById('signOutBtn')?.addEventListener('click',async()=>{await sb.auth.signOut();location.reload()});
+   if(role==='member'&&['members','live'].includes(active))active='overview';
+   try{render()}catch(renderError){console.error('Blessing app render failed',renderError);gate.style.display='grid';say('เข้าสู่ระบบแล้ว แต่หน้าแอปมีข้อผิดพลาด: '+(renderError?.message||'กรุณาลองใหม่'));return}
+   gate.style.display='none';
+  }catch(err){console.error('Blessing authentication startup failed',err);gate.style.display='grid';say('เริ่มต้นระบบไม่สำเร็จ: '+(err?.message||'ตรวจสอบการเชื่อมต่อแล้วลองใหม่'))}
+  finally{authEntryPromise=null}
+ })();
+ return authEntryPromise;
 }
 let recoveryMode=location.hash.includes('type=recovery')||location.search.includes('code=');
 document.addEventListener('click',e=>{
