@@ -18,7 +18,7 @@ let marketSocket=null,marketReconnectTimer=null,marketBridgeStarted=false;
 
 function nav(){let keys=role==='admin'?['overview','crypto','members','paper','live','history','settings']:['overview','crypto','paper','live','history','settings'];$('tabs').innerHTML=keys.map(k=>'<button class="tab '+(active===k?'active':'')+'" onclick="go(\''+k+'\')">'+names[k]+'</button>').join('')}
 function go(k){active=k;render()}
-function render(){nav();let v=$('view');if(active==='overview'){v.innerHTML=overview();if(role==='member')loadMemberData()}if(active==='crypto'){v.innerHTML=cryptoView();refreshCrypto()}if(active==='members'){v.innerHTML=membersView();if(role==='admin')loadAdminMembers()}if(active==='paper')v.innerHTML=paperView();if(active==='live')v.innerHTML=liveView();if(active==='history'){v.innerHTML=historyView();loadHistory()}if(active==='settings')v.innerHTML=settingsView();renderMarketCards()} async function loadMemberData(){const sb=window.BLESSING_AUTH?.client;if(!sb)return;const [w,t]=await Promise.all([sb.from('wallets').select('currency,balance').order('currency'),sb.from('trades').select('id,mode,symbol,side,quantity,price,status,created_at').order('created_at',{ascending:false}).limit(5)]);const b=document.getElementById('memberBalance'),n=document.getElementById('memberTradeCount'),r=document.getElementById('memberRecent');if(b)b.textContent=w.error?'โหลดไม่ได้':(w.data?.length?w.data.map(x=>Number(x.balance).toLocaleString('en-US')+' '+x.currency).join(' / '):'ยังไม่มีข้อมูล');if(n)n.textContent=t.error?'—':String(t.data?.length||0);if(r)r.innerHTML=t.error?'โหลดข้อมูลไม่สำเร็จ':(t.data?.length?t.data.map(x=>'<div class=\'row\'><span>'+esc(x.side)+' '+esc(x.symbol)+' · '+esc(x.mode)+'</span><b>'+Number(x.quantity).toLocaleString()+'</b></div>').join(''):'ยังไม่มีรายการเทรด')}
+function render(){nav();let v=$('view');if(active==='overview'){v.innerHTML=overview();if(role==='member')loadMemberData()}if(active==='crypto'){v.innerHTML=cryptoView();refreshCrypto();startCryptoStreams()}else if(cryptoStreamActive)stopCryptoStreams()if(active==='members'){v.innerHTML=membersView();if(role==='admin')loadAdminMembers()}if(active==='paper')v.innerHTML=paperView();if(active==='live')v.innerHTML=liveView();if(active==='history'){v.innerHTML=historyView();loadHistory()}if(active==='settings')v.innerHTML=settingsView();renderMarketCards()} async function loadMemberData(){const sb=window.BLESSING_AUTH?.client;if(!sb)return;const [w,t]=await Promise.all([sb.from('wallets').select('currency,balance').order('currency'),sb.from('trades').select('id,mode,symbol,side,quantity,price,status,created_at').order('created_at',{ascending:false}).limit(5)]);const b=document.getElementById('memberBalance'),n=document.getElementById('memberTradeCount'),r=document.getElementById('memberRecent');if(b)b.textContent=w.error?'โหลดไม่ได้':(w.data?.length?w.data.map(x=>Number(x.balance).toLocaleString('en-US')+' '+x.currency).join(' / '):'ยังไม่มีข้อมูล');if(n)n.textContent=t.error?'—':String(t.data?.length||0);if(r)r.innerHTML=t.error?'โหลดข้อมูลไม่สำเร็จ':(t.data?.length?t.data.map(x=>'<div class=\'row\'><span>'+esc(x.side)+' '+esc(x.symbol)+' · '+esc(x.mode)+'</span><b>'+Number(x.quantity).toLocaleString()+'</b></div>').join(''):'ยังไม่มีรายการเทรด')}
 const MARKET_BRIDGE_URL='https://blessing-webull-realtime.onrender.com';
 
 function quoteField(raw,keys){if(!raw||typeof raw!=='object')return null;for(const [k,v] of Object.entries(raw)){if(keys.includes(k.toLowerCase())&&v!==null&&v!==undefined&&v!=='')return v}for(const v of Object.values(raw)){if(v&&typeof v==='object'){const found=quoteField(v,keys);if(found!==null)return found}}return null}
@@ -97,11 +97,79 @@ function renderAlertPanel(){
 function marketAlertPanel(){return '<div class="card section"><div class="heading"><div><h3>Market Alert · แจ้งเตือนสินทรัพย์เข้าเป้า</h3><div class="small muted">สแกนหุ้น Webull และคริปโตจาก Binance / Bybit / OKX</div></div><button class="secondary" onclick="enableMarketNotifications()">เปิดการแจ้งเตือน</button></div><div id="marketAlertRows"><div class="empty">กำลังสแกนตลาด...</div></div><div class="small muted" style="margin-top:8px">หุ้นจะแจ้งเมื่อข้อมูล Webull ครบและผ่าน FAST ENTRY; คริปโตใช้การเปลี่ยนแปลง 24 ชม. ≥ ±3% และ Spread ≤ 0.50% เป็นสัญญาณเฝ้าระวังเท่านั้น</div></div>'}
 async function enableMarketNotifications(){if(!('Notification'in window)){alert('เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน');return}const p=await Notification.requestPermission();alertNotificationReady=p==='granted';alert(p==='granted'?'เปิดการแจ้งเตือนแล้ว':'ยังไม่ได้อนุญาตการแจ้งเตือน')}
 
+
+let cryptoSockets={},cryptoReconnect={},cryptoTape={},cryptoStreamActive=false,cryptoTargetPct=3,cryptoNearPct=2,cryptoImpulsePct=0.25;
+function cryptoWsStatus(ex,status){cryptoStatus[ex]=status;const el=document.getElementById('cryptoStatusRow');if(el)renderCryptoRows()}
+function cryptoRemember(ex,sym,q){
+ if(!cryptoQuotes[ex])cryptoQuotes[ex]={};cryptoQuotes[ex][sym]=q;
+ const key=ex+':'+sym,arr=cryptoTape[key]||(cryptoTape[key]=[]);
+ if(Number.isFinite(q.last)&&q.last>0){arr.push({t:Date.now(),p:q.last});while(arr.length&&Date.now()-arr[0].t>360000)arr.shift();}
+ scanMarketAlerts();renderCryptoRows();
+}
+function cryptoWindowMove(ex,sym,seconds){
+ const a=cryptoTape[ex+':'+sym]||[];if(a.length<2)return null;
+ const now=Date.now(),last=a[a.length-1],old=a.find(x=>x.t<=now-seconds*1000);
+ return old&&old.p>0?(last.p/old.p-1)*100:null;
+}
+function cryptoRadarItems(){
+ const items=[];
+ for(const sym of cryptoSymbols)for(const ex of ['Binance','Bybit','OKX']){
+  const q=cryptoQuotes[ex]?.[sym];if(!q||Date.now()-q.ts>15000||!(q.last>0))continue;
+  const spread=q.bid>0&&q.ask>=q.bid?(q.ask-q.bid)/q.last*100:null;
+  const m1=cryptoWindowMove(ex,sym,60),m5=cryptoWindowMove(ex,sym,300),change=q.change;
+  let state='รอสัญญาณ',rank=0,why='ยังไม่เข้าเงื่อนไข';
+  if(Number.isFinite(change)&&change>=cryptoTargetPct){state='TARGET HIT';rank=3;why='เปลี่ยนแปลง 24 ชม. ถึงเป้าหมาย'}
+  else if(Number.isFinite(change)&&change>=cryptoNearPct){state='NEAR TARGET';rank=2;why='ใกล้เป้าหมาย '+cryptoTargetPct.toFixed(1)+'%'}
+  if(Number.isFinite(m1)&&Number.isFinite(m5)&&m1>=cryptoImpulsePct&&m5>=cryptoImpulsePct*1.8){state='BREAKOUT / MOMENTUM';rank=4;why='แรงส่ง 1 นาที '+m1.toFixed(2)+'% · 5 นาที '+m5.toFixed(2)+'%'}
+  items.push({sym,ex,q,spread,m1,m5,change,state,rank,why});
+ }
+ return items.sort((a,b)=>b.rank-a.rank||(b.m1||-999)-(a.m1||-999)||(b.change||-999)-(a.change||-999));
+}
+function renderCryptoRadar(){
+ const el=document.getElementById('cryptoRadarRows');if(!el)return;
+ const items=cryptoRadarItems();
+ el.innerHTML=items.length?items.map(x=>'<tr><td><b>'+x.sym.replace('USDT','')+'/USDT</b></td><td>'+x.ex+'</td><td>'+fmtCrypto(x.q.last)+'</td><td class="'+(x.rank>=2?'positive':'muted')+'">'+x.state+'</td><td>'+(Number.isFinite(x.change)?(x.change>=0?'+':'')+x.change.toFixed(2)+'%':'—')+'</td><td>'+(Number.isFinite(x.m1)?(x.m1>=0?'+':'')+x.m1.toFixed(2)+'%':'เก็บข้อมูล')+'</td><td>'+(x.spread===null?'—':x.spread.toFixed(3)+'%')+'</td><td>'+x.why+'</td></tr>').join(''):'<tr><td colspan="8" class="muted">กำลังรอข้อมูลสตรีมสดจาก Exchange...</td></tr>';
+ const n=document.getElementById('cryptoRadarCount');if(n)n.textContent=items.filter(x=>x.rank>=2).length+' รายการเข้าใกล้/ถึงเป้า';
+}
+function setCryptoTargets(){const t=Number(document.getElementById('cryptoTargetInput')?.value),n=Number(document.getElementById('cryptoNearInput')?.value),i=Number(document.getElementById('cryptoImpulseInput')?.value);if(t>0&&t<=100)cryptoTargetPct=t;if(n>=0&&n<cryptoTargetPct)cryptoNearPct=n;if(i>0&&i<=10)cryptoImpulsePct=i;renderCryptoRadar()}
+function startCryptoStreams(){
+ if(cryptoStreamActive)return;cryptoStreamActive=true;
+ const symbols=cryptoSymbols;
+ const retry=(ex,open)=>{clearTimeout(cryptoReconnect[ex]);cryptoReconnect[ex]=setTimeout(open,5000)};
+ const openBinance=()=>{
+  try{const streams=symbols.map(s=>s.toLowerCase()+'@ticker').join('/');const ws=new WebSocket('wss://stream.binance.com/stream?streams='+streams);cryptoSockets.Binance=ws;cryptoWsStatus('Binance','กำลังเชื่อม WebSocket');
+   ws.onopen=()=>cryptoWsStatus('Binance','REAL-TIME · เชื่อมแล้ว');
+   ws.onmessage=e=>{try{const d=JSON.parse(e.data).data;if(!d?.s||!symbols.includes(d.s))return;cryptoRemember('Binance',d.s,{last:Number(d.c),bid:Number(d.b),ask:Number(d.a),change:Number(d.P),volume:Number(d.v),turnover:Number(d.q),ts:Number(d.E)||Date.now()})}catch(err){}};
+   ws.onerror=()=>cryptoWsStatus('Binance','สตรีมมีปัญหา');
+   ws.onclose=()=>{cryptoWsStatus('Binance','กำลังเชื่อมใหม่');if(cryptoStreamActive)retry('Binance',openBinance)};
+  }catch(e){cryptoWsStatus('Binance','เชื่อมต่อไม่ได้');if(cryptoStreamActive)retry('Binance',openBinance)}
+ };
+ const openBybit=()=>{
+  try{const ws=new WebSocket('wss://stream.bybit.com/v5/public/spot');cryptoSockets.Bybit=ws;cryptoWsStatus('Bybit','กำลังเชื่อม WebSocket');
+   ws.onopen=()=>{cryptoWsStatus('Bybit','REAL-TIME · เชื่อมแล้ว');ws.send(JSON.stringify({op:'subscribe',args:symbols.map(s=>'tickers.'+s)}));};
+   ws.onmessage=e=>{try{const d=JSON.parse(e.data);if(d.op==='ping'){ws.send(JSON.stringify({op:'pong'}));return}const x=d.data;if(!x)return;const list=Array.isArray(x)?x:[x];for(const q of list){if(!symbols.includes(q.symbol))continue;cryptoRemember('Bybit',q.symbol,{last:Number(q.lastPrice),bid:Number(q.bid1Price),ask:Number(q.ask1Price),change:Number(q.price24hPcnt)*100,volume:Number(q.volume24h),turnover:Number(q.turnover24h),ts:Number(d.ts)||Date.now()})}}catch(err){}};
+   ws.onerror=()=>cryptoWsStatus('Bybit','สตรีมมีปัญหา');
+   ws.onclose=()=>{cryptoWsStatus('Bybit','กำลังเชื่อมใหม่');if(cryptoStreamActive)retry('Bybit',openBybit)};
+  }catch(e){cryptoWsStatus('Bybit','เชื่อมต่อไม่ได้');if(cryptoStreamActive)retry('Bybit',openBybit)}
+ };
+ const openOkx=()=>{
+  try{const ws=new WebSocket('wss://ws.okx.com/ws/v5/public');cryptoSockets.OKX=ws;cryptoWsStatus('OKX','กำลังเชื่อม WebSocket');
+   ws.onopen=()=>{cryptoWsStatus('OKX','REAL-TIME · เชื่อมแล้ว');ws.send(JSON.stringify({op:'subscribe',args:symbols.map(s=>({channel:'tickers',instId:s.replace('USDT','-USDT')}))}))};
+   ws.onmessage=e=>{if(e.data==='pong')return;try{const d=JSON.parse(e.data);if(d.event)return;for(const q of d.data||[]){const sym=String(q.instId||'').replace('-','');if(!symbols.includes(sym))continue;const last=Number(q.last),open=Number(q.open24h);cryptoRemember('OKX',sym,{last,bid:Number(q.bidPx),ask:Number(q.askPx),change:open>0?(last/open-1)*100:NaN,volume:Number(q.vol24h),turnover:Number(q.volCcy24h),ts:Number(q.ts)||Date.now()})}}catch(err){}};
+   ws.onerror=()=>cryptoWsStatus('OKX','สตรีมมีปัญหา');
+   ws.onclose=()=>{cryptoWsStatus('OKX','กำลังเชื่อมใหม่');if(cryptoStreamActive)retry('OKX',openOkx)};
+   const keep=setInterval(()=>{if(!cryptoStreamActive||cryptoSockets.OKX!==ws){clearInterval(keep);return}if(ws.readyState===1)ws.send('ping')},20000);
+  }catch(e){cryptoWsStatus('OKX','เชื่อมต่อไม่ได้');if(cryptoStreamActive)retry('OKX',openOkx)}
+ };
+ openBinance();openBybit();openOkx();
+}
+function stopCryptoStreams(){cryptoStreamActive=false;for(const ex of ['Binance','Bybit','OKX']){clearTimeout(cryptoReconnect[ex]);try{cryptoSockets[ex]?.close()}catch(e){}cryptoSockets[ex]=null}}
+
 function cryptoView(){
  return '<div class="heading"><div><h1>ตลาดคริปโต · Multi-Exchange</h1><div class="muted">เปรียบเทียบตลาด Spot จาก Binance · Bybit · OKX</div></div><span class="pill">PUBLIC MARKET DATA</span></div>'+
  '<div class="grid"><div class="card metric"><label>ตลาดที่รองรับ</label><strong style="font-size:18px">3 Exchanges</strong></div><div class="card metric"><label>คู่เหรียญติดตาม</label><strong>6 Pairs</strong></div><div class="card metric"><label>รูปแบบข้อมูล</label><strong style="font-size:17px">Spot · USDT</strong></div><div class="card metric"><label>การซื้อขายเงินจริง</label><strong class="negative" style="font-size:17px">ปิดใช้งาน</strong></div></div>'+
  '<div class="card"><div class="heading"><div><h3>เลือก Exchange</h3><div class="small muted">เลือกแสดงราคาแยกตลาด หรือเทียบทุกตลาดพร้อมกัน</div></div><button class="secondary" onclick="refreshCrypto()">รีเฟรชราคา</button></div><div class="toolbar"><select id="cryptoExchangeSelect" onchange="setCryptoExchange(this.value)"><option value="ALL">เปรียบเทียบทุก Exchange</option><option value="Binance">Binance</option><option value="Bybit">Bybit</option><option value="OKX">OKX</option></select></div><div id="cryptoStatusRow" class="split section"></div></div>'+
- marketAlertPanel()+'<div class="card section"><div class="heading"><div><h3>กระดานราคาเหรียญ</h3><div class="small muted">ราคาและการเปลี่ยนแปลง 24 ชั่วโมงจาก API สาธารณะของแต่ละ Exchange</div></div><span class="pill" id="cryptoUpdated">รอข้อมูลจริง</span></div><div class="tablewrap"><table><thead><tr><th>เหรียญ</th><th>Exchange</th><th>Last (USDT)</th><th>Bid</th><th>Ask</th><th>24h %</th><th>สถานะ</th></tr></thead><tbody id="cryptoRows"><tr><td colspan="7" class="muted">กำลังดึงข้อมูลจากตลาดจริง...</td></tr></tbody></table></div></div>'+
+ marketAlertPanel()+'<div class="card section"><div class="heading"><div><h3>CRYPTO RADAR · เกาะติดราคาเรียลไทม์</h3><div class="small muted">เรียงเหรียญที่ใกล้เป้าหมาย / ถึงเป้าหมาย / เกิด Momentum ก่อน</div></div><span class="pill" id="cryptoRadarCount">กำลังสแกน</span></div><div class="toolbar"><label>เป้าหมาย 24h % <input id="cryptoTargetInput" type="number" min="0.1" max="100" step="0.1" value="3" style="max-width:90px"></label><label>เริ่มเข้าใกล้ % <input id="cryptoNearInput" type="number" min="0" max="99" step="0.1" value="2" style="max-width:90px"></label><label>Momentum 1m % <input id="cryptoImpulseInput" type="number" min="0.01" max="10" step="0.01" value="0.25" style="max-width:90px"></label><button class="secondary" onclick="setCryptoTargets()">ใช้เกณฑ์</button></div><div class="tablewrap"><table><thead><tr><th>เหรียญ</th><th>Exchange</th><th>ราคาล่าสุด</th><th>สถานะ</th><th>เปลี่ยน 24h</th><th>เปลี่ยน 1m</th><th>Spread</th><th>เหตุผล</th></tr></thead><tbody id="cryptoRadarRows"><tr><td colspan="8">กำลังเชื่อมต่อสตรีม...</td></tr></tbody></table></div><div class="small muted">เกณฑ์เริ่มต้น: NEAR 2% / TARGET 3% (การเปลี่ยนแปลง 24 ชม.) · Momentum 1 นาที ≥ 0.25% และ 5 นาที ≥ 0.45% · เป็นเกณฑ์คัดกรองที่ปรับได้ ไม่ใช่การรับประกันกำไร</div></div>'++'<div class="card section"><div class="heading"><div><h3>กระดานราคาเหรียญ</h3><div class="small muted">ราคาและการเปลี่ยนแปลง 24 ชั่วโมงจาก API สาธารณะของแต่ละ Exchange</div></div><span class="pill" id="cryptoUpdated">รอข้อมูลจริง</span></div><div class="tablewrap"><table><thead><tr><th>เหรียญ</th><th>Exchange</th><th>Last (USDT)</th><th>Bid</th><th>Ask</th><th>24h %</th><th>สถานะ</th></tr></thead><tbody id="cryptoRows"><tr><td colspan="7" class="muted">กำลังดึงข้อมูลจากตลาดจริง...</td></tr></tbody></table></div></div>'+
  '<div class="card section"><h3>ตัวกรอง Momentum · FAST</h3><div class="split"><div><div class="riskline"><span>ตลาด</span><b>Spot / USDT</b></div><div class="riskline"><span>แนวทาง</span><b>Momentum + Spread</b></div><div class="riskline"><span>กรองการเปลี่ยนแปลง</span><b>≥ 3% / 24h</b></div></div><div><div class="riskline"><span>Spread สูงสุดเบื้องต้น</span><b>0.50%</b></div><div class="riskline"><span>Stop Loss</span><b>ต้องคำนวณจาก ATR/แท่งเทียน</b></div><div class="riskline"><span>เป้ากำไร</span><b>ปรับตามความผันผวน</b></div></div></div><div class="notice">ตารางนี้เป็นข้อมูลตลาดจริงและตัวกรองเบื้องต้น ไม่ใช่คำสั่งซื้อหรือสัญญาณเข้าซื้อที่ยืนยันแล้ว ต้องเพิ่มข้อมูลแท่งเทียน, ATR, สภาพคล่อง และทดสอบย้อนหลัง ก่อนเปิดระบบแจ้งสัญญาณอัตโนมัติ</div></div>'+
  '<div class="notice dangerbox">ขณะนี้เชื่อมเฉพาะข้อมูลตลาดสาธารณะ ยังไม่เชื่อมบัญชีส่วนตัว ไม่อ่านยอดเงิน และไม่ส่งคำสั่งซื้อขายหรือถอนเหรียญ</div>';
 }
@@ -109,6 +177,7 @@ function setCryptoExchange(v){cryptoExchange=v;renderCryptoRows()}
 function fmtCrypto(v){const n=Number(v);return Number.isFinite(n)?n.toLocaleString('en-US',{maximumFractionDigits:n<1?8:4}):'—'}
 function cryptoCellStatus(q){if(!q)return 'ไม่มีข้อมูล';const age=Date.now()-q.ts;return age>60000?'ข้อมูลเก่า':'ข้อมูลสด'}
 function renderCryptoRows(){
+ renderCryptoRadar();
  const rows=document.getElementById('cryptoRows');if(!rows)return;
  const out=[];
  for(const sym of cryptoSymbols){for(const ex of ['Binance','Bybit','OKX']){
