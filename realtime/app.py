@@ -195,18 +195,62 @@ async def startup():
 
 
 
-# Webull official market screener.
-# API credentials are intentionally read only from Render environment variables.
+# Temporary public market screener fallback while Webull API approval is pending.
+# Yahoo Finance screener is unofficial; results can be delayed, blocked, or changed.
 SCANNER_TYPES = {"PRE_MARKET", "AFTER_MARKET", "MIN_3", "MIN_5", "DAY_1"}
 SCANNER_CACHE: dict[str, Any] = {}
-SCANNER_CACHE_SECONDS = 15
-SCANNER_LOCK = threading.Lock()
+SCANNER_CACHE_SECONDS = 30
+YAHOO_SCREEN_URL = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+
+
+def _yahoo_screener(scr_id: str, sort_type: str):
+    body = {
+        "offset": 0,
+        "size": 25,
+        "sortField": "percentchange",
+        "sortType": sort_type,
+        "quoteType": "EQUITY",
+        "query": {"operator": "AND", "operands": [
+            {"operator": "eq", "operands": ["region", "us"]},
+            {"operator": "gt", "operands": ["dayvolume", 100000]}
+        ]}
+    }
+    response = requests.post(
+        YAHOO_SCREEN_URL,
+        params={"formatted": "false", "scrIds": scr_id},
+        json=body,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+        timeout=12,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    result = (payload.get("finance", {}).get("result") or [{}])[0]
+    quotes = result.get("quotes") or []
+    rows = []
+    for q in quotes:
+        symbol = q.get("symbol")
+        price = q.get("regularMarketPrice") or q.get("preMarketPrice") or q.get("postMarketPrice")
+        change = q.get("regularMarketChangePercent")
+        if not symbol or price is None or change is None:
+            continue
+        rows.append({
+            "symbol": symbol,
+            "name": q.get("shortName") or q.get("longName") or "",
+            "price": float(price),
+            "changePct": float(change),
+            "volume": int(q.get("regularMarketVolume") or q.get("preMarketVolume") or 0),
+            "relativeVolume": float(q.get("averageDailyVolume3Month") or 0) and round(
+                float(q.get("regularMarketVolume") or 0) / max(float(q.get("averageDailyVolume3Month") or 1), 1), 3
+            ),
+            "marketTime": q.get("regularMarketTime"),
+            "source": "Yahoo Finance (unofficial)",
+        })
+    return rows
 
 
 @app.get("/scanner")
-def scanner(rank_type: str = "PRE_MARKET", direction: str = "DESC"):
-    rank_type = rank_type.upper()
-    direction = direction.upper()
+def scanner(rank_type: str = "DAY_1", direction: str = "DESC"):
+    rank_type, direction = rank_type.upper(), direction.upper()
     if rank_type not in SCANNER_TYPES or direction not in {"ASC", "DESC"}:
         return {"status": "error", "message": "พารามิเตอร์การสแกนไม่ถูกต้อง", "candidates": [], "scanned": 0}
     cache_key = rank_type + ":" + direction
@@ -214,29 +258,35 @@ def scanner(rank_type: str = "PRE_MARKET", direction: str = "DESC"):
     cached = SCANNER_CACHE.get(cache_key)
     if cached and now - cached["at"] < SCANNER_CACHE_SECONDS:
         return cached["payload"]
-    # Do not fall back to unofficial sources or fabricate market data.
-    if not APP_KEY or not APP_SECRET or not os.getenv("WEBULL_ACCESS_TOKEN"):
-        return {
-            "provider": "Webull OpenAPI",
-            "status": "waiting_credentials",
-            "message": "รอ Webull อนุมัติ OpenAPI และตั้งค่า App Key / Secret / Access Token",
-            "rankType": rank_type,
-            "direction": direction,
-            "scanned": 0,
-            "candidates": [],
+    # Yahoo's public screener supplies day gainers/losers only. It does not
+    # provide verified Webull-style 3m/5m or extended-hours rankings here.
+    if rank_type in {"MIN_3", "MIN_5", "PRE_MARKET", "AFTER_MARKET"}:
+        message = "แหล่งข้อมูลสำรองไม่รองรับการจัดอันดับช่วงนี้ ต้องรอ Webull API"
+        return {"provider": "Yahoo Finance (unofficial fallback)", "status": "unsupported_interval",
+                "message": message, "rankType": rank_type, "direction": direction,
+                "scanned": 0, "candidates": [], "updatedAt": datetime.now(timezone.utc).isoformat()}
+    scr_id = "day_gainers" if direction == "DESC" else "day_losers"
+    try:
+        candidates = _yahoo_screener(scr_id, "DESC" if direction == "DESC" else "ASC")
+        payload = {
+            "provider": "Yahoo Finance (unofficial fallback)",
+            "status": "ok" if candidates else "empty",
+            "message": "ข้อมูลจัดอันดับรายวันจาก Yahoo Finance; ไม่ใช่ Webull และอาจล่าช้าหรือถูกจำกัด",
+            "rankType": rank_type, "direction": direction,
+            "scanned": len(candidates), "candidates": candidates,
             "updatedAt": datetime.now(timezone.utc).isoformat(),
-            "dataDisclaimer": "No market data is shown until official Webull authentication and market-data entitlement are verified.",
+            "dataDisclaimer": "Unofficial source. Not guaranteed real-time; verify quotes with your broker before trading."
         }
-    return {
-        "provider": "Webull OpenAPI",
-        "status": "credentials_configured_pending_validation",
-        "message": "พบค่าการเชื่อมต่อแล้ว แต่ยังต้องตรวจสอบสิทธิ์ Market Data และการยืนยันลายเซ็นก่อนแสดงข้อมูล",
-        "rankType": rank_type,
-        "direction": direction,
-        "scanned": 0,
-        "candidates": [],
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-    }
+        SCANNER_CACHE[cache_key] = {"at": now, "payload": payload}
+        return payload
+    except Exception as exc:
+        log.warning("Yahoo fallback screener failed: %s", type(exc).__name__)
+        return {"provider": "Yahoo Finance (unofficial fallback)", "status": "source_unavailable",
+                "message": "แหล่งข้อมูลสำรองยังตอบกลับไม่ได้: " + type(exc).__name__,
+                "rankType": rank_type, "direction": direction, "scanned": 0,
+                "candidates": [], "updatedAt": datetime.now(timezone.utc).isoformat()}
+
+
 
 
 @app.get("/health")
