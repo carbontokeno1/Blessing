@@ -346,6 +346,132 @@ def scanner(rank_type: str = "DAY_1", direction: str = "DESC"):
             }
 
 
+# Server-side Yahoo chart cache for the eight watchlist symbols. This avoids
+# depending on a third-party browser CORS proxy and preserves last-good quotes.
+QUOTE_CACHE: dict[str, Any] = {}
+QUOTE_CACHE_SECONDS = 20
+QUOTE_STALE_MAX_SECONDS = 900
+QUOTE_LOCK = threading.Lock()
+
+
+def _fetch_yahoo_chart_quote(symbol: str):
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/" + urllib.parse.quote(symbol)
+    response = requests.get(
+        url,
+        params={"range": "1d", "interval": "1m", "includePrePost": "true"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; BlessingMarketScanner/1.0)", "Accept": "application/json"},
+        timeout=(4, 8),
+    )
+    response.raise_for_status()
+    chart = response.json().get("chart", {})
+    result = (chart.get("result") or [None])[0]
+    if not result:
+        raise ValueError("Yahoo chart returned no result")
+    meta = result.get("meta") or {}
+    quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+    timestamps = result.get("timestamp") or []
+    closes = quote.get("close") or []
+    volumes = quote.get("volume") or []
+    points = []
+    for index, stamp in enumerate(timestamps):
+        price = closes[index] if index < len(closes) else None
+        if price is None:
+            continue
+        points.append({
+            "time": int(stamp) * 1000,
+            "price": float(price),
+            "volume": int(volumes[index] or 0) if index < len(volumes) else 0,
+        })
+    if not points:
+        raise ValueError("Yahoo chart returned no price bars")
+    last = points[-1]
+    previous_close = float(meta.get("chartPreviousClose") or meta.get("previousClose") or 0)
+    def move_back(seconds):
+        target = last["time"] - seconds * 1000
+        old = next((point for point in reversed(points[:-1]) if point["time"] <= target), None)
+        return round((last["price"] / old["price"] - 1) * 100, 4) if old and old["price"] else None
+    return {
+        "symbol": symbol,
+        "price": last["price"],
+        "changePct": round((last["price"] / previous_close - 1) * 100, 4) if previous_close else None,
+        "volume": last["volume"],
+        "m1": move_back(60),
+        "m5": move_back(300),
+        "session": meta.get("marketState") or "UNKNOWN",
+        "priceTime": last["time"],
+        "receivedAt": datetime.now(timezone.utc).isoformat(),
+        "source": "Yahoo Finance chart (unofficial)",
+        "stale": False,
+    }
+
+
+@app.get("/quotes")
+def quotes(symbols: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD"):
+    requested = []
+    for item in symbols.split(","):
+        symbol = item.strip().upper()
+        if symbol and symbol.replace(".", "").replace("-", "").isalnum() and symbol not in requested:
+            requested.append(symbol)
+    requested = requested[:20]
+    if not requested:
+        return {"status": "error", "message": "ไม่มีสัญลักษณ์หุ้นที่ถูกต้อง", "quotes": [], "count": 0}
+
+    fresh = {}
+    now = time.time()
+    for symbol in requested:
+        cached = QUOTE_CACHE.get(symbol)
+        if cached and now - cached["at"] < QUOTE_CACHE_SECONDS:
+            fresh[symbol] = dict(cached["payload"])
+
+    missing = [symbol for symbol in requested if symbol not in fresh]
+    errors = {}
+    if missing:
+        with QUOTE_LOCK:
+            # Another visitor may have refreshed while this request waited.
+            now = time.time()
+            for symbol in list(missing):
+                cached = QUOTE_CACHE.get(symbol)
+                if cached and now - cached["at"] < QUOTE_CACHE_SECONDS:
+                    fresh[symbol] = dict(cached["payload"])
+                    missing.remove(symbol)
+            if missing:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                    futures = {pool.submit(_fetch_yahoo_chart_quote, symbol): symbol for symbol in missing}
+                    for future in concurrent.futures.as_completed(futures):
+                        symbol = futures[future]
+                        try:
+                            payload = future.result()
+                            QUOTE_CACHE[symbol] = {"at": time.time(), "payload": payload}
+                            fresh[symbol] = dict(payload)
+                        except Exception as exc:
+                            errors[symbol] = type(exc).__name__
+
+    stale_count = 0
+    output = []
+    for symbol in requested:
+        if symbol in fresh:
+            output.append(fresh[symbol])
+            continue
+        cached = QUOTE_CACHE.get(symbol)
+        if cached and time.time() - cached["at"] <= QUOTE_STALE_MAX_SECONDS:
+            payload = dict(cached["payload"])
+            payload["stale"] = True
+            payload["staleSeconds"] = max(0, int(time.time() - cached["at"]))
+            output.append(payload)
+            stale_count += 1
+
+    return {
+        "status": "ok" if output else "source_unavailable",
+        "provider": "Yahoo Finance chart (unofficial fallback)",
+        "message": "ข้อมูลสำรองจาก Yahoo Finance · ไม่รับประกันว่าเป็น real-time",
+        "quotes": output,
+        "count": len(output),
+        "staleCount": stale_count,
+        "errors": errors,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 
 
 @app.get("/health")
