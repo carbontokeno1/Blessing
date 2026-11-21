@@ -177,11 +177,21 @@ function scanMarketAlerts(){
   else if(best.q.change<=-3)pushMarketAlert('crypto-down:'+symbol,{kind:'คริปโตเฝ้าระวัง',symbol:symbol.replace('USDT','')+'/USDT',message:'ติดลบ '+best.q.change.toFixed(2)+'% ใน 24 ชม. · '+best.ex,direction:'down'});
  }
 }
+let serverAlertHistoryBusy=false;
+async function refreshServerAlertHistory(){
+ if(serverAlertHistoryBusy)return;serverAlertHistoryBusy=true;
+ try{
+  const result=await callMarketAlerts('history');
+  const rows=(result.alerts||[]).map(a=>({kind:a.alert_kind,symbol:a.symbol,message:a.message,at:Date.parse(a.created_at)||Date.now(),direction:String(a.alert_kind||'').includes('DOWNSIDE')?'down':'up',price:a.price,exchange:a.exchange}));
+  marketAlerts=rows;
+  renderAlertPanel();
+ }catch(e){}finally{serverAlertHistoryBusy=false}
+}
 function renderAlertPanel(){
  const el=document.getElementById('marketAlertRows');if(!el)return;
- el.innerHTML=marketAlerts.length?marketAlerts.map(a=>'<div class="riskline"><span><b class="'+(a.direction==='down'?'negative':'positive')+'">'+esc(a.kind)+'</b> · '+esc(a.symbol)+'<div class="small muted">'+esc(a.message)+'</div></span><small class="muted">'+new Date(a.at).toLocaleTimeString('th-TH')+'</small></div>').join(''):'<div class="empty">ยังไม่พบสินทรัพย์ที่ผ่านเงื่อนไข · ระบบกำลังสแกนตลาด</div>';
+ el.innerHTML=marketAlerts.length?marketAlerts.map(a=>'<div class="riskline"><span><b class="'+(a.direction==='down'?'negative':'positive')+'">'+esc(a.kind)+'</b> · '+esc(a.symbol)+(a.exchange?' · '+esc(a.exchange):'')+'<div class="small muted">'+esc(a.message)+'</div></span><small class="muted">'+new Date(a.at).toLocaleTimeString('th-TH')+'</small></div>').join(''):'<div class="empty">ยังไม่มีรายการแจ้งเตือนที่เข้าเงื่อนไข · ระบบกำลังสแกนตลาด เมื่อพบสัญญาณจะแสดงราคาซื้อ ราคาขาย และคาดการณ์ 10 นาทีที่นี่</div>';
 }
-function marketAlertPanel(){return '<div class="card section"><div class="heading"><div><h3>Market Alert · แจ้งเตือนเข้าเป้าอัตโนมัติ</h3><div class="small muted">ระบบเฝ้าตลาดเบื้องหลัง ส่ง Push มายังเครื่องแม้ปิดหน้าแอป</div></div><button class="secondary" onclick="enableMarketNotifications()">เปิดแจ้งเตือนบนเครื่อง</button></div><div id="marketAlertRows"><div class="empty">กำลังสแกนตลาด...</div></div><div class="small muted" style="margin-top:8px">หุ้นแจ้งเมื่อ Alpaca มีข้อมูลสดและผ่าน FAST ENTRY; คริปโตตรวจ Binance / Bybit / OKX ทุกนาที · พักแจ้งซ้ำ 10 นาที</div><div id="pushDeviceStatus" class="small muted" style="margin-top:8px">ยังไม่ได้ตรวจสอบอุปกรณ์</div></div>'}
+function marketAlertPanel(){setTimeout(refreshServerAlertHistory,0);return '<div class="card section"><div class="heading"><div><h3>Market Alert · แจ้งเตือนเข้าเป้าอัตโนมัติ</h3><div class="small muted">ระบบเฝ้าตลาดเบื้องหลัง ส่ง Push มายังเครื่องแม้ปิดหน้าแอป</div></div><button class="secondary" onclick="enableMarketNotifications()">เปิดแจ้งเตือนบนเครื่อง</button></div><div id="marketAlertRows"><div class="empty">กำลังสแกนตลาด...</div></div><div class="small muted" style="margin-top:8px">หุ้นแจ้งเมื่อ Alpaca มีข้อมูลสดและผ่าน FAST ENTRY; คริปโตตรวจ Binance / Bybit / OKX ทุกนาที · แจ้งราคาซื้อ/ขาย จุดตัดขาดทุน และคาดการณ์ 10 นาที · พักแจ้งซ้ำ 10 นาที</div><div id="pushDeviceStatus" class="small muted" style="margin-top:8px">ยังไม่ได้ตรวจสอบอุปกรณ์</div></div>'}
 async function enableMarketNotifications(){try{if(!('serviceWorker'in navigator)||!('PushManager'in window)||!('Notification'in window))throw Error('อุปกรณ์หรือเบราว์เซอร์นี้ไม่รองรับ Push Notification');const p=await Notification.requestPermission();if(p!=='granted')throw Error('ยังไม่ได้อนุญาตการแจ้งเตือน');const key=await callMarketAlerts('public-key',{},false);const registration=await navigator.serviceWorker.register('/service-worker.js',{scope:'/'});await navigator.serviceWorker.ready;let subscription=await registration.pushManager.getSubscription();if(!subscription)subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:pushBase64ToBytes(key.publicKey)});await callMarketAlerts('subscribe',{subscription:subscription.toJSON()});alertNotificationReady=true;const status=document.getElementById('pushDeviceStatus');if(status)status.textContent='เชื่อมต่ออุปกรณ์นี้แล้ว · ระบบส่งแจ้งเตือนได้แม้ปิดหน้าแอป';alert('เปิดแจ้งเตือนบนเครื่องเรียบร้อยแล้ว ต่อไปเมื่อหุ้นหรือคริปโตเข้าเงื่อนไข ระบบจะส่งแจ้งเตือนมาให้ แม้ไม่ได้เปิดหน้า Blessing')}catch(e){alert('เปิดแจ้งเตือนไม่สำเร็จ: '+e.message)}}
 async function refreshPushSubscriptionStatus(){const el=document.getElementById('pushDeviceStatus');if(!el)return;try{const s=await callMarketAlerts('status');el.textContent=s.subscribed?'เปิดรับแจ้งเตือนบนเครื่องแล้ว · '+s.devices+' อุปกรณ์':'ยังไม่ได้เปิดรับแจ้งเตือนบนเครื่อง'}catch(e){el.textContent='ยังไม่ได้ตรวจสอบสถานะการแจ้งเตือน'}}
 
