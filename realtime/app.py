@@ -191,10 +191,24 @@ def alpaca_stream_main():
                 state["alpacaAuthenticated"] = False
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=5, max_size=2**20) as ws:
                     await ws.send(json.dumps({"action": "auth", "key": ALPACA_KEY, "secret": ALPACA_SECRET}))
-                    auth = json.loads(await ws.recv())
-                    auth_items = auth if isinstance(auth, list) else [auth]
-                    if not any(x.get("T") == "success" and x.get("msg") == "authenticated" for x in auth_items if isinstance(x, dict)):
-                        raise RuntimeError("Alpaca authentication was not confirmed")
+                    # Alpaca sends a separate "connected" acknowledgement before
+                    # the authentication response. Read messages until auth succeeds
+                    # or the server explicitly rejects the credentials.
+                    authenticated = False
+                    for _ in range(5):
+                        auth_message = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                        auth_items = auth_message if isinstance(auth_message, list) else [auth_message]
+                        for item in auth_items:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("T") == "error":
+                                raise RuntimeError("Alpaca authentication error: " + str(item.get("msg", "unknown"))[:140])
+                            if item.get("T") == "success" and item.get("msg") == "authenticated":
+                                authenticated = True
+                        if authenticated:
+                            break
+                    if not authenticated:
+                        raise RuntimeError("Alpaca authentication was not confirmed after connected acknowledgement")
                     state["alpacaAuthenticated"] = True
                     state["alpacaAuthenticatedAt"] = datetime.now(timezone.utc).isoformat()
                     await ws.send(json.dumps({
