@@ -201,7 +201,8 @@ def alpaca_stream_main():
                         "action": "subscribe",
                         "trades": SYMBOLS,
                         "quotes": SYMBOLS,
-                        "bars": SYMBOLS
+                        "bars": SYMBOLS,
+                        "dailyBars": SYMBOLS
                     }))
                     state["connection"] = "connected"
                     state["lastError"] = None
@@ -217,7 +218,7 @@ def alpaca_stream_main():
                                 continue
                             kind = msg.get("T")
                             symbol = msg.get("S")
-                            if kind not in {"t", "q", "b"} or symbol not in SYMBOLS:
+                            if kind not in {"t", "q", "b", "d"} or symbol not in SYMBOLS:
                                 if kind == "error":
                                     state["lastError"] = str(msg.get("msg", "Alpaca stream error"))[:180]
                                     log.warning("Alpaca stream reported an error: %s", state["lastError"])
@@ -241,6 +242,15 @@ def alpaca_stream_main():
                                 history = state["barHistory"].setdefault(symbol, [])
                                 history.append({"open": msg.get("o"), "high": msg.get("h"), "low": msg.get("l"), "close": msg.get("c"), "volume": msg.get("v"), "timestamp": bar_time})
                                 state["barHistory"][symbol] = history[-30:]
+                            elif kind == "d":
+                                quote.update({"daily_open": msg.get("o"), "daily_high": msg.get("h"), "daily_low": msg.get("l"), "daily_close": msg.get("c"), "daily_volume": msg.get("v"), "daily_timestamp": msg.get("t")})
+                                daily_time = str(msg.get("t") or now)
+                                daily_day = daily_time[:10]
+                                if state["sessionDate"].get(symbol) != daily_day:
+                                    state["sessionDate"][symbol] = daily_day
+                                    state["barHistory"][symbol] = []
+                                if msg.get("o") is not None:
+                                    state["sessionOpen"][symbol] = msg.get("o")
                             state["quotes"][symbol] = {
                                 "symbol": symbol, "topic": kind, "receivedAt": now,
                                 "source": f"Alpaca {feed.upper()} real-time stream", "raw": quote
