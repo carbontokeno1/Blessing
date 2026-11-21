@@ -19,6 +19,13 @@
 .alert-hit-row{width:100%;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;text-align:left;padding:14px 12px;margin:7px 0;border:1px solid var(--line,#263244);border-radius:13px;background:rgba(255,255,255,.025);color:inherit;cursor:pointer}
 .alert-hit-row:hover{border-color:var(--gold,#eab54b);background:rgba(255,255,255,.045)}
 .alert-hit-main{min-width:0;flex:1}.alert-open-hint{display:block;color:var(--gold,#eab54b);font-size:11px;margin-top:7px}.alert-hit-time{white-space:nowrap;color:var(--muted,#9aa8bc);font-size:11px}.alert-chevron{font-size:22px;margin-left:8px}
+.alert-inline-stats{display:block;margin-top:10px;padding:10px;border:1px solid #34445a;border-radius:11px;background:rgba(8,14,24,.78);cursor:default}
+.alert-inline-stats-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px}.alert-inline-stats-head b{font-size:11px;color:#f2c45f}.alert-inline-stats-head span{font-size:10px;color:#94a3b8}
+.alert-inline-horizons{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.alert-inline-horizon{min-width:0;padding:7px 6px;border-radius:8px;background:#121d2b;border:1px solid #29384c;display:flex;flex-direction:column;gap:5px}
+.alert-inline-horizon>b{font-size:10px;color:#dbe5f2}.alert-inline-horizon>span{display:flex;gap:5px;flex-wrap:wrap;font-size:10px;font-weight:800}.alert-inline-horizon small{font-size:9px;color:#aab8ca;white-space:nowrap}
+.alert-inline-horizon .forecast-green{color:#4ade80;font-style:normal}.alert-inline-horizon .forecast-red{color:#fb7185;font-style:normal}.alert-inline-horizon .forecast-yellow{color:#facc15;font-style:normal}
+@media(max-width:560px){.alert-inline-horizons{grid-template-columns:repeat(2,minmax(0,1fr))}.alert-hit-row{gap:7px;padding:10px 8px}.alert-hit-time{font-size:10px}}
 .alert-detail-backdrop{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;padding:12px;overflow:auto}
 .alert-detail-card{width:min(920px,100%);max-height:96vh;overflow:auto;background:#0d1420;border:1px solid #28364b;border-radius:18px;padding:16px;color:#f5f7fb;box-shadow:0 20px 80px rgba(0,0,0,.55)}
 .alert-detail-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:14px}.alert-detail-head h2{margin:4px 0;font-size:22px}
@@ -209,11 +216,41 @@ async function refreshServerAlertHistory(){
   const rows=(result.alerts||[]).map(a=>({kind:a.alert_kind,symbol:a.symbol,message:a.message,at:Date.parse(a.created_at)||Date.now(),direction:String(a.alert_kind||'').includes('DOWNSIDE')?'down':'up',price:Number(a.price),exchange:a.exchange,assetType:a.asset_type,changePct:a.change_pct}));
   marketAlerts=rows;
   renderAlertPanel();
+  refreshAlertForecastStats();
  }catch(e){}finally{serverAlertHistoryBusy=false}
+}
+let alertForecastStatsBySymbol={};
+let alertForecastStatsBusy=false;
+async function refreshAlertForecastStats(){
+ if(alertForecastStatsBusy)return;alertForecastStatsBusy=true;
+ try{
+  const result=await callMarketAlerts('forecast-history');
+  const grouped={};
+  (result.forecasts||[]).forEach(x=>{
+   const symbol=String(x.symbol||'');const h=Number(x.horizon_minutes);
+   if(!symbol||![10,30,360,720].includes(h))return;
+   grouped[symbol]||={};
+   grouped[symbol][h]||={correct:0,wrong:0,neutral:0,pending:0,total:0};
+   const g=grouped[symbol][h];const outcome=['correct','wrong','neutral','pending'].includes(x.outcome)?x.outcome:'pending';
+   g[outcome]++;g.total++;
+  });
+  alertForecastStatsBySymbol=grouped;
+  renderAlertPanel();
+ }catch(e){/* keep last available stats */}
+ finally{alertForecastStatsBusy=false}
+}
+function alertStatsMarkup(symbol){
+ const stats=alertForecastStatsBySymbol[symbol]||{};
+ const horizons=[{v:10,l:'10 นาที'},{v:30,l:'30 นาที'},{v:360,l:'6 ชม.'},{v:720,l:'12 ชม.'}];
+ return '<div class="alert-inline-stats"><div class="alert-inline-stats-head"><b>สถิติการคาดการณ์ · '+esc(symbol)+'</b><span>ถูก / ผิด / เสมอ</span></div><div class="alert-inline-horizons">'+horizons.map(h=>{
+  const g=stats[h.v]||{correct:0,wrong:0,neutral:0,pending:0,total:0},decided=g.correct+g.wrong;
+  const accuracy=decided?(g.correct/decided*100).toFixed(0)+'%':'—';
+  return '<div class="alert-inline-horizon"><b>'+h.l+'</b><span><i class="forecast-green">✓ '+g.correct+'</i><i class="forecast-red">✕ '+g.wrong+'</i><i class="forecast-yellow">＝ '+g.neutral+'</i></span><small>รอ '+g.pending+' · แม่น '+accuracy+'</small></div>';
+ }).join('')+'</div></div>';
 }
 function renderAlertPanel(){
  const el=document.getElementById('marketAlertRows');if(!el)return;
- el.innerHTML=marketAlerts.length?marketAlerts.map((a,i)=>'<button type="button" class="alert-hit-row" onclick="openAlertDetail('+i+')"><span class="alert-hit-main"><b class="'+(a.direction==='down'?'negative':'positive')+'">'+esc(a.kind)+'</b> · <b>'+esc(a.symbol)+'</b>'+(a.exchange?' · '+esc(a.exchange):'')+'<div class="small muted">'+esc(a.message)+'</div><span class="alert-open-hint">แตะเพื่อเปิดกราฟและจุดซื้อ · ขาย · คาดการณ์ 10 นาที</span></span><span class="alert-hit-time">'+new Date(a.at).toLocaleTimeString('th-TH')+'<span class="alert-chevron">›</span></span></button>').join(''):'<div class="empty">ยังไม่มีรายการแจ้งเตือนที่เข้าเงื่อนไข · เมื่อพบสัญญาณจริง รายการจะปรากฏที่นี่และแตะเพื่อดูกราฟได้</div>';
+ el.innerHTML=marketAlerts.length?marketAlerts.map((a,i)=>'<button type="button" class="alert-hit-row" onclick="openAlertDetail('+i+')"><span class="alert-hit-main"><b class="'+(a.direction==='down'?'negative':'positive')+'">'+esc(a.kind)+'</b> · <b>'+esc(a.symbol)+'</b>'+(a.exchange?' · '+esc(a.exchange):'')+'<div class="small muted">'+esc(a.message)+'</div>'+alertStatsMarkup(a.symbol)+'<span class="alert-open-hint">แตะเพื่อเปิดกราฟและจุดซื้อ · ขาย · คาดการณ์</span></span><span class="alert-hit-time">'+new Date(a.at).toLocaleTimeString('th-TH')+'<span class="alert-chevron">›</span></span></button>').join(''):'<div class="empty">ยังไม่มีรายการแจ้งเตือนที่เข้าเงื่อนไข · เมื่อพบสัญญาณจริง รายการจะปรากฏที่นี่และแตะเพื่อดูกราฟได้</div>';
 }
 function alertLevelFromMessage(message,labels){
  const text=String(message||'');
