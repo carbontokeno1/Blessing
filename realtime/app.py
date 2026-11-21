@@ -42,6 +42,8 @@ state = {
     "symbols": SYMBOLS,
     "lastMessageAt": None,
     "lastError": None,
+    "alpacaAuthenticated": False,
+    "alpacaAuthenticatedAt": None,
     "quotes": {},
 }
 clients: set[WebSocket] = set()
@@ -183,12 +185,15 @@ def alpaca_stream_main():
                 state["provider"] = "alpaca"
                 state["marketDataEntitlement"] = f"{feed.upper()} feed; entitlement depends on Alpaca plan"
                 state["connection"] = "connecting"
+                state["alpacaAuthenticated"] = False
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=5, max_size=2**20) as ws:
                     await ws.send(json.dumps({"action": "auth", "key": ALPACA_KEY, "secret": ALPACA_SECRET}))
                     auth = json.loads(await ws.recv())
                     auth_items = auth if isinstance(auth, list) else [auth]
                     if not any(x.get("T") == "success" and x.get("msg") == "authenticated" for x in auth_items if isinstance(x, dict)):
                         raise RuntimeError("Alpaca authentication was not confirmed")
+                    state["alpacaAuthenticated"] = True
+                    state["alpacaAuthenticatedAt"] = datetime.now(timezone.utc).isoformat()
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "trades": SYMBOLS,
@@ -238,6 +243,7 @@ def alpaca_stream_main():
                                 )
             asyncio.run(run_stream())
         except Exception as exc:
+            state["alpacaAuthenticated"] = False
             state["connection"] = "reconnecting"
             state["lastError"] = type(exc).__name__
             log.warning("Alpaca stream disconnected (%s); retrying shortly", type(exc).__name__)
@@ -245,6 +251,7 @@ def alpaca_stream_main():
 
 
 def public_status() -> dict:
+    alpaca_configured = bool(ALPACA_KEY and ALPACA_SECRET)
     return {
         "provider": state["provider"],
         "connection": state["connection"],
@@ -252,7 +259,17 @@ def public_status() -> dict:
         "symbols": state["symbols"],
         "quoteCount": len(state["quotes"]),
         "lastMessageAt": state["lastMessageAt"],
+        "lastMarketDataAt": state["lastMessageAt"],
         "lastError": state["lastError"],
+        "alpacaConfigured": alpaca_configured,
+        "alpacaKeyConfigured": bool(ALPACA_KEY),
+        "alpacaSecretConfigured": bool(ALPACA_SECRET),
+        "alpacaAuthenticated": bool(state["alpacaAuthenticated"]),
+        "alpacaAuthenticatedAt": state["alpacaAuthenticatedAt"],
+        "alpacaConnected": bool(state["provider"] == "alpaca" and state["connection"] in {"connected", "streaming"}),
+        "alpacaFeed": ALPACA_FEED if ALPACA_FEED in {"iex", "sip", "delayed_sip"} else "iex",
+        "marketDataReceived": bool(state["lastMessageAt"]),
+        "serverTime": datetime.now(timezone.utc).isoformat(),
     }
 
 
