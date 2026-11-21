@@ -139,11 +139,15 @@ function evaluateFastEntry(snapshot,bars){
 
 
 let marketAlerts=[],alertCooldown={},alertNotificationReady=false;
+const ALERTS_FUNCTION_URL='https://dyzumqcqvnznlkugimxo.supabase.co/functions/v1/market-alerts';
+const ALERTS_ANON_KEY='sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ';
+function pushBase64ToBytes(value){const pad='='.repeat((4-value.length%4)%4),raw=atob(value.replace(/-/g,'+').replace(/_/g,'/')+pad);return Uint8Array.from(raw,c=>c.charCodeAt(0))}
+async function callMarketAlerts(action,payload={},withAuth=true){const headers={'Content-Type':'application/json','apikey':ALERTS_ANON_KEY};if(withAuth){const sb=window.BLESSING_AUTH?.client;if(!sb)throw Error('กรุณาเข้าสู่ระบบก่อน');const {data}=await sb.auth.getSession();if(!data.session?.access_token)throw Error('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');headers.Authorization='Bearer '+data.session.access_token}const r=await fetch(ALERTS_FUNCTION_URL,{method:'POST',headers,body:JSON.stringify({action,...payload})});const j=await r.json().catch(()=>({}));if(!r.ok||j.ok===false)throw Error(j.error||'เชื่อมต่อระบบแจ้งเตือนไม่สำเร็จ');return j}
 function alertNumber(raw,keys){const v=quoteField(raw,keys);const n=Number(v);return Number.isFinite(n)?n:NaN}
 function pushMarketAlert(key,item){
  const now=Date.now();if(alertCooldown[key]&&now-alertCooldown[key]<600000)return;
  alertCooldown[key]=now;marketAlerts.unshift({...item,at:now});marketAlerts=marketAlerts.slice(0,20);
- if(alertNotificationReady&&'Notification'in window&&Notification.permission==='granted'){try{new Notification('BLESSING · '+item.kind,{body:item.symbol+' · '+item.message,tag:key})}catch(e){}}
+ // Background push delivery is handled by the server-side scanner; keep this list for in-app history.
  renderAlertPanel();
 }
 function scanMarketAlerts(){
@@ -177,8 +181,8 @@ function renderAlertPanel(){
  const el=document.getElementById('marketAlertRows');if(!el)return;
  el.innerHTML=marketAlerts.length?marketAlerts.map(a=>'<div class="riskline"><span><b class="'+(a.direction==='down'?'negative':'positive')+'">'+esc(a.kind)+'</b> · '+esc(a.symbol)+'<div class="small muted">'+esc(a.message)+'</div></span><small class="muted">'+new Date(a.at).toLocaleTimeString('th-TH')+'</small></div>').join(''):'<div class="empty">ยังไม่พบสินทรัพย์ที่ผ่านเงื่อนไข · ระบบกำลังสแกนตลาด</div>';
 }
-function marketAlertPanel(){return '<div class="card section"><div class="heading"><div><h3>Market Alert · แจ้งเตือนสินทรัพย์เข้าเป้า</h3><div class="small muted">สแกนหุ้น Webull และคริปโตจาก Binance / Bybit / OKX</div></div><button class="secondary" onclick="enableMarketNotifications()">เปิดการแจ้งเตือน</button></div><div id="marketAlertRows"><div class="empty">กำลังสแกนตลาด...</div></div><div class="small muted" style="margin-top:8px">หุ้นจะแจ้งเมื่อข้อมูล Webull ครบและผ่าน FAST ENTRY; คริปโตใช้การเปลี่ยนแปลง 24 ชม. ≥ ±3% และ Spread ≤ 0.50% เป็นสัญญาณเฝ้าระวังเท่านั้น</div></div>'}
-async function enableMarketNotifications(){if(!('Notification'in window)){alert('เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน');return}const p=await Notification.requestPermission();alertNotificationReady=p==='granted';alert(p==='granted'?'เปิดการแจ้งเตือนแล้ว':'ยังไม่ได้อนุญาตการแจ้งเตือน')}
+function marketAlertPanel(){return '<div class="card section"><div class="heading"><div><h3>Market Alert · แจ้งเตือนเข้าเป้าอัตโนมัติ</h3><div class="small muted">ระบบเฝ้าตลาดเบื้องหลัง ส่ง Push มายังเครื่องแม้ปิดหน้าแอป</div></div><button class="secondary" onclick="enableMarketNotifications()">เปิดแจ้งเตือนบนเครื่อง</button></div><div id="marketAlertRows"><div class="empty">กำลังสแกนตลาด...</div></div><div class="small muted" style="margin-top:8px">หุ้นแจ้งเมื่อ Alpaca มีข้อมูลสดและผ่าน FAST ENTRY; คริปโตตรวจ Binance / Bybit / OKX ทุกนาที · พักแจ้งซ้ำ 10 นาที</div><div id="pushDeviceStatus" class="small muted" style="margin-top:8px">ยังไม่ได้ตรวจสอบอุปกรณ์</div></div>'}
+async function enableMarketNotifications(){try{if(!('serviceWorker'in navigator)||!('PushManager'in window)||!('Notification'in window))throw Error('อุปกรณ์หรือเบราว์เซอร์นี้ไม่รองรับ Push Notification');const p=await Notification.requestPermission();if(p!=='granted')throw Error('ยังไม่ได้อนุญาตการแจ้งเตือน');const key=await callMarketAlerts('public-key',{},false);const registration=await navigator.serviceWorker.register('/service-worker.js',{scope:'/'});await navigator.serviceWorker.ready;let subscription=await registration.pushManager.getSubscription();if(!subscription)subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:pushBase64ToBytes(key.publicKey)});await callMarketAlerts('subscribe',{subscription:subscription.toJSON()});alertNotificationReady=true;const status=document.getElementById('pushDeviceStatus');if(status)status.textContent='เชื่อมต่ออุปกรณ์นี้แล้ว · ระบบส่งแจ้งเตือนได้แม้ปิดหน้าแอป';alert('เปิดแจ้งเตือนบนเครื่องเรียบร้อยแล้ว ต่อไปเมื่อหุ้นหรือคริปโตเข้าเงื่อนไข ระบบจะส่งแจ้งเตือนมาให้ แม้ไม่ได้เปิดหน้า Blessing')}catch(e){alert('เปิดแจ้งเตือนไม่สำเร็จ: '+e.message)}}
 
 
 let cryptoSockets={},cryptoReconnect={},cryptoTape={},cryptoHeartbeat={},cryptoStreamActive=false,cryptoTargetPct=3,cryptoNearPct=2,cryptoImpulsePct=0.25;
