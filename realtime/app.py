@@ -45,6 +45,9 @@ state = {
     "alpacaAuthenticated": False,
     "alpacaAuthenticatedAt": None,
     "quotes": {},
+    "barHistory": {},
+    "sessionOpen": {},
+    "sessionDate": {},
 }
 clients: set[WebSocket] = set()
 loop: asyncio.AbstractEventLoop | None = None
@@ -229,6 +232,15 @@ def alpaca_stream_main():
                                     quote["price"] = (float(msg["bp"]) + float(msg["ap"])) / 2
                             elif kind == "b":
                                 quote.update({"open": msg.get("o"), "high": msg.get("h"), "low": msg.get("l"), "price": msg.get("c"), "last_price": msg.get("c"), "volume": msg.get("v"), "timestamp": msg.get("t"), "bar_interval": "1m"})
+                                bar_time = str(msg.get("t") or now)
+                                session_day = bar_time[:10]
+                                if state["sessionDate"].get(symbol) != session_day:
+                                    state["sessionDate"][symbol] = session_day
+                                    state["sessionOpen"][symbol] = msg.get("o")
+                                    state["barHistory"][symbol] = []
+                                history = state["barHistory"].setdefault(symbol, [])
+                                history.append({"open": msg.get("o"), "high": msg.get("h"), "low": msg.get("l"), "close": msg.get("c"), "volume": msg.get("v"), "timestamp": bar_time})
+                                state["barHistory"][symbol] = history[-30:]
                             state["quotes"][symbol] = {
                                 "symbol": symbol, "topic": kind, "receivedAt": now,
                                 "source": f"Alpaca {feed.upper()} real-time stream", "raw": quote
@@ -594,6 +606,66 @@ def quotes(symbols: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD"):
     }
 
 
+
+
+@app.get("/alert-snapshot")
+def alert_snapshot():
+    """Server-side alert input. Only authenticated live Alpaca stream data is eligible."""
+    if not (ALPACA_KEY and ALPACA_SECRET):
+        return {"status": "waiting_credentials", "provider": "alpaca", "quotes": []}
+    if not state.get("alpacaAuthenticated") or state.get("connection") != "streaming":
+        return {"status": "waiting_live_feed", "provider": "alpaca", "quotes": []}
+    last_at = state.get("lastMessageAt")
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(last_at.replace("Z", "+00:00"))).total_seconds() if last_at else 999999
+    except Exception:
+        age = 999999
+    if age > 120:
+        return {"status": "stale_feed", "provider": "alpaca", "quotes": [], "staleSeconds": int(age)}
+    rows = []
+    for symbol in SYMBOLS:
+        item = state["quotes"].get(symbol) or {}
+        raw = item.get("raw") or {}
+        bars = state["barHistory"].get(symbol) or []
+        price = raw.get("price") or raw.get("last_price")
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            continue
+        bid, ask = raw.get("bid"), raw.get("ask")
+        try:
+            bid, ask = float(bid), float(ask)
+            spread_pct = ((ask - bid) / price) * 100 if bid > 0 and ask >= bid and price > 0 else None
+        except (TypeError, ValueError):
+            spread_pct = None
+        session_open = state["sessionOpen"].get(symbol)
+        try:
+            change_pct = ((price / float(session_open)) - 1) * 100 if float(session_open) > 0 else None
+        except (TypeError, ValueError):
+            change_pct = None
+        rvol = None
+        breakout = False
+        if len(bars) >= 6:
+            prior_volumes = [float(x.get("volume") or 0) for x in bars[-6:-1]]
+            current_volume = float(bars[-1].get("volume") or 0)
+            avg_volume = sum(prior_volumes) / len(prior_volumes) if prior_volumes else 0
+            rvol = current_volume / avg_volume if avg_volume > 0 else None
+            prior_highs = [float(x.get("high") or 0) for x in bars[-6:-1]]
+            breakout = bool(prior_highs and price > max(prior_highs))
+        fast_entry = bool(
+            change_pct is not None and change_pct >= 3
+            and rvol is not None and rvol >= 2
+            and spread_pct is not None and spread_pct <= 0.5
+            and len(bars) >= 6 and breakout
+        )
+        rows.append({
+            "symbol": symbol, "price": price, "changePct": change_pct,
+            "relativeVolume": rvol, "spreadPct": spread_pct,
+            "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
+            "receivedAt": item.get("receivedAt"),
+        })
+    return {"status": "ok", "provider": "Alpaca " + ALPACA_FEED.upper(), "quotes": rows,
+            "updatedAt": datetime.now(timezone.utc).isoformat(), "quoteCount": len(rows)}
 
 
 @app.get("/health")
