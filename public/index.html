@@ -213,34 +213,38 @@ async function refreshServerAlertHistory(){
  if(serverAlertHistoryBusy)return;serverAlertHistoryBusy=true;
  try{
   const result=await callMarketAlerts('history');
-  const rows=(result.alerts||[]).map(a=>({kind:a.alert_kind,symbol:a.symbol,message:a.message,at:Date.parse(a.created_at)||Date.now(),direction:String(a.alert_kind||'').includes('DOWNSIDE')?'down':'up',price:Number(a.price),exchange:a.exchange,assetType:a.asset_type,changePct:a.change_pct}));
+  const rows=(result.alerts||[]).map(a=>({id:a.id,kind:a.alert_kind,symbol:a.symbol,message:a.message,at:Date.parse(a.created_at)||Date.now(),direction:String(a.alert_kind||'').includes('DOWNSIDE')?'down':'up',price:Number(a.price),exchange:a.exchange,assetType:a.asset_type,changePct:a.change_pct}));
   marketAlerts=rows;
   renderAlertPanel();
   refreshAlertForecastStats();
  }catch(e){}finally{serverAlertHistoryBusy=false}
 }
 let alertForecastStatsBySymbol={};
+let alertForecastByEventId={};
 let alertForecastStatsBusy=false;
 async function refreshAlertForecastStats(){
  if(alertForecastStatsBusy)return;alertForecastStatsBusy=true;
  try{
   const result=await callMarketAlerts('forecast-history');
-  const grouped={};
+  const grouped={},byEvent={};
   (result.forecasts||[]).forEach(x=>{
-   const symbol=String(x.symbol||'');const h=Number(x.horizon_minutes);
+   const symbol=String(x.symbol||''),exchange=String(x.exchange||''),assetType=String(x.asset_type||''),h=Number(x.horizon_minutes);
    if(!symbol||![10,30,360,720].includes(h))return;
-   grouped[symbol]||={};
-   grouped[symbol][h]||={correct:0,wrong:0,neutral:0,pending:0,total:0};
-   const g=grouped[symbol][h];const outcome=['correct','wrong','neutral','pending'].includes(x.outcome)?x.outcome:'pending';
-   g[outcome]++;g.total++;
+   const key=[assetType,exchange,symbol].join('|');
+   grouped[key]||={};grouped[key][h]||={correct:0,wrong:0,neutral:0,pending:0,total:0};
+   const g=grouped[key][h],outcome=['correct','wrong','neutral','pending'].includes(x.outcome)?x.outcome:'pending';g[outcome]++;g.total++;
+   if(x.alert_event_id){byEvent[x.alert_event_id]||={};if(h===10)byEvent[x.alert_event_id].forecast10m=Number(x.forecast_price);byEvent[x.alert_event_id][h]=x;}
   });
-  alertForecastStatsBySymbol=grouped;
+  alertForecastStatsBySymbol=grouped;alertForecastByEventId=byEvent;
+  marketAlerts.forEach(a=>{const f=alertForecastByEventId[a.id];if(f&&Number.isFinite(f.forecast10m)&&f.forecast10m>0)a.forecast10m=f.forecast10m;});
   renderAlertPanel();
  }catch(e){/* keep last available stats */}
  finally{alertForecastStatsBusy=false}
 }
-function alertStatsMarkup(symbol){
- const stats=alertForecastStatsBySymbol[symbol]||{};
+function alertStatsMarkup(alert){
+ const symbol=typeof alert==='string'?alert:String(alert?.symbol||'');
+ const key=typeof alert==='string'?symbol:[String(alert?.assetType||''),String(alert?.exchange||''),symbol].join('|');
+ const stats=alertForecastStatsBySymbol[key]||{};
  const horizons=[{v:10,l:'10 นาที'},{v:30,l:'30 นาที'},{v:360,l:'6 ชม.'},{v:720,l:'12 ชม.'}];
  return '<div class="alert-inline-stats"><div class="alert-inline-stats-head"><b>สถิติการคาดการณ์ · '+esc(symbol)+'</b><span>ถูก / ผิด / เสมอ</span></div><div class="alert-inline-horizons">'+horizons.map(h=>{
   const g=stats[h.v]||{correct:0,wrong:0,neutral:0,pending:0,total:0},decided=g.correct+g.wrong;
@@ -250,7 +254,7 @@ function alertStatsMarkup(symbol){
 }
 function renderAlertPanel(){
  const el=document.getElementById('marketAlertRows');if(!el)return;
- el.innerHTML=marketAlerts.length?marketAlerts.map((a,i)=>'<button type="button" class="alert-hit-row" onclick="openAlertDetail('+i+')"><span class="alert-hit-main"><b class="'+(a.direction==='down'?'negative':'positive')+'">'+esc(a.kind)+'</b> · <b>'+esc(a.symbol)+'</b>'+(a.exchange?' · '+esc(a.exchange):'')+'<div class="small muted">'+esc(a.message)+'</div>'+alertStatsMarkup(a.symbol)+'<span class="alert-open-hint">แตะเพื่อเปิดกราฟและจุดซื้อ · ขาย · คาดการณ์</span></span><span class="alert-hit-time">'+new Date(a.at).toLocaleTimeString('th-TH')+'<span class="alert-chevron">›</span></span></button>').join(''):'<div class="empty">ยังไม่มีรายการแจ้งเตือนที่เข้าเงื่อนไข · เมื่อพบสัญญาณจริง รายการจะปรากฏที่นี่และแตะเพื่อดูกราฟได้</div>';
+ el.innerHTML=marketAlerts.length?marketAlerts.map((a,i)=>'<button type="button" class="alert-hit-row" onclick="openAlertDetail('+i+')"><span class="alert-hit-main"><b class="'+(a.direction==='down'?'negative':'positive')+'">'+esc(a.kind)+'</b> · <b>'+esc(a.symbol)+'</b>'+(a.exchange?' · '+esc(a.exchange):'')+'<div class="small muted">'+esc(a.message)+'</div>'+alertStatsMarkup(a)+'<span class="alert-open-hint">แตะเพื่อเปิดกราฟและจุดซื้อ · ขาย · คาดการณ์</span></span><span class="alert-hit-time">'+new Date(a.at).toLocaleTimeString('th-TH')+'<span class="alert-chevron">›</span></span></button>').join(''):'<div class="empty">ยังไม่มีรายการแจ้งเตือนที่เข้าเงื่อนไข · เมื่อพบสัญญาณจริง รายการจะปรากฏที่นี่และแตะเพื่อดูกราฟได้</div>';
 }
 function alertLevelFromMessage(message,labels){
  const text=String(message||'');
@@ -268,7 +272,7 @@ function openAlertDetail(index){
  const msg=String(a.message||''),current=Number(a.price);
  const buy=alertLevelFromMessage(msg,['ราคาซื้อแนะนำ','จุดควรซื้อ','ราคาเข้าซื้อแนะนำ','จุดเข้าซื้อ']);
  const sell=alertLevelFromMessage(msg,['ราคาขายแนะนำ','จุดควรขาย','ราคาเป้าหมายขาย','เป้าหมายขาย']);
- const forecast=alertLevelFromMessage(msg,['คาดการณ์ 10 นาที','คาดการณ์ราคา 10 นาที','ราคาใน 10 นาที']);
+ const forecast=(Number(a.forecast10m)>0&&Number.isFinite(Number(a.forecast10m)))?Number(a.forecast10m):alertLevelFromMessage(msg,['คาดการณ์ 10 นาที','คาดการณ์ราคา 10 นาที','ราคาใน 10 นาที']);
  const stop=alertLevelFromMessage(msg,['Stop Loss','STOP LOSS','จุดตัดขาดทุน']);
  const crypto=String(a.symbol||'').includes('/')||String(a.assetType||'').toLowerCase().includes('crypto');
  const pair=String(a.symbol||'').replace('/','').replace(/[^A-Z0-9]/gi,'').toUpperCase();
