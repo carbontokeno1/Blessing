@@ -618,6 +618,34 @@ def quotes(symbols: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD"):
 
 
 
+def forecast_10m_from_bars(bars, price):
+    """Linear-trend estimate from recent 1-minute closes; informational, not a guarantee."""
+    points = []
+    for index, bar in enumerate((bars or [])[-12:]):
+        try:
+            value = float(bar.get("close"))
+            if value > 0:
+                points.append((index, value))
+        except (TypeError, ValueError):
+            continue
+    if len(points) < 5:
+        return None
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x_mean = sum(xs) / len(xs)
+    y_mean = sum(ys) / len(ys)
+    denom = sum((x - x_mean) ** 2 for x in xs)
+    if denom <= 0:
+        return None
+    slope = sum((x - x_mean) * (y - y_mean) for x, y in points) / denom
+    projected = y_mean + slope * ((xs[-1] + 10) - x_mean)
+    if price <= 0:
+        return None
+    # Limit extrapolation to avoid extreme outputs from noisy short windows.
+    projected = max(price * 0.985, min(price * 1.015, projected))
+    return round(projected, 6)
+
+
 @app.get("/alert-snapshot")
 def alert_snapshot():
     """Server-side alert input. Only authenticated live Alpaca stream data is eligible."""
@@ -672,6 +700,7 @@ def alert_snapshot():
             "symbol": symbol, "price": price, "changePct": change_pct,
             "relativeVolume": rvol, "spreadPct": spread_pct,
             "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
+            "forecast10m": forecast_10m_from_bars(bars, price),
             "receivedAt": item.get("receivedAt"),
         })
     return {"status": "ok", "provider": "Alpaca " + ALPACA_FEED.upper(), "quotes": rows,
