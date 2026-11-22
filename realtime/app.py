@@ -1787,9 +1787,11 @@ def paper_trading_report(market: str, request: Request, period: str = "30d"):
         "select":"enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,updated_at",
         "user_id":"eq." + uid, "limit":"1"
     })
+    account_select = ("starting_balance,cash_balance,realized_pnl,fees_paid,status,starting_balance_thb,initial_fx_rate"
+                      if market_key == "crypto" else
+                      "starting_balance,cash_balance,realized_pnl,fees_paid,status")
     account_rows = _sb_rest(prefix + "_accounts", {
-        "select":"starting_balance,cash_balance,realized_pnl,fees_paid,status,starting_balance_thb,initial_fx_rate",
-        "user_id":"eq." + uid, "limit":"1"
+        "select":account_select, "user_id":"eq." + uid, "limit":"1"
     })
     positions = _sb_rest(prefix + "_positions", {
         "select":"id,symbol,quantity,entry_price,current_price,entry_fee,exit_fee,realized_pnl,unrealized_pnl,status,opened_at,closed_at,close_reason,signal_score",
