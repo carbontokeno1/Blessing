@@ -484,13 +484,32 @@ function altcoinView(){
 function fmtAlt(n){if(n===null||n===undefined||n==='')return '—';const x=Number(n);return Number.isFinite(x)?x.toLocaleString('en-US',{maximumFractionDigits:x<1?8:4}):'—'}
 async function loadAltcoinScanner(force=false){
   if(altcoinBusy)return;altcoinBusy=true;
-  const status=document.getElementById('altStatus');if(status)status.textContent='กำลังสแกน Binance · Bybit · OKX...';
+  const status=document.getElementById('altStatus');if(status)status.textContent='กำลังเชื่อมต่อแหล่งข้อมูลตลาด...';
+  const paths=[
+   '/api/altcoin-scanner'+(force?'?refresh=1':''),
+   MARKET_BRIDGE_URL+'/altcoin-scanner'+(force?'?refresh=1':'')
+  ];
+  let lastError='ไม่พบแหล่งข้อมูล';
   try{
-   const r=await fetch('/api/altcoin-scanner'+(force?'?refresh=1':''),{cache:'no-store'});
-   const d=await r.json();if(!r.ok&&d.status!=='source_error')throw Error('HTTP '+r.status);
-   altcoinData=d;renderAltcoinScanner();
-  }catch(e){
-   altcoinData={...(altcoinData||{}),status:'source_error',message:'เชื่อมต่อแหล่งข้อมูลไม่สำเร็จ: '+(e.message||'network')};
+   for(const url of paths){
+    try{
+     const r=await fetch(url,{cache:'no-store',headers:{'Accept':'application/json'}});
+     const ct=(r.headers.get('content-type')||'').toLowerCase();
+     if(!ct.includes('application/json')){
+      const preview=(await r.text()).slice(0,80);
+      throw Error('ปลายทางไม่ใช่ JSON ('+r.status+'): '+preview.replace(/\\s+/g,' '));
+     }
+     const d=await r.json();
+     if(!r.ok&&d.status!=='source_error')throw Error('HTTP '+r.status);
+     if(d&&Array.isArray(d.candidates)){
+      altcoinData=d;
+      if(url.startsWith(MARKET_BRIDGE_URL))altcoinData.metricsNote=(d.metricsNote||'')+' · แหล่งสำรองจาก Render: ข้อมูลภาพรวม 24h เท่านั้น; ยังไม่มีแท่ง 1m/RVOL จึงไม่สร้างสัญญาณ FAST ENTRY';
+      renderAltcoinScanner();return;
+     }
+     throw Error('รูปแบบข้อมูลไม่ถูกต้อง');
+    }catch(e){lastError=e.message||'network'}
+   }
+   altcoinData={...(altcoinData||{}),status:'source_error',message:'เชื่อมต่อแหล่งข้อมูลไม่สำเร็จ: '+lastError};
    renderAltcoinScanner();
   }finally{altcoinBusy=false}
  }
