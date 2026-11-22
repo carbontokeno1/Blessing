@@ -2145,7 +2145,7 @@ def _dual_market_price(market: str, symbol: str) -> float:
             raise HTTPException(status_code=422, detail="คู่เหรียญต้องเป็น Spot/USDT")
         try:
             response = requests.get(
-                "https://api.binance.th/api/v3/ticker/price",
+                "https://api.binance.th/api/v1/ticker/price",
                 params={"symbol": symbol},
                 headers={"User-Agent": "BLESSING-DualPaper/1.0"},
                 timeout=(4, 8),
@@ -2174,7 +2174,18 @@ def _dual_market_price(market: str, symbol: str) -> float:
         price = _dual_price_number(quote.get("raw") or quote)
         if price:
             return price
-        raise HTTPException(status_code=503, detail="ข้อมูลหุ้นไม่มีราคาซื้อขายที่ตรวจสอบได้")
+        # The existing bridge has an explicitly labelled unofficial Yahoo fallback.
+        # Use it only when its underlying market timestamp is recent; never use stale cache.
+        try:
+            fallback = _fetch_yahoo_chart_quote(symbol)
+            fallback_price = _dual_price_number(fallback)
+            price_time = float(fallback.get("priceTime") or 0) / 1000
+            age = time.time() - price_time if price_time else 999999
+            if fallback_price and 0 <= age <= 120:
+                return fallback_price
+        except Exception as exc:
+            log.info("Fresh stock quote fallback unavailable for %s (%s)", symbol, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้นสดที่ตรวจสอบได้จาก Webull/Alpaca หรือแหล่งสำรองภายใน 120 วินาที")
 
     raise HTTPException(status_code=422, detail="เลือกตลาด crypto หรือ stocks เท่านั้น")
 
