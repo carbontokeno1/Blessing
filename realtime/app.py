@@ -960,7 +960,7 @@ def alert_snapshot():
 # Public BitMart Spot altcoin momentum scanner. Public market data only; no keys or order endpoints.
 ALTCOIN_CACHE = {"at": 0.0, "payload": None}
 ALTCOIN_CACHE_LOCK = threading.Lock()
-ALTCOIN_EXCLUDED = {"BTC","ETH","BNB","SOL","XRP","DOGE","USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD"}
+ALTCOIN_EXCLUDED = {"USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD"}
 ALTCOIN_LEVERAGED_SUFFIXES = ("UP","DOWN","BULL","BEAR","3L","3S","5L","5S")
 
 
@@ -1009,16 +1009,25 @@ def _binance_public_tickers():
 
 
 def _binance_1m_klines(symbol: str):
-    response = requests.get(
-        "https://data-api.binance.vision/api/v3/klines",
-        params={"symbol": symbol, "interval": "1m", "limit": 65},
-        timeout=(5, 12),
-        headers={"User-Agent": "BlessingTrade-MarketScanner/1.0"},
-    )
-    response.raise_for_status()
-    rows = response.json()
+    last_error = None
+    rows = None
+    for host in ("https://data-api.binance.vision", "https://api.binance.com"):
+        try:
+            response = requests.get(
+                host + "/api/v3/klines",
+                params={"symbol": symbol, "interval": "1m", "limit": 65},
+                timeout=(4, 10),
+                headers={"User-Agent": "BlessingTrade-MarketScanner/1.0"},
+            )
+            response.raise_for_status()
+            rows = response.json()
+            if isinstance(rows, list):
+                break
+            raise RuntimeError("BINANCE_INVALID_KLINE_RESPONSE")
+        except Exception as exc:
+            last_error = exc
     if not isinstance(rows, list):
-        raise RuntimeError("BINANCE_INVALID_KLINE_RESPONSE")
+        raise RuntimeError("BINANCE_KLINE_ALL_HOSTS_FAILED:" + type(last_error).__name__)
     now_ms = int(time.time() * 1000)
     bars = []
     for row in rows:
@@ -1093,113 +1102,182 @@ def altcoin_scanner(refresh: int = 0):
             result = dict(cached)
             result["cacheAgeSeconds"] = int(now - ALTCOIN_CACHE["at"])
             return result
+
+    provider = "Binance"
+    bitmart_error = None
     try:
+        # Binance is the execution venue for Paper Trading; use it as the primary scanner.
+        try:
+            tickers = _binance_public_tickers()
+        except Exception as primary_error:
+            log.warning("Binance primary ticker endpoint failed: %s", type(primary_error).__name__)
+            # Try the alternate Binance host before falling back to BitMart display-only data.
+            tickers = None
+            alternate_error = primary_error
+            for host in ("https://api.binance.com", "https://data-api.binance.vision"):
+                try:
+                    response = requests.get(
+                        host + "/api/v3/ticker/24hr", timeout=(4, 10),
+                        headers={"User-Agent": "BlessingTrade-MarketScanner/1.0"})
+                    response.raise_for_status()
+                    raw = response.json()
+                    if not isinstance(raw, list):
+                        raise RuntimeError("BINANCE_INVALID_TICKER_RESPONSE")
+                    tickers = [{
+                        "symbol": str(x.get("symbol") or "").upper(),
+                        "lastPrice": _num(x.get("lastPrice"), 0),
+                        "quoteVolume": _num(x.get("quoteVolume"), 0),
+                        "openPrice": _num(x.get("openPrice"), 0),
+                        "bidPrice": _num(x.get("bidPrice"), 0),
+                        "askPrice": _num(x.get("askPrice"), 0),
+                        "closeTime": int(_num(x.get("closeTime"), 0) or 0),
+                    } for x in raw if isinstance(x, dict) and str(x.get("symbol") or "").upper().endswith("USDT")]
+                    break
+                except Exception as fallback_error:
+                    alternate_error = fallback_error
+            if tickers is None:
+                raise RuntimeError("BINANCE_ALL_TICKER_HOSTS_FAILED:" + type(alternate_error).__name__)
+    except Exception as binance_error:
+        log.error("Binance scanner unavailable: %s", type(binance_error).__name__)
         try:
             tickers = _bitmart_public_tickers()
             provider = "BitMart"
-        except Exception as bitmart_error:
-            log.warning("BitMart unavailable; switching altcoin scanner to Binance: %s", type(bitmart_error).__name__)
-            tickers = _binance_public_tickers()
-            provider = "Binance"
+            bitmart_error = type(binance_error).__name__
+            log.warning("Using BitMart fallback; Paper entries remain disabled for this feed")
+        except Exception as bm_error:
+            log.exception("All crypto market data providers failed")
+            return {
+                "status": "source_error", "provider": "Binance/BitMart Spot",
+                "message": "ไม่สามารถเชื่อมต่อแหล่งข้อมูล Binance หรือ BitMart ได้",
+                "sourceErrors": {"binance": type(binance_error).__name__, "bitmart": type(bm_error).__name__},
+                "scanned": 0, "evaluated": 0, "candidateCount": 0, "candidates": [],
+                "fastEntryCount": 0, "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }
 
-        eligible = []
-        for item in tickers:
-            if provider == "Binance":
-                pair = str(item.get("symbol") or "").upper()
-                price = _num(item.get("lastPrice"), 0) or 0
-                quote_volume = _num(item.get("quoteVolume"), 0) or 0
-                open_24h = _num(item.get("openPrice"), 0) or 0
-                bid = _num(item.get("bidPrice"), 0) or 0
-                ask = _num(item.get("askPrice"), 0) or 0
-                stamp = int(_num(item.get("closeTime"), 0) or 0)
-            else:
-                if not isinstance(item, (list, tuple)) or len(item) < 13:
-                    continue
-                pair = str(item[0] or "").upper().replace("_", "")
-                price = _num(item[1], 0) or 0
-                quote_volume = _num(item[3], 0) or 0
-                open_24h = _num(item[4], 0) or 0
-                bid = _num(item[8], 0) or 0
-                ask = _num(item[10], 0) or 0
-                stamp = int(_num(item[12], 0) or 0)
-            if not pair.endswith("USDT"):
-                continue
-            base = pair[:-4]
-            if not base or base in ALTCOIN_EXCLUDED or base.endswith(ALTCOIN_LEVERAGED_SUFFIXES):
-                continue
-            if price <= 0 or quote_volume < 250000 or open_24h <= 0:
-                continue
-            change = (price / open_24h - 1) * 100
-            spread = ((ask - bid) / price * 100) if bid > 0 and ask >= bid else None
-            eligible.append({
-                "symbol": pair, "exchangeSymbol": pair,
-                "price": price, "change24h": change,
-                "quoteVolume24h": quote_volume,
-                "m1": None, "m5": None, "m15": None, "m60": None,
-                "rvol": None, "breakout": False, "volumeSpike": False,
-                "momentum": change > 0, "spreadPct": spread,
-                "score": 0, "fastEntry": False,
-                "source": provider, "marketTimestamp": stamp,
-                "bidPrice": bid, "askPrice": ask,
-            })
-
-        eligible.sort(key=lambda x: x["quoteVolume24h"], reverse=True)
-        selected = eligible[:40]
-        candle_errors = 0
-        if provider == "Binance" and selected:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-                futures = {pool.submit(_binance_1m_klines, row["symbol"]): row for row in selected}
-                for future in concurrent.futures.as_completed(futures):
-                    row = futures[future]
-                    try:
-                        bars = future.result()
-                        row.update(_altcoin_metrics(row, bars))
-                    except Exception as candle_error:
-                        candle_errors += 1
-                        row["candleError"] = type(candle_error).__name__
-            metrics_source = "Binance 1m klines; closed candles only"
+    eligible = []
+    reject = {"not_usdt": 0, "stable_or_leveraged": 0, "low_volume": 0, "invalid_price": 0}
+    for item in tickers:
+        if provider == "Binance":
+            pair = str(item.get("symbol") or "").upper()
+            price = _num(item.get("lastPrice"), 0) or 0
+            quote_volume = _num(item.get("quoteVolume"), 0) or 0
+            open_24h = _num(item.get("openPrice"), 0) or 0
+            bid = _num(item.get("bidPrice"), 0) or 0
+            ask = _num(item.get("askPrice"), 0) or 0
+            stamp = int(_num(item.get("closeTime"), 0) or 0)
         else:
-            metrics_source = "BitMart 24h ticker snapshot; short-interval candle metrics unavailable"
+            if not isinstance(item, (list, tuple)) or len(item) < 13:
+                continue
+            pair = str(item[0] or "").upper().replace("_", "")
+            price = _num(item[1], 0) or 0
+            quote_volume = _num(item[3], 0) or 0
+            open_24h = _num(item[4], 0) or 0
+            bid = _num(item[8], 0) or 0
+            ask = _num(item[10], 0) or 0
+            stamp = int(_num(item[12], 0) or 0)
+        if not pair.endswith("USDT"):
+            reject["not_usdt"] += 1
+            continue
+        base = pair[:-4]
+        if not base or base in ALTCOIN_EXCLUDED or base.endswith(ALTCOIN_LEVERAGED_SUFFIXES):
+            reject["stable_or_leveraged"] += 1
+            continue
+        if price <= 0 or open_24h <= 0:
+            reject["invalid_price"] += 1
+            continue
+        if quote_volume < 250000:
+            reject["low_volume"] += 1
+            continue
+        change = (price / open_24h - 1) * 100
+        spread = ((ask - bid) / price * 100) if bid > 0 and ask >= bid else None
+        eligible.append({
+            "symbol": pair, "exchangeSymbol": pair,
+            "price": price, "change24h": change, "quoteVolume24h": quote_volume,
+            "m1": None, "m5": None, "m15": None, "m60": None,
+            "rvol": None, "breakout": False, "volumeSpike": False,
+            "momentum": change > 0, "spreadPct": spread,
+            "score": 0, "fastEntry": False,
+            "source": provider, "marketTimestamp": stamp,
+            "bidPrice": bid, "askPrice": ask,
+        })
 
-        selected.sort(key=lambda x: (
-            x.get("fastEntry", False),
-            x.get("score", 0),
-            x.get("rvol") or 0,
-            x["change24h"],
-            x["quoteVolume24h"],
-        ), reverse=True)
-        results = selected
-        payload = {
-            "status": "ok" if results else "empty",
-            "provider": provider + " Spot public market data",
-            "exchange": provider,
-            "scanned": len(eligible),
-            "evaluated": len(results),
-            "candidateCount": len(results),
-            "fastEntryCount": sum(1 for x in results if x.get("fastEntry")),
-            "candleErrors": candle_errors,
-            "metricsSource": metrics_source,
-            "candidates": results,
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-            "coverage": provider + " Spot USDT pairs; filtered by 24h quote volume >= 250,000 USDT",
-            "metricsNote": (
-                "Binance 1m closed candles used for m1/m5/m15/m60 momentum, RVOL and 20-bar breakout. "
-                "BitMart source currently provides 24h ticker metrics only; no FAST_ENTRY signals are generated from that feed."
-                if provider == "Binance" else
-                "BitMart ticker feed provides a 24h snapshot only; 1m/5m candles and RVOL are unavailable."
-            ),
-        }
-        with ALTCOIN_CACHE_LOCK:
-            ALTCOIN_CACHE.update({"at": time.time(), "payload": payload})
-        return payload
-    except Exception as exc:
-        log.exception("Altcoin scanner failed")
-        return {
-            "status": "source_error", "provider": "BitMart/Binance Spot",
-            "message": "ไม่สามารถดึงข้อมูลตลาดได้จาก BitMart หรือ Binance (" + type(exc).__name__ + ")",
-            "scanned": 0, "evaluated": 0, "candidateCount": 0,
-            "candidates": [], "updatedAt": datetime.now(timezone.utc).isoformat(),
-        }
+    eligible.sort(key=lambda x: x["quoteVolume24h"], reverse=True)
+    # Evaluate a broad, liquid top-100 universe; all eligible pairs are counted in scanned.
+    selected = eligible[:100]
+    candle_errors = 0
+    if provider == "Binance" and selected:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            futures = {pool.submit(_binance_1m_klines, row["symbol"]): row for row in selected}
+            for future in concurrent.futures.as_completed(futures):
+                row = futures[future]
+                try:
+                    bars = future.result()
+                    row.update(_altcoin_metrics(row, bars))
+                except Exception as candle_error:
+                    candle_errors += 1
+                    row["candleError"] = type(candle_error).__name__
+                    row["rejectReason"] = "CANDLE_DATA_UNAVAILABLE"
+        metrics_source = "Binance 1m closed candles; 100 highest-volume eligible USDT pairs"
+    else:
+        metrics_source = "BitMart ticker snapshot only; Paper entries disabled without Binance candles"
+
+    selected.sort(key=lambda x: (
+        x.get("fastEntry", False), x.get("score", 0),
+        x.get("rvol") or 0, x["change24h"], x["quoteVolume24h"]
+    ), reverse=True)
+    # Transparent diagnostics: a non-entry candidate is retained with its specific reason.
+    for row in selected:
+        if row.get("fastEntry"):
+            row["rejectReason"] = None
+        elif row.get("candleError"):
+            row["rejectReason"] = "CANDLE_DATA_UNAVAILABLE"
+        elif row.get("m1") is None or row.get("m5") is None:
+            row["rejectReason"] = "MOMENTUM_DATA_MISSING"
+        elif row.get("m1", 0) <= 0 or row.get("m5", 0) <= 0:
+            row["rejectReason"] = "MOMENTUM_NOT_POSITIVE"
+        elif (row.get("rvol") or 0) < 2:
+            row["rejectReason"] = "RVOL_BELOW_2"
+        elif not row.get("breakout"):
+            row["rejectReason"] = "NO_20_BAR_BREAKOUT"
+        elif not row.get("spreadPct") or row["spreadPct"] <= 0 or row["spreadPct"] > 0.5:
+            row["rejectReason"] = "SPREAD_OUT_OF_RANGE"
+        else:
+            row["rejectReason"] = "SCORE_BELOW_60"
+
+    reject_signals = {}
+    for row in selected:
+        reason = row.get("rejectReason") or "FAST_ENTRY"
+        reject_signals[reason] = reject_signals.get(reason, 0) + 1
+
+    payload = {
+        "status": "ok" if selected else "empty",
+        "provider": provider + " Spot public market data",
+        "exchange": provider,
+        "scanned": len(eligible),
+        "eligibleTotal": len(eligible),
+        "evaluated": len(selected),
+        "candidateCount": len(selected),
+        "fastEntryCount": sum(1 for x in selected if x.get("fastEntry")),
+        "candleErrors": candle_errors,
+        "filterCounts": reject,
+        "signalDiagnostics": reject_signals,
+        "fallbackFrom": bitmart_error,
+        "metricsSource": metrics_source,
+        "candidates": selected,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "coverage": provider + " Spot USDT pairs; all eligible pairs counted; top 100 by 24h quote volume evaluated; minimum 250,000 USDT",
+        "metricsNote": (
+            "FAST_ENTRY requires positive 1m/5m momentum, RVOL >= 2, 20-bar breakout, spread > 0 and <= 0.5%, and score >= 60. "
+            "Non-entry candidates include rejectReason for diagnostics."
+            if provider == "Binance" else
+            "Fallback feed is display-only; no Paper entries are allowed without Binance candle data."
+        ),
+    }
+    log.info("Altcoin scan provider=%s eligible=%s evaluated=%s fast_entries=%s candle_errors=%s rejects=%s",
+             provider, len(eligible), len(selected), payload["fastEntryCount"], candle_errors, reject_signals)
+    with ALTCOIN_CACHE_LOCK:
+        ALTCOIN_CACHE.update({"at": time.time(), "payload": payload})
+    return payload
 
 
 @app.get("/health")
