@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from broker_adapters import brokerage_readonly_snapshot
 from ai_decision import build_decision_preview
+from dual_portfolio import portfolio_overview
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO)
@@ -1983,6 +1984,13 @@ def paper_trading_report(market: str, request: Request, period: str = "30d"):
                   "ordersReturned":min(len(recent_orders),100),"databaseRowsScanned":len(positions)+len(orders)}
     }
     return report
+
+
+@app.get("/ai/portfolio-overview")
+def ai_portfolio_overview(request: Request):
+    """Admin-only view of isolated crypto and stock Paper portfolio policies."""
+    _paper_auth_user(request)
+    return portfolio_overview()
 
 
 @app.get("/broker/read-only")
