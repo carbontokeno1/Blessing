@@ -1248,7 +1248,7 @@ PAPER_ENTRY_COOLDOWNS = {}
 
 
 def _sb_headers(prefer=None):
-    headers = {"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": "Bearer " + SUPABASE_SERVICE_ROLE_KEY,
+    headers = {"apikey": SUPABASE_SERVICE_ROLE_KEY,
                "Content-Type": "application/json"}
     if prefer:
         headers["Prefer"] = prefer
