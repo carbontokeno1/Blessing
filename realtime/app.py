@@ -1986,6 +1986,131 @@ def paper_trading_report(market: str, request: Request, period: str = "30d"):
     return report
 
 
+
+
+DUAL_PAPER_PORTFOLIOS = {
+    "crypto": {"market":"crypto","broker":"binance_th","currency":"USDT","initial_capital":100},
+    "stocks": {"market":"stocks","broker":"webull","currency":"USD","initial_capital":100},
+}
+
+
+def _dual_paper_ensure_portfolio(user_id: str, config: dict) -> dict:
+    """Create a fresh isolated $100 Paper portfolio only when it does not exist.
+
+    Existing legacy paper accounts are never edited, reset, or merged.
+    """
+    rows = _sb_rest("blessing_dual_portfolios", {
+        "select":"id,user_id,market,broker,currency,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity,created_at,updated_at",
+        "user_id":"eq." + user_id, "market":"eq." + config["market"], "limit":"1"
+    })
+    if rows:
+        return rows[0]
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "user_id":user_id, "market":config["market"], "broker":config["broker"],
+        "currency":config["currency"], "initial_capital":config["initial_capital"],
+        "cash_balance":config["initial_capital"], "realized_pnl":0, "fees_paid":0,
+        "mode":"paper", "enabled":False, "reserve_cash_pct":20,
+        "risk_per_trade_pct":1, "max_daily_loss_pct":3,
+        "max_weekly_loss_pct":6, "max_drawdown_pct":10,
+        "max_open_positions":2, "peak_equity":config["initial_capital"],
+        "updated_at":now
+    }
+    try:
+        inserted = _sb_rest("blessing_dual_portfolios", {}, "POST", payload)
+        if inserted:
+            return inserted[0]
+    except requests.HTTPError:
+        # Another request may have created this unique (user_id, market) row.
+        rows = _sb_rest("blessing_dual_portfolios", {
+            "select":"id,user_id,market,broker,currency,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity,created_at,updated_at",
+            "user_id":"eq." + user_id, "market":"eq." + config["market"], "limit":"1"
+        })
+        if rows:
+            return rows[0]
+        raise
+    rows = _sb_rest("blessing_dual_portfolios", {
+        "select":"id,user_id,market,broker,currency,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity,created_at,updated_at",
+        "user_id":"eq." + user_id, "market":"eq." + config["market"], "limit":"1"
+    })
+    if not rows:
+        raise HTTPException(status_code=503, detail="สร้างบัญชี Paper แยกพอร์ตไม่สำเร็จ")
+    return rows[0]
+
+
+@app.post("/ai/dual-paper/initialize")
+def dual_paper_initialize(request: Request):
+    """Create two separate $100-equivalent Paper portfolios; never touch legacy accounts."""
+    user = _paper_auth_user(request)
+    uid = str(user["id"])
+    portfolios = {
+        market: _dual_paper_ensure_portfolio(uid, config)
+        for market, config in DUAL_PAPER_PORTFOLIOS.items()
+    }
+    return {
+        "ok":True, "mode":"paper", "liveOrdersEnabled":False,
+        "crossPortfolioTransfersEnabled":False,
+        "portfolios":{
+            market:{
+                "portfolioId":row["id"], "market":row["market"], "broker":row["broker"],
+                "currency":row["currency"], "initialCapital":float(row["initial_capital"]),
+                "cashBalance":float(row["cash_balance"]), "enabled":bool(row["enabled"]),
+                "mode":row["mode"]
+            } for market,row in portfolios.items()
+        },
+        "message":"สร้างพอร์ตจำลองแยกกันแล้ว; ไม่มีการแก้ไขบัญชี Paper เดิม และไม่มีคำสั่งซื้อขายจริง"
+    }
+
+
+@app.get("/ai/dual-paper/status")
+def dual_paper_status(request: Request):
+    """Admin-only status for isolated new dual portfolios, including independent PnL."""
+    user = _paper_auth_user(request)
+    uid = str(user["id"])
+    result = {}
+    for market, config in DUAL_PAPER_PORTFOLIOS.items():
+        rows = _sb_rest("blessing_dual_portfolios", {
+            "select":"id,market,broker,currency,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity,created_at",
+            "user_id":"eq." + uid, "market":"eq." + market, "limit":"1"
+        })
+        if not rows:
+            result[market] = {"configured":False,"currency":config["currency"],"targetCapital":100,"mode":"paper","liveOrdersEnabled":False}
+            continue
+        row = rows[0]
+        positions = _sb_rest("blessing_dual_positions", {
+            "select":"id,symbol,quantity,entry_price,current_price,stop_loss_price,take_profit_price,unrealized_pnl,status,opened_at",
+            "user_id":"eq." + uid, "portfolio_id":"eq." + row["id"], "status":"eq.open",
+            "order":"opened_at.desc","limit":"100"
+        }) or []
+        orders = _sb_rest("blessing_dual_orders", {
+            "select":"id,symbol,side,quantity,price,notional,fee,status,realized_pnl,created_at",
+            "user_id":"eq." + uid, "portfolio_id":"eq." + row["id"],
+            "order":"created_at.desc","limit":"100"
+        }) or []
+        market_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
+        cash = float(row["cash_balance"])
+        realized = float(row["realized_pnl"])
+        unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+        result[market] = {
+            "configured":True,"portfolioId":row["id"],"broker":row["broker"],
+            "currency":row["currency"],"initialCapital":float(row["initial_capital"]),
+            "cashBalance":cash,"marketValue":market_value,"equity":cash+market_value,
+            "realizedPnl":realized,"unrealizedPnl":unrealized,
+            "feesPaid":float(row["fees_paid"]),"totalPnl":realized+unrealized,
+            "mode":row["mode"],"enabled":bool(row["enabled"]),
+            "riskLimits":{"riskPerTradePct":float(row["risk_per_trade_pct"]),
+                "maxDailyLossPct":float(row["max_daily_loss_pct"]),
+                "maxWeeklyLossPct":float(row["max_weekly_loss_pct"]),
+                "maxDrawdownPct":float(row["max_drawdown_pct"]),
+                "reserveCashPct":float(row["reserve_cash_pct"]),
+                "maxOpenPositions":int(row["max_open_positions"])},
+            "openPositions":positions,"recentOrders":orders,
+            "liveOrdersEnabled":False
+        }
+    return {"ok":True,"mode":"paper","liveOrdersEnabled":False,
+            "crossPortfolioTransfersEnabled":False,"portfolios":result}
+
+
 @app.get("/ai/portfolio-overview")
 def ai_portfolio_overview(request: Request):
     """Admin-only view of isolated crypto and stock Paper portfolio policies."""
