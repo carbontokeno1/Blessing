@@ -1581,6 +1581,8 @@ def _stock_paper_ensure_user(user_id: str):
 @app.post("/stock-paper-engine/start")
 def stock_paper_engine_start(request: Request):
     user = _stock_paper_engine_user(request)
+    if not (ALPACA_KEY and ALPACA_SECRET):
+        raise HTTPException(status_code=503, detail="ยังไม่ได้ตั้งค่า Alpaca API สำหรับข้อมูลหุ้น จึงยังเริ่ม Stock Paper Engine ไม่ได้")
     setting = _stock_paper_ensure_user(str(user["id"]))
     _sb_rest("stock_paper_settings", {"user_id":"eq." + str(user["id"])}, "PATCH", {
         "enabled": True, "updated_at": datetime.now(timezone.utc).isoformat()
