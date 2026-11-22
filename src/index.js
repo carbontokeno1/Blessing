@@ -37,7 +37,7 @@ const EXCLUDED = new Set(["BTC","ETH","BNB","SOL","XRP","DOGE","USDC","FDUSD","T
 const LEVERAGED = ["UP","DOWN","BULL","BEAR","3L","3S","5L","5S"];
 
 async function getJson(url) {
-  const r = await fetch(url, { headers: { "accept": "application/json", "user-agent": "BlessingTrade-AltcoinHunter/2.0" }, signal: AbortSignal.timeout(8000) });
+  const r = await fetch(url, { headers: { "accept": "application/json", "user-agent": "BlessingTrade-AltcoinHunter/2.0" }, signal: AbortSignal.timeout(6000) });
   if (!r.ok) throw new Error("HTTP_" + r.status);
   return r.json();
 }
@@ -94,7 +94,7 @@ async function scanExchange(name, cfg) {
       return base && !EXCLUDED.has(base) && !LEVERAGED.some(s => base.endsWith(s)) &&
         x.price > 0 && Number.isFinite(x.change24h) && x.quoteVolume24h >= 250000;
     }).sort((a,b) => b.quoteVolume24h-a.quoteVolume24h).slice(0, 25);
-    const evaluated = await mapLimit(eligible, 5, async row => {
+    const evaluated = await mapLimit(eligible, 10, async row => {
       const barsPayload = await getJson(cfg.candles(row.symbol));
       const bars = cfg.parseBars(barsPayload);
       return metrics({ ...row, exchange: name, source: name, symbol: row.symbol }, bars);
