@@ -486,7 +486,7 @@ async function loadAltcoinScanner(force=false){
  if(altcoinBusy)return;altcoinBusy=true;
  const status=document.getElementById('altStatus');if(status)status.textContent='กำลังสแกนตลาด BitMart Spot...';
  try{
-  const r=await fetch(MARKET_BRIDGE_URL+'/altcoin-scanner'+(force?'?refresh=1':''),{cache:'no-store'});
+  const r=await fetch('/api/altcoin-scanner'+(force?'?refresh=1':''),{cache:'no-store'});
   if(!r.ok)throw Error('HTTP '+r.status);
   const d=await r.json();altcoinData=d;renderAltcoinScanner();
  }catch(e){
