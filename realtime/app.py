@@ -979,6 +979,40 @@ def _bitmart_public_tickers():
         raise RuntimeError("BITMART_INVALID_TICKER_RESPONSE")
     return rows
 
+def _okx_public_tickers():
+    """Display-only public OKX spot snapshot used when Binance/BitMart are unavailable."""
+    response = requests.get(
+        "https://www.okx.com/api/v5/market/tickers",
+        params={"instType": "SPOT"},
+        timeout=(5, 15),
+        headers={"User-Agent": "BlessingTrade-MarketScanner/1.0"},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or payload.get("code") != "0":
+        raise RuntimeError("OKX_PUBLIC_API_ERROR")
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        raise RuntimeError("OKX_INVALID_TICKER_RESPONSE")
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        inst_id = str(row.get("instId") or "").upper()
+        if not inst_id.endswith("-USDT"):
+            continue
+        pair = inst_id.replace("-", "")
+        normalized.append([
+            pair, row.get("last") or 0, 0, row.get("volCcy24h") or 0,
+            row.get("open24h") or 0, row.get("high24h") or 0,
+            row.get("low24h") or 0, 0, row.get("bidPx") or 0,
+            row.get("bidSz") or 0, row.get("askPx") or 0,
+            row.get("askSz") or 0, row.get("ts") or 0,
+        ])
+    if not normalized:
+        raise RuntimeError("OKX_NO_USDT_SPOT_TICKERS")
+    return normalized
+
 def _binance_public_tickers():
     response = requests.get(
         "https://data-api.binance.vision/api/v3/ticker/24hr",
@@ -1145,14 +1179,22 @@ def altcoin_scanner(refresh: int = 0):
             bitmart_error = type(binance_error).__name__
             log.warning("Using BitMart fallback; Paper entries remain disabled for this feed")
         except Exception as bm_error:
-            log.exception("All crypto market data providers failed")
-            return {
-                "status": "source_error", "provider": "Binance/BitMart Spot",
-                "message": "ไม่สามารถเชื่อมต่อแหล่งข้อมูล Binance หรือ BitMart ได้",
-                "sourceErrors": {"binance": type(binance_error).__name__, "bitmart": type(bm_error).__name__},
-                "scanned": 0, "evaluated": 0, "candidateCount": 0, "candidates": [],
-                "fastEntryCount": 0, "updatedAt": datetime.now(timezone.utc).isoformat(),
-            }
+            log.warning("BitMart fallback unavailable: %s", type(bm_error).__name__)
+            try:
+                tickers = _okx_public_tickers()
+                provider = "OKX"
+                bitmart_error = type(binance_error).__name__ + "/BitMart:" + type(bm_error).__name__
+                log.warning("Using OKX display-only fallback; Paper entries remain disabled without Binance candles")
+            except Exception as okx_error:
+                log.exception("All crypto market data providers failed")
+                return {
+                    "status": "source_error", "provider": "Binance/BitMart/OKX Spot",
+                    "message": "ไม่สามารถเชื่อมต่อแหล่งข้อมูล Binance, BitMart หรือ OKX ได้",
+                    "sourceErrors": {"binance": type(binance_error).__name__, "bitmart": type(bm_error).__name__,
+                                     "okx": type(okx_error).__name__},
+                    "scanned": 0, "evaluated": 0, "candidateCount": 0, "candidates": [],
+                    "fastEntryCount": 0, "updatedAt": datetime.now(timezone.utc).isoformat(),
+                }
 
     eligible = []
     reject = {"not_usdt": 0, "stable_or_leveraged": 0, "low_volume": 0, "invalid_price": 0}
@@ -1219,7 +1261,7 @@ def altcoin_scanner(refresh: int = 0):
                     row["rejectReason"] = "CANDLE_DATA_UNAVAILABLE"
         metrics_source = "Binance 1m closed candles; 100 highest-volume eligible USDT pairs"
     else:
-        metrics_source = "BitMart ticker snapshot only; Paper entries disabled without Binance candles"
+        metrics_source = provider + " ticker snapshot only; Paper entries disabled without Binance candles"
 
     selected.sort(key=lambda x: (
         x.get("fastEntry", False), x.get("score", 0),
@@ -1442,6 +1484,27 @@ def _binance_public_price(symbol: str):
         except Exception as exc:
             last_error = exc
             log.warning("Binance price host failed for %s (%s): %s", symbol, host, type(exc).__name__)
+    # OKX is a public-price fallback for marking existing paper positions only.
+    # It never authorizes a new Binance paper entry; unsupported pairs fail closed.
+    try:
+        base = str(symbol or "").upper()
+        if base.endswith("USDT"):
+            inst_id = base[:-4] + "-USDT"
+            response = requests.get(
+                "https://www.okx.com/api/v5/market/ticker",
+                params={"instId": inst_id}, timeout=(4, 8),
+                headers={"User-Agent": "BlessingPaperWorker/1.0"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload.get("data") if isinstance(payload, dict) and payload.get("code") == "0" else []
+            price = _num(rows[0].get("last"), 0) if rows else 0
+            if price and price > 0:
+                log.info("Paper position mark price fallback provider=OKX symbol=%s", symbol)
+                return price
+    except Exception as exc:
+        last_error = exc
+        log.warning("OKX paper mark-price fallback failed for %s: %s", symbol, type(exc).__name__)
     if last_error:
         raise last_error
     return None
