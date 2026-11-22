@@ -1843,7 +1843,8 @@ async def dual_paper_order(request: Request):
         raise HTTPException(status_code=409, detail=detail)
     return {
         "ok": True, "mode": "paper", "priceSource": price_source,
-        "price": price, "result": result, "liveOrdersEnabled": False,
+        "price": price, "marketPrice": price, "simulatedFillPrice": price,
+        "result": result, "liveOrdersEnabled": False,
     }
 
 
