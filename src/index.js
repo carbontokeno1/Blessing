@@ -161,6 +161,10 @@ export default {
         return json({ status: "source_error", message: error?.message || "scanner_failed", candidates: [], updatedAt: new Date().toISOString() }, 502);
       }
     }
+    if (pathname === "/paper-reports") {
+      const reportUrl = new URL("/paper-reports.html", request.url);
+      return env.ASSETS.fetch(new Request(reportUrl, request));
+    }
     return env.ASSETS.fetch(request);
   }
 };
