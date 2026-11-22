@@ -655,15 +655,15 @@ async function refreshOverview(){
 function memberOverview(){const p=window.BLESSING_AUTH?.profile||{};return '<div class="heading"><div><h1>พื้นที่สมาชิก</h1><div class="muted">บัญชีส่วนตัวและตลาดหุ้นสหรัฐฯ</div></div><span class="pill">MEMBER PORTAL</span></div><div class="grid"><div class="card metric"><label>ชื่อสมาชิก</label><strong style="font-size:18px">'+esc(p.display_name||p.email||'สมาชิก')+'</strong></div><div class="card metric"><label>สถานะบัญชี</label><strong class="positive" style="font-size:18px">ใช้งาน</strong></div><div class="card metric"><label>กระเป๋าจริง</label><strong id="memberBalance" style="font-size:17px">กำลังโหลด</strong></div><div class="card metric"><label>คำสั่งจริงในระบบ</label><strong id="memberTradeCount">กำลังโหลด</strong></div></div><div class="layout"><div class="card"><h3>ข้อมูลบัญชีของฉัน</h3><div class="riskline"><span>อีเมล</span><b>'+esc(p.email||'')+'</b></div><div class="riskline"><span>ประเภทบัญชี</span><b>สมาชิก</b></div><div class="riskline"><span>สิทธิ์ข้อมูล</span><b class="positive">เฉพาะข้อมูลของฉัน</b></div><div class="row"><span>เปลี่ยนรหัสผ่าน</span><button onclick="go(\'settings\')">ตั้งค่า</button></div></div><div class="card"><h3>รายการคำสั่งล่าสุด</h3><div id="memberRecent" class="empty">กำลังโหลดข้อมูลจากฐานข้อมูล...</div></div></div>'+marketAlertPanel()+'<div id="marketLiveMount">'+marketRows()+'</div>'}
 function membersView(){return '<div class="heading"><div><h1>จัดการสมาชิก</h1><div class="muted">รายชื่อจากฐานข้อมูลบัญชีจริง</div></div><span class="pill">ADMIN ONLY</span></div><div class="card"><h3>บัญชีสมาชิก</h3><div id="adminMembersTable" class="empty">กำลังโหลดรายชื่อจากฐานข้อมูล...</div></div><div class="notice">การสร้าง อนุมัติ หรือระงับบัญชีจะเปิดผ่าน API ฝั่งเซิร์ฟเวอร์ที่ตรวจสิทธิ์ Super Admin เท่านั้น</div>'}
 async function loadAdminMembers(){const sb=window.BLESSING_AUTH?.client,el=document.getElementById('adminMembersTable');if(!sb||!el)return;const {data,error}=await sb.from('profiles').select('email,display_name,role,status,created_at').order('created_at',{ascending:false}).limit(200);if(!document.getElementById('adminMembersTable'))return;if(error){el.textContent='โหลดข้อมูลไม่ได้: '+error.message;return}el.innerHTML='<div class="tablewrap"><table><thead><tr><th>ชื่อ</th><th>อีเมล</th><th>สิทธิ์</th><th>สถานะ</th></tr></thead><tbody>'+(data||[]).map(x=>'<tr><td>'+esc(x.display_name||'—')+'</td><td>'+esc(x.email||'')+'</td><td>'+esc(x.role)+'</td><td>'+esc(x.status)+'</td></tr>').join('')+'</tbody></table></div>'}
-let paperAccount=null,paperPositions=[],paperOrders=[],paperTimer=null,paperOrderBusy=false,paperAutoBusy={};
+let paperAccount=null,paperPositions=[],paperOrders=[],paperTimer=null,paperOrderBusy=false,paperAutoBusy={},paperEntryEnabled=false,paperCycleBusy=false,paperEntryCooldown={};
 function paperView(){
  return '<div class="heading"><div><h1>BLESSING · LIVE PAPER TRADING</h1><div class="muted">สนามเทรด Spot/USDT ด้วยข้อมูลตลาดจริง · เงินจำลองเท่านั้น</div></div><span class="pill">REAL MARKET · NO REAL MONEY</span></div>'+
  '<div class="grid"><div class="card metric"><label>ทุนเริ่มต้น</label><strong>3,000 ฿</strong><div class="small muted">88.41732980 USDT</div></div><div class="card metric"><label>เงินสดจำลอง</label><strong id="paperCash">กำลังโหลด</strong><div class="small muted" id="paperCashTHB">—</div></div><div class="card metric"><label>มูลค่าพอร์ต</label><strong id="paperEquity">—</strong><div class="small muted" id="paperEquityTHB">—</div></div><div class="card metric"><label>กำไร/ขาดทุนรวม</label><strong id="paperTotalPnL">—</strong><div class="small muted" id="paperTotalPnLTHB">—</div></div></div>'+
  '<div class="card section"><div class="heading"><div><h3>สถานะสนามเทรด</h3><div class="small muted" id="paperStatus">กำลังเชื่อมบัญชีจำลอง...</div></div><button class="secondary" onclick="paperRefresh(true)">รีเฟรชข้อมูล</button></div>'+
  '<div class="grid"><div class="metric"><label>ค่าธรรมเนียม</label><strong>0.10%</strong></div><div class="metric"><label>Slippage จำลอง</label><strong>0.05%</strong></div><div class="metric"><label>Take Profit</label><strong class="positive">+3.00%</strong></div><div class="metric"><label>Stop Loss</label><strong class="negative">-1.50%</strong></div></div>'+
  '<div class="notice">จำลองการจับคู่คำสั่งจากราคา Bid/Ask ที่มี (หากแหล่งข้อมูลส่งมา) บวก Slippage 0.05% และค่าธรรมเนียม 0.10% · สูงสุด 15 USDT ต่อคำสั่ง · ถือได้ไม่เกิน 5 เหรียญ · ระบบติดตาม TP/SL อัตโนมัติเมื่อมีข้อมูลราคาใหม่</div></div>'+
- '<div class="card section"><div class="heading"><div><h3>คำสั่งซื้อจำลองจาก Scanner</h3><div class="small muted">เลือกเหรียญจากข้อมูลตลาดจริงที่ Scanner ส่งมาเท่านั้น</div></div><span class="pill" id="paperScannerStatus">รอ Scanner</span></div>'+
- '<div class="toolbar"><label>เหรียญ <select id="paperSymbol" style="min-width:150px"><option value="">รอข้อมูล Scanner</option></select></label><label>งบซื้อ (USDT) <input id="paperBudget" type="number" min="5" max="15" step="0.5" value="14" style="max-width:100px"></label><button class="primary" id="paperBuyBtn" onclick="paperBuySelected()">BUY · จำลอง</button></div><div class="small muted" id="paperSelectedQuote">ราคาและสัญญาณจะปรากฏเมื่อ Scanner โหลดสำเร็จ</div></div>'+
+ '<div class="card section"><div class="heading"><div><h3>ระบบเทรดอัตโนมัติ</h3><div class="small muted" id="paperEngineStatus">หยุดอยู่ · ระบบยังไม่ส่งคำสั่งซื้อใหม่</div></div><span class="pill" id="paperScannerStatus">รอ Scanner</span></div>'+
+ '<div class="toolbar"><button class="primary" id="paperEngineBtn" onclick="paperToggleEngine()">▶ เริ่มเทรดอัตโนมัติ</button><span class="small muted">ระบบเลือกเหรียญ ราคาเข้า และจังหวะขายเอง · สูงสุด 5 สถานะ</span></div><div class="small muted" id="paperSelectedQuote">รอระบบสแกนสัญญาณ FAST ENTRY ที่ผ่านเกณฑ์</div></div>'+
  '<div class="card section"><div class="heading"><div><h3>สถานะที่ถืออยู่</h3><div class="small muted">ราคาตลาดล่าสุด · P/L ยังไม่รวมการปิดสถานะ</div></div><span class="pill" id="paperPositionCount">0 / 5</span></div><div class="tablewrap"><table><thead><tr><th>คู่เหรียญ</th><th>จำนวน</th><th>ราคาเข้าเฉลี่ย</th><th>ราคาตลาด</th><th>กำไร/ขาดทุน</th><th>TP / SL</th><th>คำสั่ง</th></tr></thead><tbody id="paperPositionRows"><tr><td colspan="7">กำลังโหลด...</td></tr></tbody></table></div></div>'+
  '<div class="card section"><div class="heading"><div><h3>ประวัติคำสั่งจำลอง</h3><div class="small muted">เก็บแยกจากคำสั่งเงินจริง และแยกตามบัญชีสมาชิก</div></div></div><div class="tablewrap"><table><thead><tr><th>เวลา</th><th>คู่</th><th>ด้าน</th><th>จำนวน</th><th>ราคา Fill</th><th>Fee</th><th>Realized P/L</th></tr></thead><tbody id="paperOrderRows"><tr><td colspan="7">กำลังโหลด...</td></tr></tbody></table></div></div>'+
  '<div class="notice">โหมดนี้ไม่ส่งคำสั่งไป Binance, Bybit หรือ OKX และไม่อ่านยอดเงินจริงจาก Exchange · อัตราแปลงแสดงผล 33.93 บาท/USDT เป็นอัตราตั้งต้นสำหรับสนามทดลอง ไม่ใช่อัตราแลกเปลี่ยนสด</div>';
@@ -766,10 +766,51 @@ async function paperAutoCheck(){
   finally{paperAutoBusy[p.symbol]=false}
  }
 }
+function paperEngineUi(){
+ const btn=document.getElementById('paperEngineBtn'),st=document.getElementById('paperEngineStatus');
+ if(btn){btn.textContent=paperEntryEnabled?'■ หยุดเทรดอัตโนมัติ':'▶ เริ่มเทรดอัตโนมัติ';btn.className=paperEntryEnabled?'secondary':'primary';}
+ if(st)st.textContent=paperEntryEnabled?'กำลังค้นหาจังหวะเข้าอัตโนมัติ · กดหยุดได้ทุกเมื่อ':'หยุดรับคำสั่งซื้อใหม่ · ระบบยังติดตาม TP/SL ของสถานะที่เปิดอยู่';
+}
+async function paperToggleEngine(){
+ if(paperEntryEnabled){paperEntryEnabled=false;paperEngineUi();const st=document.getElementById('paperStatus');if(st)st.textContent='หยุดเปิดสถานะใหม่แล้ว · กำลังดูแลสถานะที่ยังเปิดอยู่';return;}
+ try{
+  if(!window.BLESSING_AUTH?.client)throw Error('กรุณาเข้าสู่ระบบก่อน');
+  paperEntryEnabled=true;paperEngineUi();
+  const st=document.getElementById('paperStatus');if(st)st.textContent='กำลังเริ่มระบบคัดเลือกเหรียญอัตโนมัติ...';
+  await paperAutoCycle();
+ }catch(e){paperEntryEnabled=false;paperEngineUi();const st=document.getElementById('paperStatus');if(st)st.textContent='เริ่มระบบไม่ได้: '+(e.message||e);}
+}
+async function paperAutoCycle(){
+ if(paperCycleBusy||!paperEntryEnabled)return;
+ paperCycleBusy=true;
+ try{
+  await paperRefresh(true);
+  if(!paperEntryEnabled||!paperPriceFresh())return;
+  if(paperPositions.length>=5)return;
+  const starting=Number(paperAccount?.starting_balance||88.41732980);
+  const cash=Number(paperAccount?.cash_balance||0);
+  const totalPnl=Number(paperAccount?.realized_pnl||0)+paperPositions.reduce((sum,p)=>{const px=paperPriceOf(p.symbol);return sum+(px===null?0:(px-Number(p.average_entry_price))*Number(p.quantity));},0);
+  if(totalPnl<=-(starting*0.03)){const st=document.getElementById('paperStatus');if(st)st.textContent='พักการเปิดสถานะใหม่: ขาดทุนรวมถึงขีดจำกัด 3% ของทุนเริ่มต้น';return;}
+  const held=new Set(paperPositions.map(p=>p.symbol));
+  const now=Date.now();
+  const candidate=(altcoinData?.candidates||[]).filter(x=>{
+   const spread=Number(x.spreadPct),score=Number(x.score),m1=Number(x.m1),m5=Number(x.m5),rvol=Number(x.rvol);
+   return x.fastEntry===true&&!held.has(x.symbol)&&Number(x.price)>0&&Number.isFinite(spread)&&spread>0&&spread<=0.5&&score>=60&&m1>0&&m5>0&&rvol>=2&&(now-(paperEntryCooldown[x.symbol]||0)>=180000);
+  }).sort((a,b)=>Number(b.score)-Number(a.score)||Number(b.rvol)-Number(a.rvol))[0];
+  if(!candidate)return;
+  const budget=Math.min(14,15,cash/1.002);
+  if(budget<5)return;
+  paperEntryCooldown[candidate.symbol]=now;
+  const fill=await paperExecute(candidate.symbol,'buy',budget/Number(candidate.price));
+  const st=document.getElementById('paperStatus');if(st)st.textContent='AUTO BUY · '+candidate.symbol+' · '+paperFmt(fill.fill_price,8)+' USDT · Score '+candidate.score+'/100';
+ }catch(e){console.warn('Paper auto cycle:',e.message||e);const st=document.getElementById('paperStatus');if(st)st.textContent='ระบบอัตโนมัติรอแก้ไข/ข้อมูลใหม่: '+(e.message||e);}
+ finally{paperCycleBusy=false;paperEngineUi();}
+}
 function startPaperPolling(){
  if(paperTimer)clearInterval(paperTimer);
  paperInit().catch(e=>{const st=document.getElementById('paperStatus');if(st)st.textContent='เริ่มบัญชีไม่ได้: '+(e.message||e)});
- paperTimer=setInterval(()=>{if(active==='paper')paperRefresh(false)},15000);
+ paperTimer=setInterval(()=>{paperRefresh(false);if(paperEntryEnabled)paperAutoCycle();},15000);
+ paperEngineUi();
 }
 function stopPaperPolling(){if(paperTimer){clearInterval(paperTimer);paperTimer=null}}
 document.addEventListener('change',e=>{if(e.target?.id==='paperSymbol')paperSelectedChanged()});
