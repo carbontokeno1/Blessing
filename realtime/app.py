@@ -304,6 +304,14 @@ def public_status() -> dict:
         "alpacaAuthenticatedAt": state["alpacaAuthenticatedAt"],
         "alpacaConnected": bool(state["provider"] == "alpaca" and state["connection"] in {"connected", "streaming"}),
         "alpacaFeed": ALPACA_FEED if ALPACA_FEED in {"iex", "sip", "delayed_sip"} else "iex",
+        "universeScanner": {
+            "status": UNIVERSE_STATE.get("status"),
+            "universeCount": UNIVERSE_STATE.get("universeCount"),
+            "scanned": UNIVERSE_STATE.get("scanned"),
+            "candidateCount": UNIVERSE_STATE.get("candidateCount"),
+            "updatedAt": UNIVERSE_STATE.get("updatedAt"),
+            "feed": "iex",
+        },
         "marketDataReceived": bool(state["lastMessageAt"]),
         "serverTime": datetime.now(timezone.utc).isoformat(),
     }
@@ -318,6 +326,9 @@ async def startup():
         state["connection"] = "connecting"
         stream_thread = threading.Thread(target=alpaca_stream_main, name="alpaca-websocket", daemon=True)
         stream_thread.start()
+        global UNIVERSE_THREAD
+        UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="alpaca-universe-scanner", daemon=True)
+        UNIVERSE_THREAD.start()
         return
     if APP_KEY and APP_SECRET:
         state["provider"] = "webull"
@@ -660,65 +671,289 @@ def forecast_10m_from_bars(bars, price):
     return round(projected, 6)
 
 
+
+
+# Alpaca Basic IEX all-universe scanner. REST batches are used because the
+# Basic websocket trade/quote subscription is limited to 30 symbols.
+UNIVERSE_SCAN_INTERVAL = max(60, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "60")))
+UNIVERSE_LIQUIDITY_LIMIT = max(200, min(2000, int(os.getenv("UNIVERSE_LIQUIDITY_LIMIT", "1200"))))
+UNIVERSE_BATCH_SIZE = 200
+UNIVERSE_CANDIDATE_LIMIT = 150
+UNIVERSE_CACHE_SECONDS = 6 * 60 * 60
+UNIVERSE_STATE: dict[str, Any] = {
+    "status": "waiting_credentials", "provider": "Alpaca IEX",
+    "universeCount": 0, "scanned": 0, "evaluated": 0,
+    "candidateCount": 0, "candidates": [], "updatedAt": None,
+    "lastError": None, "cycleSeconds": None, "feed": "iex",
+    "coverage": "IEX-only; not consolidated US market coverage",
+}
+UNIVERSE_LOCK = threading.Lock()
+UNIVERSE_ASSETS: list[dict] = []
+UNIVERSE_ASSETS_AT = 0.0
+UNIVERSE_THREAD: threading.Thread | None = None
+UNIVERSE_EXCHANGES = {"NASDAQ", "NYSE", "AMEX", "ARCA", "BATS", "NYSEARCA", "NYSEAMERICAN", "IEX"}
+
+
+def _alpaca_headers():
+    return {"APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET}
+
+
+def _load_active_universe(force: bool = False) -> list[dict]:
+    global UNIVERSE_ASSETS, UNIVERSE_ASSETS_AT
+    if UNIVERSE_ASSETS and not force and time.time() - UNIVERSE_ASSETS_AT < UNIVERSE_CACHE_SECONDS:
+        return UNIVERSE_ASSETS
+    response = requests.get(
+        "https://paper-api.alpaca.markets/v2/assets",
+        params={"status": "active", "asset_class": "us_equity"},
+        headers=_alpaca_headers(), timeout=(5, 25),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    assets = []
+    for asset in payload if isinstance(payload, list) else []:
+        symbol = str(asset.get("symbol") or "").upper()
+        exchange = str(asset.get("exchange") or "").upper()
+        if (symbol and asset.get("status") == "active" and asset.get("tradable") is True
+                and exchange in UNIVERSE_EXCHANGES
+                and symbol.replace(".", "").replace("-", "").isalnum()):
+            assets.append({"symbol": symbol, "exchange": exchange, "name": asset.get("name") or ""})
+    UNIVERSE_ASSETS = assets
+    UNIVERSE_ASSETS_AT = time.time()
+    return assets
+
+
+def _alpaca_snapshots(symbols: list[str]) -> dict:
+    if not symbols:
+        return {}
+    response = requests.get(
+        "https://data.alpaca.markets/v2/stocks/snapshots",
+        params={"symbols": ",".join(symbols), "feed": "iex"},
+        headers=_alpaca_headers(), timeout=(5, 20),
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data if isinstance(data, dict) else {}
+
+
+def _alpaca_recent_bars(symbols: list[str]) -> dict:
+    if not symbols:
+        return {}
+    end = datetime.now(timezone.utc)
+    start = end.timestamp() - 15 * 60
+    response = requests.get(
+        "https://data.alpaca.markets/v2/stocks/bars",
+        params={
+            "symbols": ",".join(symbols),
+            "timeframe": "1Min",
+            "start": datetime.fromtimestamp(start, timezone.utc).isoformat(),
+            "end": end.isoformat(),
+            "feed": "iex",
+            "limit": 10000,
+            "sort": "asc",
+        },
+        headers=_alpaca_headers(), timeout=(5, 25),
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data.get("bars") or {}
+
+
+def _num(value, default=None):
+    try:
+        result = float(value)
+        return result if result == result and abs(result) != float("inf") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) -> dict | None:
+    trade = snap.get("latestTrade") or {}
+    quote = snap.get("latestQuote") or {}
+    minute = snap.get("minuteBar") or {}
+    daily = snap.get("dailyBar") or {}
+    price = _num(trade.get("p"), _num(minute.get("c")))
+    daily_open = _num(daily.get("o"))
+    daily_volume = _num(daily.get("v"), 0) or 0
+    if not price or price < 1 or not daily_open or daily_volume < 10000:
+        return None
+    bid, ask = _num(quote.get("bp")), _num(quote.get("ap"))
+    spread = ((ask - bid) / price) * 100 if bid and ask and ask >= bid else None
+    change = ((price / daily_open) - 1) * 100 if daily_open else None
+    bars = []
+    for b in (bars_raw or []):
+        close = _num(b.get("c"))
+        if close and close > 0:
+            bars.append({
+                "open": _num(b.get("o")), "high": _num(b.get("h")),
+                "low": _num(b.get("l")), "close": close,
+                "volume": _num(b.get("v"), 0) or 0, "time": b.get("t"),
+            })
+    bars = bars[-15:]
+    if len(bars) < 6:
+        return None
+    closes = [x["close"] for x in bars]
+    m1 = ((closes[-1] / closes[-2]) - 1) * 100 if closes[-2] else None
+    m5 = ((closes[-1] / closes[-6]) - 1) * 100 if closes[-6] else None
+    previous_volumes = [x["volume"] for x in bars[-6:-1]]
+    average_volume = sum(previous_volumes) / len(previous_volumes) if previous_volumes else 0
+    rvol = bars[-1]["volume"] / average_volume if average_volume > 0 else None
+    prior_highs = [x["high"] for x in bars[-6:-1] if x["high"]]
+    breakout = bool(prior_highs and price > max(prior_highs))
+    forecast = forecast_10m_from_bars(bars, price)
+    fast_entry = bool(
+        change is not None and change >= 3
+        and m1 is not None and m1 > 0 and m5 is not None and m5 > 0
+        and rvol is not None and rvol >= 2
+        and spread is not None and 0 < spread <= 0.5
+        and breakout
+    )
+    if not fast_entry:
+        return None
+    return {
+        "symbol": symbol, "exchange": "Alpaca IEX/" + exchange,
+        "price": price, "changePct": change, "m1": m1, "m5": m5,
+        "relativeVolume": rvol, "spreadPct": spread,
+        "barsCount": len(bars), "breakout": breakout, "fastEntry": True,
+        "forecast10m": forecast, "receivedAt": datetime.now(timezone.utc).isoformat(),
+        "dataFeed": "IEX", "dailyVolumeIex": int(daily_volume),
+    }
+
+
+def _universe_scan_cycle():
+    started = time.time()
+    assets = _load_active_universe()
+    snapshots: dict[str, dict] = {}
+    symbols = [x["symbol"] for x in assets]
+    batches = [symbols[i:i + UNIVERSE_BATCH_SIZE] for i in range(0, len(symbols), UNIVERSE_BATCH_SIZE)]
+    # A bounded worker pool keeps the Basic 200-requests/minute quota in view.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_alpaca_snapshots, batch): batch for batch in batches}
+        for future in concurrent.futures.as_completed(futures):
+            batch_data = future.result()
+            for symbol, value in batch_data.items():
+                if isinstance(value, dict):
+                    snapshots[str(symbol).upper()] = value
+
+    exchange_by_symbol = {x["symbol"]: x["exchange"] for x in assets}
+    liquid = []
+    for symbol, snap in snapshots.items():
+        daily = snap.get("dailyBar") or {}
+        volume = _num(daily.get("v"), 0) or 0
+        price = _num((snap.get("latestTrade") or {}).get("p"), _num((snap.get("minuteBar") or {}).get("c")))
+        if price and price >= 1 and volume >= 10000:
+            liquid.append((volume * price, symbol))
+    liquid.sort(reverse=True)
+    selected = [symbol for _, symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
+
+    bars_by_symbol: dict[str, list] = {}
+    bar_batches = [selected[i:i + UNIVERSE_BATCH_SIZE] for i in range(0, len(selected), UNIVERSE_BATCH_SIZE)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_alpaca_recent_bars, batch): batch for batch in bar_batches}
+        for future in concurrent.futures.as_completed(futures):
+            batch_bars = future.result()
+            for symbol, values in batch_bars.items():
+                bars_by_symbol[str(symbol).upper()] = values if isinstance(values, list) else []
+
+    candidates = []
+    for symbol in selected:
+        snap = snapshots.get(symbol) or {}
+        row = _universe_candidate(symbol, snap, bars_by_symbol.get(symbol) or [], exchange_by_symbol.get(symbol, ""))
+        if row:
+            candidates.append(row)
+    candidates.sort(key=lambda x: (
+        (x.get("relativeVolume") or 0) * 2
+        + (x.get("m5") or 0) + (x.get("m1") or 0)
+        + min((x.get("dailyVolumeIex") or 0) / 1000000, 5)
+    ), reverse=True)
+    now = datetime.now(timezone.utc).isoformat()
+    elapsed = round(time.time() - started, 2)
+    with UNIVERSE_LOCK:
+        UNIVERSE_STATE.update({
+            "status": "ok", "provider": "Alpaca Basic · IEX",
+            "universeCount": len(assets), "snapshotCount": len(snapshots),
+            "scanned": len(snapshots), "evaluated": len(selected),
+            "candidateCount": len(candidates),
+            "candidates": candidates[:UNIVERSE_CANDIDATE_LIMIT],
+            "updatedAt": now, "lastError": None, "cycleSeconds": elapsed,
+            "batchCount": len(batches) + len(bar_batches),
+            "feed": "iex",
+            "coverage": "IEX-only real-time feed; not consolidated all-exchange data",
+        })
+
+
+def _universe_scanner_loop():
+    while True:
+        if not (ALPACA_KEY and ALPACA_SECRET):
+            UNIVERSE_STATE.update({"status": "waiting_credentials", "lastError": "ALPACA_CREDENTIALS_MISSING"})
+            time.sleep(30)
+            continue
+        try:
+            _universe_scan_cycle()
+        except Exception as exc:
+            log.exception("Alpaca IEX universe scan failed")
+            with UNIVERSE_LOCK:
+                UNIVERSE_STATE.update({
+                    "status": "source_error", "lastError": type(exc).__name__,
+                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                })
+        time.sleep(UNIVERSE_SCAN_INTERVAL)
+
+
+@app.get("/universe-scanner")
+def universe_scanner():
+    with UNIVERSE_LOCK:
+        result = dict(UNIVERSE_STATE)
+    updated = result.get("updatedAt")
+    age = None
+    if updated:
+        try:
+            age = max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(updated.replace("Z", "+00:00"))).total_seconds()))
+        except Exception:
+            age = None
+    result["staleSeconds"] = age
+    if age is not None and age > max(180, UNIVERSE_SCAN_INTERVAL * 3):
+        result["status"] = "stale"
+    result["limitations"] = [
+        "ราคาหุ้นและปริมาณซื้อขายมาจาก IEX เท่านั้น ไม่ใช่ consolidated SIP ทุกตลาด",
+        "Universe เป็นสินทรัพย์ US equity ที่ Alpaca ระบุว่า active/tradable; อาจรวม ETF",
+        "สแกนเป็นรอบด้วย REST batch ไม่ใช่ real-time stream สำหรับหุ้นทุกตัว",
+        "หุ้นที่ไม่มีข้อมูล IEX ในรอบนั้นอาจไม่ถูกประเมินหรือไม่ปรากฏในรายการ",
+        "Basic จำกัด historical data ไว้ในช่วง 15 นาทีล่าสุด และ API 200 requests/minute",
+    ]
+    return result
+
+
 @app.get("/alert-snapshot")
 def alert_snapshot():
-    """Server-side alert input. Only authenticated live Alpaca stream data is eligible."""
+    """Feed fresh IEX universe candidates into the existing alert evaluator."""
     if not (ALPACA_KEY and ALPACA_SECRET):
         return {"status": "waiting_credentials", "provider": "alpaca", "quotes": []}
-    if not state.get("alpacaAuthenticated") or state.get("connection") != "streaming":
-        return {"status": "waiting_live_feed", "provider": "alpaca", "quotes": []}
-    last_at = state.get("lastMessageAt")
+    with UNIVERSE_LOCK:
+        snapshot = dict(UNIVERSE_STATE)
+    updated = snapshot.get("updatedAt")
+    if snapshot.get("status") != "ok" or not updated:
+        return {"status": snapshot.get("status", "waiting_scan"), "provider": "Alpaca IEX", "quotes": [], "scanner": snapshot}
     try:
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(last_at.replace("Z", "+00:00"))).total_seconds() if last_at else 999999
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(updated.replace("Z", "+00:00"))).total_seconds()
     except Exception:
         age = 999999
-    if age > 120:
-        return {"status": "stale_feed", "provider": "alpaca", "quotes": [], "staleSeconds": int(age)}
-    rows = []
-    for symbol in SYMBOLS:
-        item = state["quotes"].get(symbol) or {}
-        raw = item.get("raw") or {}
-        bars = state["barHistory"].get(symbol) or []
-        price = raw.get("price") or raw.get("last_price")
-        try:
-            price = float(price)
-        except (TypeError, ValueError):
-            continue
-        bid, ask = raw.get("bid"), raw.get("ask")
-        try:
-            bid, ask = float(bid), float(ask)
-            spread_pct = ((ask - bid) / price) * 100 if bid > 0 and ask >= bid and price > 0 else None
-        except (TypeError, ValueError):
-            spread_pct = None
-        session_open = state["sessionOpen"].get(symbol)
-        try:
-            change_pct = ((price / float(session_open)) - 1) * 100 if float(session_open) > 0 else None
-        except (TypeError, ValueError):
-            change_pct = None
-        rvol = None
-        breakout = False
-        if len(bars) >= 6:
-            prior_volumes = [float(x.get("volume") or 0) for x in bars[-6:-1]]
-            current_volume = float(bars[-1].get("volume") or 0)
-            avg_volume = sum(prior_volumes) / len(prior_volumes) if prior_volumes else 0
-            rvol = current_volume / avg_volume if avg_volume > 0 else None
-            prior_highs = [float(x.get("high") or 0) for x in bars[-6:-1]]
-            breakout = bool(prior_highs and price > max(prior_highs))
-        fast_entry = bool(
-            change_pct is not None and change_pct >= 3
-            and rvol is not None and rvol >= 2
-            and spread_pct is not None and spread_pct <= 0.5
-            and len(bars) >= 6 and breakout
-        )
-        rows.append({
-            "symbol": symbol, "price": price, "changePct": change_pct,
-            "relativeVolume": rvol, "spreadPct": spread_pct,
-            "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
-            "forecast10m": forecast_10m_from_bars(bars, price),
-            "receivedAt": item.get("receivedAt"),
-        })
-    return {"status": "ok", "provider": "Alpaca " + ALPACA_FEED.upper(), "quotes": rows,
-            "updatedAt": datetime.now(timezone.utc).isoformat(), "quoteCount": len(rows)}
+    if age > max(180, UNIVERSE_SCAN_INTERVAL * 3):
+        return {"status": "stale_feed", "provider": "Alpaca IEX", "quotes": [], "staleSeconds": int(age), "scanner": snapshot}
+    rows = snapshot.get("candidates") or []
+    return {
+        "status": "ok", "provider": "Alpaca IEX", "feed": "iex",
+        "quotes": rows, "quoteCount": len(rows),
+        "scanner": {
+            "universeCount": snapshot.get("universeCount"),
+            "scanned": snapshot.get("scanned"),
+            "evaluated": snapshot.get("evaluated"),
+            "candidateCount": snapshot.get("candidateCount"),
+            "updatedAt": updated,
+            "cycleSeconds": snapshot.get("cycleSeconds"),
+            "coverage": snapshot.get("coverage"),
+        },
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @app.get("/health")
