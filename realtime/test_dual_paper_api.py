@@ -60,6 +60,26 @@ class DualPaperApiTests(unittest.TestCase):
         self.assertEqual(rpc.call_args.args[1]["p_take_profit_price"], 62220.0)
         self.assertEqual(response.json()["priceSource"], "binance_th_public")
 
+
+    @patch.object(blessing_app, "_dual_stock_market_price", return_value=(200.0, "webull_stream"))
+    @patch.object(blessing_app, "_sb_rpc")
+    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
+    def test_stock_order_uses_fresh_webull_stream_price(self, auth, rpc, quote):
+        rpc.return_value = {"ok": True, "orderId": "paper-stock-order"}
+        response = self.client_context.post("/ai/dual-paper/order", json={
+            "market": "stocks", "symbol": "AAPL", "side": "buy",
+            "quantity": 0.1, "price": 1,
+            "stop_loss_pct": 1, "take_profit_pct": 2,
+            "price_source": "webull_stream",
+            "idempotency_key": "test-order-key-00006",
+        })
+        self.assertEqual(response.status_code, 200)
+        quote.assert_called_once_with("AAPL")
+        payload = rpc.call_args.args[1]
+        self.assertEqual(payload["p_price"], 200.0)
+        self.assertEqual(payload["p_stop_loss_price"], 198.0)
+        self.assertEqual(payload["p_take_profit_price"], 204.0)
+
     @patch.object(blessing_app, "_sb_rpc")
     @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
     def test_unlabeled_or_live_price_is_rejected(self, auth, rpc):
