@@ -1321,6 +1321,15 @@ def paper_engine_status(request: Request):
             "openPositions": positions}
 
 
+def _binance_public_price(symbol: str):
+    response = requests.get("https://data-api.binance.vision/api/v3/ticker/price",
+                            params={"symbol": symbol}, timeout=(4, 8),
+                            headers={"User-Agent":"BlessingPaperWorker/1.0"})
+    response.raise_for_status()
+    payload = response.json()
+    price = _num(payload.get("price"), 0) if isinstance(payload, dict) else 0
+    return price if price and price > 0 else None
+
 def _paper_worker_cycle():
     settings_rows = _sb_rest("paper_bot_settings", {"select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,allowed_exchanges",
                                                      "mode":"eq.paper", "limit":"100"})
@@ -1342,10 +1351,14 @@ def _paper_worker_cycle():
         # Manage existing positions first. No exit is made from stale or missing market prices.
         for pos in positions:
             row = candidates.get(pos.get("symbol"))
-            if not row or not fresh:
-                continue
-            price = _num(row.get("price"), 0) or 0
-            if price <= 0:
+            price = (_num(row.get("price"), 0) or 0) if row and fresh else None
+            if not price:
+                try:
+                    price = _binance_public_price(pos.get("symbol"))
+                except Exception as price_error:
+                    log.warning("Could not refresh open paper position %s: %s", pos.get("symbol"), type(price_error).__name__)
+                    continue
+            if not price:
                 continue
             _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":"mark","p_symbol":pos["symbol"],
                     "p_exchange":"Binance","p_price":price,"p_position_id":pos["id"],"p_reason":"MARK_TO_MARKET","p_signal_score":None})
