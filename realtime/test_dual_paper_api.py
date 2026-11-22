@@ -1,9 +1,11 @@
+import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
 import app as blessing_app
+import broker_adapters
 
 
 class DualPaperApiTests(unittest.TestCase):
@@ -78,6 +80,46 @@ class DualPaperApiTests(unittest.TestCase):
         self.assertEqual(payload["p_position_id"], "33333333-3333-4333-8333-333333333333")
         self.assertIsNone(payload["p_stop_loss_price"])
         self.assertIsNone(payload["p_take_profit_price"])
+
+
+
+class BinanceTHReadOnlyAdapterTests(unittest.TestCase):
+    @patch.object(broker_adapters.requests, "get")
+    def test_uses_binance_th_account_v2_without_global_sapi_calls(self, get):
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            "canTrade": True, "canWithdraw": True,
+            "balances": [{"asset": "USDT", "free": "25.5", "locked": "1"}],
+        }
+        get.return_value = response
+        with patch.dict(os.environ, {
+            "BINANCE_TH_API_KEY": "test-read-only-key",
+            "BINANCE_TH_API_BASE_URL": "https://api.binance.th",
+        }, clear=True):
+            result = broker_adapters._binance_account_snapshot()
+
+        self.assertEqual(result["status"], "connected")
+        self.assertEqual(result["broker"], "binance_th")
+        self.assertFalse(result["liveTradingPermissionReady"])
+        self.assertFalse(result["apiKeyPermissions"]["verified"])
+        self.assertEqual(result["balances"][0]["asset"], "USDT")
+        self.assertEqual(result["balances"][0]["total"], 26.5)
+        args, kwargs = get.call_args
+        self.assertEqual(args[0], "https://api.binance.th/api/v1/accountV2")
+        self.assertEqual(kwargs["headers"]["X-MBX-APIKEY"], "test-read-only-key")
+        self.assertNotIn("/sapi/", args[0])
+
+    @patch.object(broker_adapters.requests, "get")
+    def test_handles_binance_th_wrapped_data_error(self, get):
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {"code": -1002, "msg": "unauthorized", "data": {}}
+        get.return_value = response
+        with patch.dict(os.environ, {"BINANCE_TH_API_KEY": "test-key"}, clear=True):
+            result = broker_adapters._binance_account_snapshot()
+        self.assertEqual(result["status"], "connection_error")
+        self.assertEqual(result["apiCode"], -1002)
 
 
 if __name__ == "__main__":
