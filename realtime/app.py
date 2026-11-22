@@ -1507,15 +1507,20 @@ def _paper_worker_loop():
                 PAPER_WORKER_STATE.update({"status":"waiting_config","lastError":"SUPABASE_WORKER_CONFIG_MISSING"})
                 time.sleep(30)
                 continue
-            _paper_worker_cycle()
+            try:
+                _paper_worker_cycle()
+                PAPER_WORKER_STATE.update({"status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
+                                           "lastError":None,"cycles":PAPER_WORKER_STATE.get("cycles",0)+1})
+            except Exception as crypto_exc:
+                PAPER_WORKER_STATE.update({"status":"error","lastError":type(crypto_exc).__name__,
+                                           "lastCycleAt":datetime.now(timezone.utc).isoformat()})
+                log.exception("Crypto Paper Trading worker cycle failed")
             try:
                 _stock_paper_worker_cycle()
             except Exception as stock_exc:
                 STOCK_PAPER_WORKER_STATE.update({"status":"error","lastError":type(stock_exc).__name__,
                                                  "lastCycleAt":datetime.now(timezone.utc).isoformat()})
                 log.exception("Stock Paper Trading worker cycle failed")
-            PAPER_WORKER_STATE.update({"status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
-                                       "lastError":None,"cycles":PAPER_WORKER_STATE.get("cycles",0)+1})
         except Exception as exc:
             PAPER_WORKER_STATE.update({"status":"error","lastError":type(exc).__name__,
                                        "lastCycleAt":datetime.now(timezone.utc).isoformat()})
