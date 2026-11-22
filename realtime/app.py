@@ -1044,7 +1044,7 @@ def _binance_1m_klines(symbol: str):
 
 
 def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
-    price = float(row.get("lastPrice") or 0)
+    price = float(row.get("price") or row.get("lastPrice") or 0)
     closes = [b["close"] for b in bars]
     latest = bars[-1] if bars else None
     m1 = ((closes[-1] / closes[-2]) - 1) * 100 if len(closes) >= 2 and closes[-2] else None
@@ -1057,7 +1057,7 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     prior_highs = [b["high"] for b in bars[-21:-1] if b.get("high") is not None]
     breakout = bool(latest and len(prior_highs) >= 10 and latest["close"] > max(prior_highs))
     spread = None
-    bid, ask = float(row.get("bidPrice") or 0), float(row.get("askPrice") or 0)
+    bid, ask = float(row.get("bidPrice") or row.get("bid") or 0), float(row.get("askPrice") or row.get("ask") or 0)
     if price > 0 and bid > 0 and ask >= bid:
         spread = ((ask - bid) / price) * 100
     momentum_points = sum(1 for value in (m1, m5, m15, m60) if value is not None and value > 0)
@@ -1078,6 +1078,7 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
         "rvol": rvol, "breakout": breakout,
         "volumeSpike": bool(rvol is not None and rvol >= 2),
         "spreadPct": spread, "score": score, "fastEntry": fast_entry,
+        "bid": bid or None, "ask": ask or None,
         "candleCount": len(bars),
         "candleTime": latest.get("closeTime") if latest else None,
     }
@@ -1139,6 +1140,7 @@ def altcoin_scanner(refresh: int = 0):
                 "momentum": change > 0, "spreadPct": spread,
                 "score": 0, "fastEntry": False,
                 "source": provider, "marketTimestamp": stamp,
+                "bidPrice": bid, "askPrice": ask,
             })
 
         eligible.sort(key=lambda x: x["quoteVolume24h"], reverse=True)
