@@ -979,6 +979,32 @@ def _bitmart_public_tickers():
         raise RuntimeError("BITMART_INVALID_TICKER_RESPONSE")
     return rows
 
+def _binance_public_tickers():
+    response = requests.get(
+        "https://data-api.binance.vision/api/v3/ticker/24hr",
+        timeout=(5, 15),
+        headers={"User-Agent": "BlessingTrade-MarketScanner/1.0"},
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list):
+        raise RuntimeError("BINANCE_INVALID_TICKER_RESPONSE")
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pair = str(row.get("symbol") or "").upper()
+        if not pair.endswith("USDT"):
+            continue
+        normalized.append([
+            pair[:-4] + "_USDT",
+            row.get("lastPrice", 0), "", row.get("quoteVolume", 0),
+            row.get("openPrice", 0), "", "", "",
+            row.get("bidPrice", 0), "", row.get("askPrice", 0), "",
+            row.get("closeTime", 0),
+        ])
+    return normalized
+
 
 @app.get("/altcoin-scanner")
 def altcoin_scanner(refresh: int = 0):
@@ -990,7 +1016,13 @@ def altcoin_scanner(refresh: int = 0):
             result["cacheAgeSeconds"] = int(now - ALTCOIN_CACHE["at"])
             return result
     try:
-        tickers = _bitmart_public_tickers()
+        try:
+            tickers = _bitmart_public_tickers()
+            provider = "BitMart"
+        except Exception as bitmart_error:
+            log.warning("BitMart unavailable; switching altcoin scanner to Binance: %s", type(bitmart_error).__name__)
+            tickers = _binance_public_tickers()
+            provider = "Binance"
         eligible = []
         for item in tickers:
             if not isinstance(item, (list, tuple)) or len(item) < 13:
@@ -1021,7 +1053,7 @@ def altcoin_scanner(refresh: int = 0):
                 "m1": None, "m5": None, "rvol": None,
                 "breakout": False, "volumeSpike": False,
                 "momentum": change > 0,
-                "spreadPct": spread, "source": "BitMart",
+                "spreadPct": spread, "source": provider,
                 "marketTimestamp": stamp,
             })
         eligible.sort(key=lambda x: (
@@ -1031,15 +1063,15 @@ def altcoin_scanner(refresh: int = 0):
         results = eligible[:40]
         payload = {
             "status": "ok" if results else "empty",
-            "provider": "BitMart Spot public market data",
-            "exchange": "BitMart",
+            "provider": provider + " Spot public market data",
+            "exchange": provider,
             "scanned": len(eligible),
             "evaluated": len(results),
             "candidateCount": len(results),
             "candidates": results,
             "updatedAt": datetime.now(timezone.utc).isoformat(),
-            "coverage": "BitMart Spot USDT pairs; filtered by 24h quote volume >= 250,000 USDT",
-            "metricsNote": "BitMart ticker endpoint provides 24h snapshot; 1m/5m candles and RVOL are not yet available in this feed.",
+            "coverage": provider + " Spot USDT pairs; filtered by 24h quote volume >= 250,000 USDT",
+            "metricsNote": provider + " ticker feed provides a 24h snapshot only; 1m/5m candles and RVOL are not available in this fallback feed.",
         }
         with ALTCOIN_CACHE_LOCK:
             ALTCOIN_CACHE.update({"at": time.time(), "payload": payload})
