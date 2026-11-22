@@ -1403,13 +1403,24 @@ def paper_engine_status(request: Request):
 
 
 def _binance_public_price(symbol: str):
-    response = requests.get("https://data-api.binance.vision/api/v3/ticker/price",
-                            params={"symbol": symbol}, timeout=(4, 8),
-                            headers={"User-Agent":"BlessingPaperWorker/1.0"})
-    response.raise_for_status()
-    payload = response.json()
-    price = _num(payload.get("price"), 0) if isinstance(payload, dict) else 0
-    return price if price and price > 0 else None
+    last_error = None
+    for host in ("https://data-api.binance.vision", "https://api.binance.com"):
+        try:
+            response = requests.get(host + "/api/v3/ticker/price",
+                                    params={"symbol": symbol}, timeout=(4, 8),
+                                    headers={"User-Agent":"BlessingPaperWorker/1.0"})
+            response.raise_for_status()
+            payload = response.json()
+            price = _num(payload.get("price"), 0) if isinstance(payload, dict) else 0
+            if price and price > 0:
+                return price
+            last_error = RuntimeError("BINANCE_INVALID_PRICE_RESPONSE")
+        except Exception as exc:
+            last_error = exc
+            log.warning("Binance price host failed for %s (%s): %s", symbol, host, type(exc).__name__)
+    if last_error:
+        raise last_error
+    return None
 
 def _paper_worker_cycle():
     settings_rows = _sb_rest("paper_bot_settings", {"select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,allowed_exchanges",
