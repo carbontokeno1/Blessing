@@ -1778,6 +1778,16 @@ async def dual_paper_order(request: Request):
     if market == "stocks" and (len(symbol) > 10 or symbol.endswith("USDT") or not symbol[0].isalpha()):
         raise HTTPException(status_code=422, detail="พอร์ตหุ้นรับเฉพาะสัญลักษณ์หุ้นสหรัฐ")
 
+    # In a configured deployment, reject disabled/uninitialized portfolios
+    # before contacting any market-data provider. Unit tests without Supabase
+    # credentials exercise the isolated request/RPC contract only.
+    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        owned = _dual_paper_portfolio_rows(str(user["id"]))
+        portfolio = next((p for p in owned if p.get("market") == market), None)
+        if not portfolio:
+            raise HTTPException(status_code=404, detail="ยังไม่ได้สร้างพอร์ตทดลองสำหรับตลาดนี้")
+        if portfolio.get("mode") != "paper" or not portfolio.get("enabled"):
+            raise HTTPException(status_code=409, detail="พอร์ต Paper ยังไม่เปิดใช้งาน")
     quantity = _dual_paper_number(body.get("quantity"), "quantity")
     if price_source == "manual_simulation":
         price = _dual_paper_number(body.get("price"), "price")
