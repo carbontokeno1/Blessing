@@ -1,108 +1,143 @@
-const json = (body, status = 200) => new Response(JSON.stringify(body), {
+const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), {
   status,
-  headers: {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
-    "access-control-allow-origin": "*"
-  }
+  headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*", ...headers }
 });
 
+const EXCHANGES = {
+  Binance: {
+    tickers: "https://data-api.binance.vision/api/v3/ticker/24hr",
+    candles: (s) => "https://data-api.binance.vision/api/v3/klines?symbol=" + s + "&interval=1m&limit=61",
+    parseTickers: (a) => a.filter(x => String(x.symbol || "").endsWith("USDT")).map(x => ({
+      symbol: x.symbol, price: Number(x.lastPrice), change24h: Number(x.priceChangePercent),
+      quoteVolume24h: Number(x.quoteVolume), bid: Number(x.bidPrice), ask: Number(x.askPrice)
+    })),
+    parseBars: (a) => a.map(x => ({ time: Number(x[0]), open: Number(x[1]), high: Number(x[2]), low: Number(x[3]), close: Number(x[4]), quoteVolume: Number(x[7]) }))
+  },
+  Bybit: {
+    tickers: "https://api.bybit.com/v5/market/tickers?category=spot",
+    candles: (s) => "https://api.bybit.com/v5/market/kline?category=spot&symbol=" + s + "&interval=1&limit=61",
+    parseTickers: (p) => (p.result?.list || []).filter(x => String(x.symbol || "").endsWith("USDT")).map(x => ({
+      symbol: x.symbol, price: Number(x.lastPrice), change24h: Number(x.price24hPcnt) * 100,
+      quoteVolume24h: Number(x.turnover24h), bid: Number(x.bid1Price), ask: Number(x.ask1Price)
+    })),
+    parseBars: (p) => (p.result?.list || []).slice().reverse().map(x => ({ time: Number(x[0]), open: Number(x[1]), high: Number(x[2]), low: Number(x[3]), close: Number(x[4]), quoteVolume: Number(x[6]) }))
+  },
+  OKX: {
+    tickers: "https://www.okx.com/api/v5/market/tickers?instType=SPOT",
+    candles: (s) => "https://www.okx.com/api/v5/market/candles?instId=" + s.replace("USDT", "-USDT") + "&bar=1m&limit=61",
+    parseTickers: (p) => (p.data || []).filter(x => String(x.instId || "").endsWith("-USDT")).map(x => ({
+      symbol: x.instId.replace("-", ""), price: Number(x.last), change24h: Number(x.open24h) > 0 ? (Number(x.last) / Number(x.open24h) - 1) * 100 : NaN,
+      quoteVolume24h: Number(x.volCcy24h), bid: Number(x.bidPx), ask: Number(x.askPx)
+    })),
+    parseBars: (p) => (p.data || []).slice().reverse().map(x => ({ time: Number(x[0]), open: Number(x[1]), high: Number(x[2]), low: Number(x[3]), close: Number(x[4]), quoteVolume: Number(x[7]) }))
+  }
+};
+
+const EXCLUDED = new Set(["BTC","ETH","BNB","SOL","XRP","DOGE","USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD","USDT"]);
+const LEVERAGED = ["UP","DOWN","BULL","BEAR","3L","3S","5L","5S"];
+
+async function getJson(url) {
+  const r = await fetch(url, { headers: { "accept": "application/json", "user-agent": "BlessingTrade-AltcoinHunter/2.0" }, signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error("HTTP_" + r.status);
+  return r.json();
+}
+
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      try { out[i] = await fn(items[i]); } catch (e) { out[i] = { error: e?.message || "request_failed" }; }
+    }
+  }));
+  return out;
+}
+
+function metrics(row, bars) {
+  const valid = bars.filter(x => x.close > 0 && x.high > 0);
+  if (valid.length < 21) return { ...row, m1: null, m5: null, m15: null, m60: null, rvol: null, breakout: false, volumeSpike: false, momentum: false, score: 0, signal: "INSUFFICIENT_DATA", barsAvailable: valid.length };
+  const last = valid[valid.length - 1], close = last.close;
+  const move = (n) => valid.length > n && valid[valid.length - 1 - n].close > 0 ? (close / valid[valid.length - 1 - n].close - 1) * 100 : null;
+  const priorVol = valid.slice(-21, -1).map(x => x.quoteVolume).filter(x => x > 0);
+  const avgVol = priorVol.length ? priorVol.reduce((a,b) => a+b, 0) / priorVol.length : 0;
+  const rvol = avgVol > 0 ? last.quoteVolume / avgVol : null;
+  const priorHigh = Math.max(...valid.slice(-21, -1).map(x => x.high));
+  const breakout = close > priorHigh;
+  const spreadPct = row.bid > 0 && row.ask >= row.bid && row.price > 0 ? (row.ask-row.bid)/row.price*100 : null;
+  const m1=move(1), m5=move(5), m15=move(15), m60=move(60);
+  const volumeSpike = rvol !== null && rvol >= 2;
+  const momentum = m1 !== null && m5 !== null && m1 > 0 && m5 > 0 && (m15 === null || m15 > 0);
+  let score = 0;
+  score += Math.max(0, Math.min(15, row.change24h * 1.5));
+  score += Math.max(0, Math.min(20, (m1 || 0) * 18));
+  score += Math.max(0, Math.min(20, (m5 || 0) * 8));
+  score += Math.max(0, Math.min(12, (m15 || 0) * 3));
+  score += Math.max(0, Math.min(8, (m60 || 0)));
+  score += rvol === null ? 0 : Math.min(15, Math.max(0, (rvol - 1) * 7.5));
+  if (breakout) score += 10;
+  if (spreadPct !== null && spreadPct <= 0.2) score += 5;
+  else if (spreadPct === null || spreadPct > 0.5) score -= 10;
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const fastEntry = momentum && volumeSpike && breakout && spreadPct !== null && spreadPct <= 0.5 && score >= 60;
+  return { ...row, m1, m5, m15, m60, rvol, breakout, volumeSpike, momentum, spreadPct, score, fastEntry, signal: fastEntry ? "FAST_ENTRY" : breakout ? "BREAKOUT" : volumeSpike ? "VOLUME_SPIKE" : momentum ? "MOMENTUM" : "WATCH", barsAvailable: valid.length };
+}
+
+async function scanExchange(name, cfg) {
+  try {
+    const payload = await getJson(cfg.tickers);
+    if (name === "Bybit" && payload.retCode !== 0) throw new Error(payload.retMsg || "BYBIT_API_ERROR");
+    if (name === "OKX" && payload.code !== "0") throw new Error(payload.msg || "OKX_API_ERROR");
+    const tickers = cfg.parseTickers(payload);
+    const eligible = tickers.filter(x => {
+      const base = x.symbol.replace(/USDT$/, "");
+      return base && !EXCLUDED.has(base) && !LEVERAGED.some(s => base.endsWith(s)) &&
+        x.price > 0 && Number.isFinite(x.change24h) && x.quoteVolume24h >= 250000;
+    }).sort((a,b) => b.quoteVolume24h-a.quoteVolume24h).slice(0, 25);
+    const evaluated = await mapLimit(eligible, 5, async row => {
+      const barsPayload = await getJson(cfg.candles(row.symbol));
+      const bars = cfg.parseBars(barsPayload);
+      return metrics({ ...row, exchange: name, source: name, symbol: row.symbol }, bars);
+    });
+    const candidates = evaluated.filter(x => x && !x.error);
+    return { exchange: name, status: "ok", scanned: tickers.length, eligible: eligible.length, evaluated: candidates.length, candidates };
+  } catch (e) {
+    return { exchange: name, status: "source_error", scanned: 0, eligible: 0, evaluated: 0, candidates: [], error: e?.message || "source_error" };
+  }
+}
+
 async function altcoinScanner(request) {
-  const cacheKey = new Request(new URL("/__cache/binance-altcoin-v1", request.url).toString(), { method: "GET" });
-  const cache = caches.default;
+  const key = new Request(new URL("/__cache/altcoin-multi-v2", request.url).toString());
   const force = new URL(request.url).searchParams.get("refresh") === "1";
   if (!force) {
-    const cached = await cache.match(cacheKey);
+    const cached = await caches.default.match(key);
     if (cached) return cached;
   }
-
-  const endpoints = [
-    "https://data-api.binance.vision/api/v3/ticker/24hr",
-    "https://api.binance.com/api/v3/ticker/24hr",
-    "https://api-gcp.binance.com/api/v3/ticker/24hr"
-  ];
-  let raw = null;
-  let lastError = "ไม่มีแหล่งข้อมูลตอบกลับ";
-  let provider = "Binance Spot";
-  for (const endpoint of endpoints) {
-    try {
-      const upstream = await fetch(endpoint, {
-        method: "GET",
-        headers: { "accept": "application/json", "user-agent": "BlessingTrade-AltcoinHunter/1.0" },
-        signal: AbortSignal.timeout(9000)
-      });
-      if (!upstream.ok) {
-        lastError = "HTTP " + upstream.status + " จาก " + new URL(endpoint).hostname;
-        continue;
-      }
-      const payload = await upstream.json();
-      if (!Array.isArray(payload)) {
-        lastError = "รูปแบบข้อมูลไม่ถูกต้องจาก " + new URL(endpoint).hostname;
-        continue;
-      }
-      raw = payload;
-      provider = "Binance Spot (" + new URL(endpoint).hostname + ")";
-      break;
-    } catch (error) {
-      lastError = (error && error.name ? error.name : "ConnectionError") + " จาก " + new URL(endpoint).hostname;
-    }
-  }
-
-  if (!raw) {
-    return json({
-      status: "source_error", provider: "Binance Spot",
-      message: "เชื่อมต่อแหล่งข้อมูลตลาดไม่สำเร็จ: " + lastError,
-      scanned: 0, evaluated: 0, candidateCount: 0, candidates: [],
-      updatedAt: new Date().toISOString()
-    }, 502);
-  }
-
-  const excluded = new Set(["BTC","ETH","BNB","SOL","XRP","DOGE","USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD","USDT"]);
-  const suffixes = ["UP","DOWN","BULL","BEAR","3L","3S","5L","5S"];
-  const eligible = [];
-  for (const row of raw) {
-    const pair = String(row.symbol || "").toUpperCase();
-    if (!pair.endsWith("USDT")) continue;
-    const base = pair.slice(0, -4);
-    if (!base || excluded.has(base) || suffixes.some(s => base.endsWith(s))) continue;
-    const price = Number(row.lastPrice);
-    const quoteVolume = Number(row.quoteVolume);
-    const change = Number(row.priceChangePercent);
-    const open = Number(row.openPrice);
-    const bid = Number(row.bidPrice);
-    const ask = Number(row.askPrice);
-    if (!(price > 0) || !(quoteVolume >= 250000) || !Number.isFinite(change) || !(open > 0)) continue;
-    eligible.push({
-      symbol: pair, exchangeSymbol: pair, price,
-      change24h: change, quoteVolume24h: quoteVolume,
-      m1: null, m5: null, rvol: null, breakout: false,
-      volumeSpike: false, momentum: change > 0,
-      spreadPct: bid > 0 && ask >= bid ? (ask - bid) / price * 100 : null,
-      source: "Binance", marketTimestamp: row.closeTime || Date.now()
-    });
-  }
-  eligible.sort((a, b) => (b.change24h - a.change24h) || (b.quoteVolume24h - a.quoteVolume24h));
-  const candidates = eligible.slice(0, 40);
+  const names = Object.keys(EXCHANGES);
+  const exchanges = await Promise.all(names.map(name => scanExchange(name, EXCHANGES[name])));
+  const candidates = exchanges.flatMap(x => x.candidates).sort((a,b) => b.score-a.score || b.quoteVolume24h-a.quoteVolume24h).slice(0, 60);
+  const good = exchanges.filter(x => x.status === "ok");
   const result = json({
-    status: candidates.length ? "ok" : "empty",
-    provider, exchange: "Binance", scanned: raw.length,
-    evaluated: candidates.length, candidateCount: candidates.length,
-    candidates, updatedAt: new Date().toISOString(),
-    coverage: "Binance Spot USDT pairs; quote volume >= 250,000 USDT",
-    metricsNote: "24h ticker snapshot; 1m/5m candles and RVOL are not included."
+    status: good.length ? (candidates.length ? "ok" : "empty") : "source_error",
+    provider: "Binance · Bybit · OKX public Spot APIs",
+    exchanges: exchanges.map(x => ({ exchange: x.exchange, status: x.status, scanned: x.scanned, eligible: x.eligible, evaluated: x.evaluated, error: x.error || null })),
+    exchangeCount: good.length, scanned: exchanges.reduce((n,x) => n+x.scanned, 0),
+    evaluated: exchanges.reduce((n,x) => n+x.evaluated, 0),
+    candidateCount: candidates.length, candidates,
+    updatedAt: new Date().toISOString(), refreshSeconds: 60,
+    criteria: { market: "Spot/USDT", minQuoteVolume24h: 250000, momentum: "1m/5m/15m/60m", rvol: "current 1m quote volume / prior 20-bar average", breakout: "close above previous 20 one-minute highs", maxSpreadPct: 0.5, fastEntryScore: 60, takeProfitPct: 3, stopLossPct: 1.5 },
+    metricsNote: "All exchange results use the same formula. Scores rank candidates; FAST_ENTRY requires positive momentum, RVOL >= 2, breakout, spread <= 0.5%, and score >= 60. Not a trade instruction."
   });
-  const cacheResponse = new Response(result.body, result);
-  cacheResponse.headers.set("cache-control", "public, max-age=0, s-maxage=20");
-  await cache.put(cacheKey, cacheResponse.clone());
-  return cacheResponse;
+  const cached = new Response(result.body, { status: result.status, headers: result.headers });
+  cached.headers.set("cache-control", "public, max-age=0, s-maxage=15");
+  await caches.default.put(key, cached.clone());
+  return cached;
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/api/altcoin-scanner" && request.method === "GET") {
-      return altcoinScanner(request);
-    }
+    if (url.pathname === "/api/altcoin-scanner" && request.method === "GET") return altcoinScanner(request);
     return env.ASSETS.fetch(request);
   }
 };
