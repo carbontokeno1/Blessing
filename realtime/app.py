@@ -1326,8 +1326,14 @@ PAPER_ENTRY_COOLDOWNS = {}
 
 
 def _sb_headers(prefer=None):
-    headers = {"apikey": SUPABASE_SERVICE_ROLE_KEY,
-               "Content-Type": "application/json"}
+    # Supabase REST needs the service-role JWT in both headers:
+    # apikey identifies the project key; Authorization selects the service_role
+    # Postgres role so backend workers can bypass member-facing RLS safely.
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": "Bearer " + SUPABASE_SERVICE_ROLE_KEY,
+        "Content-Type": "application/json",
+    }
     if prefer:
         headers["Prefer"] = prefer
     return headers
