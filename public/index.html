@@ -764,9 +764,12 @@ document.addEventListener('submit',async e=>{
  e.target.reset();out.textContent='เปลี่ยนรหัสผ่านเรียบร้อยแล้ว';out.style.color='#43d6a0';
 });
 sb.auth.onAuthStateChange((event,session)=>{
- if(event==='PASSWORD_RECOVERY'){recoveryMode=true;showRecoveryForm();return}
- if(event==='SIGNED_OUT'){gate.style.display='grid';return}
- if(event==='SIGNED_IN'&&session&&!recoveryMode)enter(session);
+ if(event==='PASSWORD_RECOVERY'){setTimeout(()=>{recoveryMode=true;showRecoveryForm()},0);return}
+ if(event==='SIGNED_OUT'){setTimeout(()=>{activeUserId=null;window.BLESSING_AUTH=null;gate.style.display='grid'},0);return}
+ if(event==='SIGNED_IN'&&session&&!recoveryMode){
+  // Do not call Supabase queries inside this callback; defer until the auth lock is released.
+  setTimeout(()=>{void enter(session)},0);
+ }
 });
 const {data:{session}}=await sb.auth.getSession();
 if(recoveryMode){showRecoveryForm()}else{await enter(session)}
