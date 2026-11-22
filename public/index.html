@@ -247,16 +247,19 @@ async function dualApi(path,body){
 async function dualInitialize(){const m=document.getElementById('dualMessage');if(m)m.textContent='กำลังสร้างพอร์ตทดลอง...';try{const r=await dualApi('/ai/dual-paper/initialize',{});if(m)m.textContent=r.message||'สร้างพอร์ตทดลองแล้ว';await dualRefresh(false)}catch(e){if(m)m.textContent=e.message}}
 async function dualStart(market){try{await dualApi('/ai/dual-paper/start',{market});await dualRefresh(false)}catch(e){alert(e.message)}}
 async function dualStop(market){try{await dualApi('/ai/dual-paper/stop',{market});await dualRefresh(false)}catch(e){alert(e.message)}}
+let dualLastOrderFingerprint=null,dualLastOrderKey=null;
+function dualOrderKey(payload){const fingerprint=JSON.stringify(payload);if(fingerprint!==dualLastOrderFingerprint||!dualLastOrderKey){dualLastOrderFingerprint=fingerprint;dualLastOrderKey=crypto.randomUUID()}return dualLastOrderKey}
+function dualOrderSucceeded(){dualLastOrderFingerprint=null;dualLastOrderKey=null}
 async function dualSubmitOrder(){
  const market=document.getElementById('dualMarket')?.value,symbol=(document.getElementById('dualSymbol')?.value||'').trim().toUpperCase();
  const notional=Number(document.getElementById('dualNotional')?.value),stopLossPct=Number(document.getElementById('dualStopPct')?.value),takeProfitPct=Number(document.getElementById('dualTargetPct')?.value);
  if(!symbol||!Number.isFinite(notional)||notional<=0){alert('กรุณาตรวจสอบสัญลักษณ์และเงินลงทุน');return}
  if(!confirm('ยืนยันเปิด BUY ในพอร์ตทดลอง '+market+' สำหรับ '+symbol+'? ไม่มีการส่งคำสั่งเงินจริง'))return;
- try{const r=await dualApi('/ai/dual-paper/order',{market,symbol,side:'buy',notional,stopLossPct,takeProfitPct});alert('บันทึกคำสั่ง Paper แล้ว · Fill '+dualFmt(r.simulatedFillPrice,6));await dualRefresh(false)}catch(e){alert(e.message)}
+ try{const order={market,symbol,side:'buy',notional,stopLossPct,takeProfitPct};order.idempotencyKey=dualOrderKey(order);const r=await dualApi('/ai/dual-paper/order',order);dualOrderSucceeded();alert('บันทึกคำสั่ง Paper แล้ว · Fill '+dualFmt(r.simulatedFillPrice,6));await dualRefresh(false)}catch(e){alert(e.message)}
 }
 async function dualClosePosition(market,positionId,symbol){
  if(!confirm('ยืนยันปิดสถานะจำลอง '+symbol+'?'))return;
- try{const r=await dualApi('/ai/dual-paper/order',{market,symbol,side:'sell',positionId});alert('ปิดสถานะ Paper แล้ว · P/L '+dualFmt(r.result?.realizedPnl,4));await dualRefresh(false)}catch(e){alert(e.message)}
+ try{const order={market,symbol,side:'sell',positionId};order.idempotencyKey=dualOrderKey(order);const r=await dualApi('/ai/dual-paper/order',order);dualOrderSucceeded();alert('ปิดสถานะ Paper แล้ว · P/L '+dualFmt(r.result?.realizedPnl,4));await dualRefresh(false)}catch(e){alert(e.message)}
 }
 function dualRender(snapshot){
  const cards=document.getElementById('dualPortfolioCards'),positions=document.getElementById('dualPositions'),orders=document.getElementById('dualOrders'),msg=document.getElementById('dualMessage');if(!cards)return;
