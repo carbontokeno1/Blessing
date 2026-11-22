@@ -474,17 +474,17 @@ function stopCryptoStreams(){cryptoStreamActive=false;for(const ex of ['Binance'
 
 let altcoinData=null,altcoinBusy=false,altcoinTimer=null;
 function altcoinView(){
- return '<div class="heading"><div><h1>ALTCOIN HUNTER</h1><div class="muted">CRYPTO MOMENTUM SCANNER · ค้นหาเหรียญ Altcoin ที่กำลังเร่งตัว</div></div><span class="pill">BITMART SPOT · PUBLIC DATA</span></div>'+
+ return '<div class="heading"><div><h1>ALTCOIN HUNTER</h1><div class="muted">CRYPTO MOMENTUM SCANNER · ค้นหาเหรียญ Altcoin ที่กำลังเร่งตัว</div></div><span class="pill">BINANCE SPOT · PUBLIC DATA</span></div>'+
  '<div class="grid"><div class="card metric"><label>คู่เหรียญที่ตรวจพบ</label><strong id="altTotal">—</strong></div><div class="card metric"><label>กำลังมี Momentum</label><strong id="altMomentum">—</strong></div><div class="card metric"><label>Volume Spike</label><strong id="altVolume">—</strong></div><div class="card metric"><label>Breakout</label><strong id="altBreakout">—</strong></div></div>'+
  '<div class="card section"><div class="heading"><div><h3>ALTCOIN MOMENTUM RADAR</h3><div class="small muted" id="altStatus">กำลังโหลดข้อมูลตลาด...</div></div><button class="secondary" onclick="loadAltcoinScanner(true)">สแกนใหม่</button></div>'+
  '<div class="toolbar"><span class="pill" id="altUpdated">รอข้อมูล</span><span class="pill">Spot / USDT</span><span class="pill">Auto refresh 60s</span></div>'+
  '<div class="tablewrap"><table><thead><tr><th>อันดับ</th><th>เหรียญ</th><th>ราคา USDT</th><th>24h</th><th>1m</th><th>5m</th><th>RVOL</th><th>มูลค่าซื้อขาย 24h</th><th>สถานะ</th><th>แผนจำลอง</th></tr></thead><tbody id="altRows"><tr><td colspan="10">กำลังดึงข้อมูล...</td></tr></tbody></table></div>'+
- '<div class="notice">ข้อมูลตลาด Spot สาธารณะจาก BitMart · คัดกรองเหรียญสภาพคล่องต่ำและเหรียญ Stablecoin/Leveraged Token ออก · ค่า 1m/5m และ RVOL จะแสดงเมื่อมีข้อมูลแท่งเทียนรองรับ · ราคาเป้าหมาย +3% และ Stop -1.5% เป็นแผนจำลองอ้างอิง ไม่ใช่คำสั่งซื้อขายหรือการรับประกันผลตอบแทน</div></div>';
+ '<div class="notice">ข้อมูลตลาด Spot สาธารณะจาก Binance · คัดกรองเหรียญสภาพคล่องต่ำและเหรียญ Stablecoin/Leveraged Token ออก · ค่า 1m/5m และ RVOL จะแสดงเมื่อมีข้อมูลแท่งเทียนรองรับ · ราคาเป้าหมาย +3% และ Stop -1.5% เป็นแผนจำลองอ้างอิง ไม่ใช่คำสั่งซื้อขายหรือการรับประกันผลตอบแทน</div></div>';
 }
 function fmtAlt(n){if(n===null||n===undefined||n==='')return '—';const x=Number(n);return Number.isFinite(x)?x.toLocaleString('en-US',{maximumFractionDigits:x<1?8:4}):'—'}
 async function loadAltcoinScanner(force=false){
  if(altcoinBusy)return;altcoinBusy=true;
- const status=document.getElementById('altStatus');if(status)status.textContent='กำลังสแกนตลาด BitMart Spot...';
+ const status=document.getElementById('altStatus');if(status)status.textContent='กำลังสแกนตลาด Binance Spot...';
  try{
   const r=await fetch('/api/altcoin-scanner'+(force?'?refresh=1':''),{cache:'no-store'});
   if(!r.ok)throw Error('HTTP '+r.status);
@@ -501,7 +501,7 @@ function renderAltcoinScanner(){
  put('altMomentum',rows.filter(x=>x.momentum).length);
  put('altVolume',rows.filter(x=>x.volumeSpike).length);
  put('altBreakout',rows.filter(x=>x.breakout).length);
- put('altStatus',d.status==='ok'?'สแกนสำเร็จ · '+(d.provider||'BitMart Spot'):(d.message||'รอข้อมูลตลาด'));
+ put('altStatus',d.status==='ok'?'สแกนสำเร็จ · '+(d.provider||'Binance Spot'):(d.message||'รอข้อมูลตลาด'));
  put('altUpdated',d.updatedAt?'อัปเดต '+new Date(d.updatedAt).toLocaleTimeString('th-TH'):'ยังไม่มีข้อมูล');
  const el=document.getElementById('altRows');if(!el)return;
  if(!rows.length){el.innerHTML='<tr><td colspan="10">'+(d.message||'ยังไม่พบเหรียญที่ผ่านเกณฑ์ในรอบนี้')+'</td></tr>';return}
@@ -510,7 +510,7 @@ function renderAltcoinScanner(){
   const signal=x.breakout?'BREAKOUT':x.volumeSpike?'VOLUME SPIKE':x.momentum?'MOMENTUM':'WATCH';
   const entry=Number(x.price),target=entry*1.03,stop=entry*.985;
   const turnover=fmtAlt(x.quoteVolume24h??x.quoteVolume??x.turnover24h??x.volume24h);
-   return '<tr><td>'+(i+1)+'</td><td><b>'+esc(String(x.symbol||'').replace('USDT',''))+'/USDT</b><div class="small muted">'+esc(x.source||'BitMart')+'</div></td><td>'+fmtAlt(entry)+'</td><td class="'+(Number(x.change24h)>=0?'positive':'negative')+'">'+pct(x.change24h)+'</td><td>'+pct(x.m1)+'</td><td>'+pct(x.m5)+'</td><td>'+fmtAlt(x.rvol)+'x</td><td>'+turnover+'</td><td><span class="pill">'+signal+'</span></td><td>TP '+fmtAlt(target)+' / SL '+fmtAlt(stop)+'</td></tr>';
+   return '<tr><td>'+(i+1)+'</td><td><b>'+esc(String(x.symbol||'').replace('USDT',''))+'/USDT</b><div class="small muted">'+esc(x.source||'Binance')+'</div></td><td>'+fmtAlt(entry)+'</td><td class="'+(Number(x.change24h)>=0?'positive':'negative')+'">'+pct(x.change24h)+'</td><td>'+pct(x.m1)+'</td><td>'+pct(x.m5)+'</td><td>'+fmtAlt(x.rvol)+'x</td><td>'+turnover+'</td><td><span class="pill">'+signal+'</span></td><td>TP '+fmtAlt(target)+' / SL '+fmtAlt(stop)+'</td></tr>';
   }).join('');
  }
  function startAltcoinPolling(){
