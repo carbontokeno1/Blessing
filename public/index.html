@@ -129,7 +129,67 @@ function chooseScanner(rank,direction){scannerRank=rank;scannerDirection=directi
 function renderMomentumScanner(){const b=document.getElementById('momentumRows'),s=document.getElementById('momentumStatus'),c=document.getElementById('momentumCount');if(!b)return;const label=({PRE_MARKET:'Pre-Market',AFTER_MARKET:'After Hours',MIN_3:'3 Minutes',MIN_5:'5 Minutes',DAY_1:'Day Gainers'})[scannerRank]||scannerRank;if(s)s.textContent=(momentumScanner?.message||momentumScanner?.status||'รอข้อมูล')+' · '+label+(momentumScanner?.updatedAt?' · '+new Date(momentumScanner.updatedAt).toLocaleTimeString('th-TH'):'');if(c)c.textContent=String(momentumScanner?.scanned||0);const rows=momentumScanner?.candidates||[];if(rows.length){b.innerHTML=rows.map((q,i)=>'<tr><td>'+(i+1)+'</td><td><b>'+esc(q.symbol||'—')+'</b><div class="small muted">'+esc(q.name||'')+'</div></td><td>$'+(Number(q.price)||0).toFixed(2)+'</td><td class="'+(Number(q.changePct)>=0?'positive':'negative')+'">'+(Number(q.changePct)>=0?'+':'')+(Number(q.changePct)||0).toFixed(2)+'%</td><td>'+Number(q.volume||0).toLocaleString('en-US')+'</td><td>'+((Number(q.relativeVolume)||0).toFixed(2))+'</td><td><span class="sparkline">—</span></td></tr>').join('')}else{const msg=momentumScanner?.message||'รอเชื่อมต่อ Webull OpenAPI';b.innerHTML='<tr><td colspan="7" class="empty">'+esc(msg)+'</td></tr>'}}
 function startStockPolling(){if(stockPollTimer)return;refreshStocks();loadMomentumScanner();stockPollTimer=setInterval(()=>{if(active==='stocks')loadMomentumScanner()},30000);stockQuotePollTimer=setInterval(()=>{if(active==='stocks')refreshStocks()},30000)}
 function stopStockPolling(){if(stockPollTimer){clearInterval(stockPollTimer);stockPollTimer=null}if(stockQuotePollTimer){clearInterval(stockQuotePollTimer);stockQuotePollTimer=null}}function renderStocks(){const el=document.getElementById('stockRows');if(!el)return;const rows=stockSymbols.filter(x=>stockQuotes[x]).map(x=>stockQuotes[x]).sort((a,b)=>(b.m1||-99)-(a.m1||-99));el.innerHTML=rows.length?rows.map(q=>{let sig=Number.isFinite(q.m1)&&Number.isFinite(q.m5)&&q.m1>=.15&&q.m5>=.35?'MOMENTUM':q.change>=3?'NEAR TARGET':'เฝ้าดู';return '<tr><td><b>'+q.symbol+'</b></td><td>$'+q.price.toFixed(2)+'</td><td class="'+(q.change>=0?'positive':'negative')+'">'+(q.change>=0?'+':'')+q.change.toFixed(2)+'%</td><td>'+(Number.isFinite(q.m1)?q.m1.toFixed(2)+'%':'เก็บข้อมูล')+'</td><td>'+(Number.isFinite(q.m5)?q.m5.toFixed(2)+'%':'เก็บข้อมูล')+'</td><td>'+q.volume.toLocaleString('en-US')+'</td><td>'+q.session+'</td><td>'+sig+'</td><td><a style="color:var(--gold)" target="_blank" rel="noopener" href="https://www.tradingview.com/chart/?symbol=NASDAQ:'+q.symbol+'">กราฟ</a></td></tr>'}).join(''):'<tr><td colspan="9">ยังไม่มีข้อมูล · อาจถูกจำกัดการเข้าถึงจากผู้ให้บริการ</td></tr>';const st=document.getElementById('stockStatus');if(st)st.textContent=stockStatus;const ct=document.getElementById('stockCount');if(ct)ct.textContent=rows.length+' / '+stockSymbols.length}
-function stocksView(){return '<div class="heading"><div><h1>US STOCK MARKET SCANNER</h1><div class="muted">US STOCKS · NASDAQ / NYSE · Yahoo Finance สำรองระหว่างรอ Webull OpenAPI</div></div><span class="pill">PUBLIC DATA · FALLBACK</span></div><div class="card"><div class="heading"><div><h3>Market Movers · หุ้นเคลื่อนไหวสูงสุด</h3><div id="momentumStatus" class="small muted">กำลังโหลดข้อมูลหุ้นรายวันจากแหล่งสำรอง</div></div><button class="secondary" onclick="loadMomentumScanner()">รีเฟรช</button></div><div class="scanner-tabs"><button class="tab active" data-rank="PRE_MARKET" onclick="chooseScanner(\'PRE_MARKET\',scannerDirection)">Pre-Market</button><button class="tab" data-rank="AFTER_MARKET" onclick="chooseScanner(\'AFTER_MARKET\',scannerDirection)">After Hours</button><button class="tab" data-rank="MIN_3" onclick="chooseScanner(\'MIN_3\',scannerDirection)">3 Minutes</button><button class="tab" data-rank="MIN_5" onclick="chooseScanner(\'MIN_5\',scannerDirection)">5 Minutes</button><button class="tab" data-rank="DAY_1" onclick="chooseScanner(\'DAY_1\',scannerDirection)">Today</button></div><div class="toolbar"><button class="secondary active" data-direction="DESC" onclick="chooseScanner(scannerRank,\'DESC\')">Top Gainers</button><button class="secondary" data-direction="ASC" onclick="chooseScanner(scannerRank,\'ASC\')">Top Losers</button><span class="small muted">หุ้นที่พบ: <b id="momentumCount">0</b> · ตรวจสอบข้อมูลทุก 30 วินาที (ข้อมูลสำรองอาจล่าช้า)</span></div><div class="tablewrap"><table><thead><tr><th>#</th><th>หุ้น</th><th>ราคา USD</th><th>% เปลี่ยนแปลง</th><th>Volume</th><th>Rel. Volume</th><th>กราฟ</th></tr></thead><tbody id="momentumRows"><tr><td colspan="7">รอเชื่อม Webull OpenAPI</td></tr></tbody></table></div><div class="small muted">Today ใช้ Yahoo Finance แบบไม่เป็นทางการชั่วคราว · Pre/After และ 3/5 นาทีรอ Webull API · ไม่มีการสร้างราคาจำลอง</div></div><div class="grid"><div class="card metric"><label>ผู้ให้บริการ</label><strong style="font-size:16px">Webull OpenAPI</strong></div><div class="card metric"><label>สถานะ API</label><strong style="font-size:16px">รออนุมัติ</strong></div><div class="card metric"><label>โหมด</label><strong style="font-size:16px">Read-only / Paper</strong></div><div class="card metric"><label>เป้าหมายกลยุทธ์</label><strong class="gold">ไม่รับประกันกำไร</strong></div></div><div class="notice">เมื่อ Webull อนุมัติและเปิดสิทธิ์ Market Data แล้ว จึงจะเริ่มแสดงรายการหุ้นจริงได้ ข้อมูล Pre-market / After-hours และช่วง 3/5 นาทีขึ้นกับสิทธิ์และตลาดที่เปิดอยู่</div><div class="notice dangerbox">ระบบยังไม่ส่งคำสั่งซื้อขายเงินจริง และไม่รับประกันผลตอบแทน</div>'+strategyPanel()}
+
+let universeScanData=null,universeScanBusy=false,universeScanTimer=null;
+async function loadUniverseScanner(){
+ if(universeScanBusy)return;
+ universeScanBusy=true;
+ const status=document.getElementById('universeScanStatus');
+ if(status)status.textContent='กำลังสแกน Universe ผ่าน Alpaca Basic IEX...';
+ try{
+  const response=await fetch(MARKET_BRIDGE_URL+'/universe-scanner',{cache:'no-store'});
+  if(!response.ok)throw Error('HTTP '+response.status);
+  universeScanData=await response.json();
+ }catch(error){
+  universeScanData={...(universeScanData||{}),status:'source_unavailable',lastError:error.name||'NETWORK_ERROR'};
+ }finally{
+  universeScanBusy=false;
+  renderUniverseScanner();
+ }
+}
+function renderUniverseScanner(){
+ const status=document.getElementById('universeScanStatus');
+ const count=document.getElementById('universeScanCount');
+ const rowsEl=document.getElementById('universeScanRows');
+ if(!rowsEl)return;
+ const d=universeScanData||{};
+ const stateLabel=({ok:'สแกนสำเร็จ',stale:'ข้อมูลเก่า',source_error:'ต้นทางขัดข้อง',waiting_credentials:'รอ API credentials',waiting_scan:'กำลังเริ่มสแกน',source_unavailable:'เชื่อมต่อไม่ได้'})[d.status]||d.status||'รอข้อมูล';
+ const age=Number.isFinite(Number(d.staleSeconds))?Number(d.staleSeconds)+' วินาที':'—';
+ if(status)status.textContent=stateLabel+' · '+(d.provider||'Alpaca Basic IEX')+' · ล่าสุด '+(d.updatedAt?new Date(d.updatedAt).toLocaleString('th-TH'):'ยังไม่มี')+' · อายุข้อมูล '+age+(d.cycleSeconds?' · รอบสแกน '+d.cycleSeconds+'s':'');
+ if(count)count.textContent=(d.scanned||0).toLocaleString('en-US')+' / '+(d.universeCount||0).toLocaleString('en-US')+' หุ้น · ประเมินเชิงลึก '+(d.evaluated||0).toLocaleString('en-US')+' · พบผู้สมัคร '+(d.candidateCount||0);
+ const items=Array.isArray(d.candidates)?d.candidates:[];
+ rowsEl.innerHTML=items.length?items.map(q=>{
+  const p=Number(q.price)||0,entry=p,target=p*1.05,stop=p*.985;
+  const n=(v,digits=2)=>Number.isFinite(Number(v))?Number(v).toFixed(digits):'—';
+  const link='https://www.tradingview.com/chart/?symbol='+encodeURIComponent(q.symbol||'');
+  return '<tr><td><b>'+esc(q.symbol||'—')+'</b><div class="small muted">'+esc(q.exchange||'')+'</div></td><td>$'+n(p,2)+'</td><td class="positive">+'+n(q.changePct)+'%</td><td>'+n(q.m1)+'% / '+n(q.m5)+'%</td><td>'+n(q.relativeVolume)+'x</td><td>'+n(q.spreadPct,3)+'%</td><td>$'+n(entry,2)+'<div class="small muted">อ้างอิง</div></td><td class="positive">$'+n(target,2)+'<div class="small muted">+5%</div></td><td class="negative">$'+n(stop,2)+'<div class="small muted">-1.5%</div></td><td><a style="color:var(--gold)" target="_blank" rel="noopener" href="'+link+'">กราฟ</a></td></tr>';
+ }).join(''):'<tr><td colspan="10" class="empty">'+(d.lastError?'ไม่สามารถโหลดข้อมูลได้ ('+esc(d.lastError)+')':'ยังไม่พบหุ้นที่ผ่านเกณฑ์เบื้องต้น · ระบบจะอัปเดตเมื่อรอบสแกนเสร็จ')+'</td></tr>';
+}
+function startStockPolling(){
+ if(stockPollTimer)return;
+ refreshStocks();
+ loadUniverseScanner();
+ loadMomentumScanner();
+ stockPollTimer=setInterval(()=>{if(active==='stocks'){loadUniverseScanner();loadMomentumScanner()}},60000);
+ stockQuotePollTimer=setInterval(()=>{if(active==='stocks')refreshStocks()},60000);
+}
+function stopStockPolling(){
+ if(stockPollTimer){clearInterval(stockPollTimer);stockPollTimer=null}
+ if(stockQuotePollTimer){clearInterval(stockQuotePollTimer);stockQuotePollTimer=null}
+}
+function stocksView(){
+ return '<div class="heading"><div><h1>US STOCK MARKET SCANNER</h1><div class="muted">ค้นหาหุ้น US active/tradable ด้วย Alpaca Basic · IEX</div></div><span class="pill">BASIC IEX · BATCH SCAN</span></div>'+
+ '<div class="card section"><div class="heading"><div><h3>ALL US EQUITY UNIVERSE · SCANNER</h3><div id="universeScanStatus" class="small muted">กำลังเชื่อมต่อเครื่องสแกน...</div></div><button class="secondary" onclick="loadUniverseScanner()">สแกน/รีเฟรช</button></div>'+
+ '<div id="universeScanCount" class="small muted" style="margin:8px 0">รอข้อมูล Universe</div><div class="tablewrap"><table><thead><tr><th>หุ้น / ตลาด</th><th>ราคา</th><th>วันนี้</th><th>M1 / M5</th><th>RVOL</th><th>Spread</th><th>Entry*</th><th>Target*</th><th>Stop*</th><th>กราฟ</th></tr></thead><tbody id="universeScanRows"><tr><td colspan="10">กำลังรอผลสแกน...</td></tr></tbody></table></div>'+
+ '<div class="notice">* Entry คือราคาล่าสุดที่ใช้เป็นจุดอ้างอิงเท่านั้น ส่วน Target +5% และ Stop -1.5% เป็นแผนจำลองเบื้องต้นของผู้สมัคร ไม่ใช่คำสั่งซื้อขายหรือสัญญาณ ULTRA ที่ยืนยันแล้ว ห้ามใช้เป็นคำแนะนำลงทุนโดยตรง</div>'+
+ '<div class="small muted">ข้อจำกัด Alpaca Basic IEX: ข้อมูลจาก IEX ไม่ใช่ราคาครบทุกตลาดแบบ SIP · สแกนเป็นรอบด้วย REST batch ไม่ใช่สตรีมสดทุกหุ้น · หุ้นที่ไม่มีข้อมูล IEX อาจไม่ปรากฏ · ประเมินเชิงลึกเฉพาะกลุ่มที่มีมูลค่าซื้อขาย IEX สูงสุดในแต่ละรอบ</div>'+
+ '<div id="universeLimitations" class="small muted" style="margin-top:8px">ระบบจะแสดงเฉพาะหุ้นที่ผ่านตัวกรองเบื้องต้น ไม่มีการเติมข้อมูลจำลอง</div></div>'+
+ '<div class="card section"><div class="heading"><div><h3>Market Movers · Daily fallback</h3><div id="momentumStatus" class="small muted">ข้อมูลจัดอันดับรายวันจากแหล่งสำรอง</div></div><button class="secondary" onclick="loadMomentumScanner()">รีเฟรช</button></div>'+
+ '<div class="scanner-tabs"><button class="tab" data-rank="PRE_MARKET" onclick="chooseScanner(\'PRE_MARKET\',scannerDirection)">Pre-Market</button><button class="tab" data-rank="AFTER_MARKET" onclick="chooseScanner(\'AFTER_MARKET\',scannerDirection)">After Hours</button><button class="tab" data-rank="MIN_3" onclick="chooseScanner(\'MIN_3\',scannerDirection)">3 Minutes</button><button class="tab" data-rank="MIN_5" onclick="chooseScanner(\'MIN_5\',scannerDirection)">5 Minutes</button><button class="tab active" data-rank="DAY_1" onclick="chooseScanner(\'DAY_1\',scannerDirection)">Today</button></div>'+
+ '<div class="toolbar"><button class="secondary active" data-direction="DESC" onclick="chooseScanner(scannerRank,\'DESC\')">Top Gainers</button><button class="secondary" data-direction="ASC" onclick="chooseScanner(scannerRank,\'ASC\')">Top Losers</button><span class="small muted">หุ้นที่พบ: <b id="momentumCount">0</b></span></div><div class="tablewrap"><table><thead><tr><th>#</th><th>หุ้น</th><th>ราคา USD</th><th>% เปลี่ยนแปลง</th><th>Volume</th><th>Rel. Volume</th><th>กราฟ</th></tr></thead><tbody id="momentumRows"><tr><td colspan="7">รอข้อมูล</td></tr></tbody></table></div><div class="small muted">รายการนี้เป็นข้อมูลสำรองรายวัน ไม่ใช่ข้อมูล IEX Universe Scanner</div></div>'+
+ '<div class="notice dangerbox">ระบบยังไม่ส่งคำสั่งซื้อขายเงินจริง และไม่รับประกันผลตอบแทน</div>'+strategyPanel();
+}
+
 
 function nav(){let keys=role==='admin'?['overview','stocks','crypto','members','paper','live','history','connection','settings']:['overview','stocks','crypto','paper','live','history','connection','settings'];$('tabs').innerHTML=keys.map(k=>'<button class="tab '+(active===k?'active':'')+'" onclick="go(\''+k+'\')">'+names[k]+'</button>').join('')}
 function go(k){active=k;render()}
