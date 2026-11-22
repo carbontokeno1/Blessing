@@ -1540,19 +1540,22 @@ def dual_paper_status(request: Request):
             "initialCapital": float(portfolio["initial_capital"]), "cashBalance": cash,
             "equity": cash + position_value, "realizedPnl": float(portfolio.get("realized_pnl") or 0),
             "unrealizedPnl": unrealized, "feesPaid": float(portfolio.get("fees_paid") or 0),
-            "enabled": bool(portfolio.get("enabled")), "mode": "paper",
-            "risk": {"reserveCashPct": float(portfolio["reserve_cash_pct"]),
+            "enabled": bool(portfolio.get("enabled")), "configured": True, "mode": "paper",
+            "marketValue": position_value, "totalPnl": float(portfolio.get("realized_pnl") or 0) + unrealized,
+            "riskLimits": {"reserveCashPct": float(portfolio["reserve_cash_pct"]),
                      "riskPerTradePct": float(portfolio["risk_per_trade_pct"]),
                      "maxDailyLossPct": float(portfolio["max_daily_loss_pct"]),
                      "maxWeeklyLossPct": float(portfolio["max_weekly_loss_pct"]),
                      "maxDrawdownPct": float(portfolio["max_drawdown_pct"]),
                      "maxOpenPositions": int(portfolio["max_open_positions"])},
             "positions": positions, "orders": orders,
+            "openPositions": positions, "recentOrders": orders,
         }
     return {"ok": True, "mode": "paper", "liveOrdersEnabled": False,
             "crossPortfolioTransfersEnabled": False, "portfolios": result}
 
 
+@app.post("/ai/dual-paper/start")
 @app.post("/ai/dual-paper/enable")
 async def dual_paper_enable(request: Request):
     user = _paper_auth_user(request)
@@ -1575,6 +1578,7 @@ async def dual_paper_enable(request: Request):
     return {"ok": True, "market": market, "enabled": True, "mode": "paper"}
 
 
+@app.post("/ai/dual-paper/stop")
 @app.post("/ai/dual-paper/disable")
 async def dual_paper_disable(request: Request):
     user = _paper_auth_user(request)
@@ -1623,10 +1627,11 @@ async def dual_paper_order(request: Request):
     price = _dual_paper_number(body.get("price"), "price")
     stop = _dual_paper_number(body.get("stop_loss_price"), "stop_loss_price") if side == "buy" else None
     target = _dual_paper_number(body.get("take_profit_price"), "take_profit_price") if side == "buy" else None
-    idem = str(body.get("idempotency_key") or "")
-    if len(idem) < 16 or len(idem) > 100:
-        raise HTTPException(status_code=422, detail="idempotency_key ต้องยาว 16–100 ตัวอักษร")
-    position_id = body.get("position_id") if side == "sell" else None
+    idem = str(body.get("idempotency_key") or body.get("idempotencyKey") or "")
+    if len(idem) < 16 or len(idem) > 90:
+        raise HTTPException(status_code=422, detail="idempotency_key ต้องยาว 16–90 ตัวอักษร")
+    idem = market + ":" + idem
+    position_id = (body.get("position_id") or body.get("positionId")) if side == "sell" else None
     if side == "sell" and not position_id:
         raise HTTPException(status_code=422, detail="การขายต้องระบุ position_id จากพอร์ตของตนเอง")
     payload = {
