@@ -956,6 +956,108 @@ def alert_snapshot():
     }
 
 
+
+# Public Binance Spot altcoin momentum scanner. No account credentials or order endpoints.
+ALTCOIN_CACHE = {"at": 0.0, "payload": None}
+ALTCOIN_CACHE_LOCK = threading.Lock()
+ALTCOIN_EXCLUDED = {"BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","USDCUSDT","FDUSDUSDT","TUSDUSDT","USDPUSDT","DAIUSDT","EURUSDT","USDEUSDT"}
+ALTCOIN_LEVERAGED_SUFFIXES = ("UPUSDT","DOWNUSDT","BULLUSDT","BEARUSDT","3LUSDT","3SUSDT","5LUSDT","5SUSDT")
+
+
+def _binance_public_get(path: str, params: dict | None = None):
+    errors = []
+    for base in ("https://data-api.binance.vision", "https://api.binance.com"):
+        try:
+            response = requests.get(base + path, params=params or {}, timeout=(5, 12),
+                                    headers={"User-Agent": "BlessingTrade-MarketScanner/1.0"})
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+    raise RuntimeError("BINANCE_PUBLIC_DATA_UNAVAILABLE:" + ",".join(errors))
+
+
+def _altcoin_kline_metrics(symbol: str):
+    data = _binance_public_get("/api/v3/klines", {"symbol": symbol, "interval": "1m", "limit": 8})
+    if not isinstance(data, list) or len(data) < 6:
+        return None
+    bars = data[-6:]
+    closes = [float(x[4]) for x in bars]
+    highs = [float(x[2]) for x in bars[:-1]]
+    quote_volumes = [float(x[7]) for x in bars]
+    previous_avg = sum(quote_volumes[:-1]) / max(1, len(quote_volumes) - 1)
+    last = closes[-1]
+    m1 = (closes[-1] / closes[-2] - 1) * 100 if closes[-2] else 0.0
+    m5 = (closes[-1] / closes[0] - 1) * 100 if closes[0] else 0.0
+    rvol = quote_volumes[-1] / previous_avg if previous_avg > 0 else 0.0
+    breakout = bool(highs and last > max(highs))
+    return {"price": last, "m1": m1, "m5": m5, "rvol": rvol,
+            "breakout": breakout, "volumeSpike": rvol >= 2.0,
+            "momentum": m1 > 0 and m5 > 0}
+
+
+@app.get("/altcoin-scanner")
+def altcoin_scanner(refresh: int = 0):
+    now = time.time()
+    with ALTCOIN_CACHE_LOCK:
+        cached = ALTCOIN_CACHE.get("payload")
+        if cached and now - ALTCOIN_CACHE["at"] < 45 and not refresh:
+            result = dict(cached)
+            result["cacheAgeSeconds"] = int(now - ALTCOIN_CACHE["at"])
+            return result
+    try:
+        tickers = _binance_public_get("/api/v3/ticker/24hr")
+        eligible = []
+        for item in tickers if isinstance(tickers, list) else []:
+            symbol = str(item.get("symbol") or "").upper()
+            if not symbol.endswith("USDT") or symbol in ALTCOIN_EXCLUDED:
+                continue
+            if symbol.endswith(ALTCOIN_LEVERAGED_SUFFIXES):
+                continue
+            try:
+                price = float(item.get("lastPrice") or 0)
+                quote_volume = float(item.get("quoteVolume") or 0)
+                change = float(item.get("priceChangePercent") or 0)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0 or quote_volume < 500000:
+                continue
+            eligible.append({"symbol": symbol, "price": price,
+                             "change24h": change, "quoteVolume24h": quote_volume})
+        eligible.sort(key=lambda x: x["quoteVolume24h"], reverse=True)
+        selected = eligible[:50]
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_altcoin_kline_metrics, row["symbol"]): row for row in selected}
+            for future in concurrent.futures.as_completed(futures):
+                row = futures[future]
+                try:
+                    metrics = future.result()
+                    if metrics:
+                        results.append({**row, **metrics})
+                except Exception as exc:
+                    log.debug("Altcoin kline skipped %s: %s", row["symbol"], type(exc).__name__)
+        results.sort(key=lambda x: (
+            int(x["breakout"]) * 3 + int(x["volumeSpike"]) * 2 + int(x["momentum"])
+            + max(-5, min(10, x["m5"])) * 0.25
+            + max(0, min(8, x["change24h"])) * 0.1
+        ), reverse=True)
+        payload = {"status": "ok", "provider": "Binance Spot public market data",
+                   "scanned": len(eligible), "evaluated": len(results),
+                   "candidateCount": len(results), "candidates": results[:40],
+                   "updatedAt": datetime.now(timezone.utc).isoformat(),
+                   "coverage": "Binance Spot USDT pairs only; top 50 by 24h quote volume are evaluated"}
+        with ALTCOIN_CACHE_LOCK:
+            ALTCOIN_CACHE.update({"at": time.time(), "payload": payload})
+        return payload
+    except Exception as exc:
+        log.exception("Altcoin scanner failed")
+        return {"status": "source_error", "provider": "Binance Spot",
+                "message": "แหล่งข้อมูล Binance ไม่พร้อมใช้งานในขณะนี้ (" + type(exc).__name__ + ")",
+                "scanned": 0, "evaluated": 0, "candidateCount": 0,
+                "candidates": [], "updatedAt": datetime.now(timezone.utc).isoformat()}
+
+
 @app.get("/health")
 async def health():
     return {"ok": True, "service": "blessing-webull-bridge"}
