@@ -1456,6 +1456,46 @@ def paper_engine_status(request: Request):
 
 
 
+def _dual_stock_market_price(symbol: str) -> tuple[float, str]:
+    provider = str(state.get("provider") or "").lower()
+    if provider not in ("webull", "alpaca"):
+        raise ValueError("STOCK_MARKET_DATA_NOT_CONNECTED")
+    quote = state.get("quotes", {}).get(symbol)
+    if not isinstance(quote, dict):
+        raise ValueError("STOCK_QUOTE_NOT_AVAILABLE")
+    received = quote.get("receivedAt")
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(received).replace("Z", "+00:00"))).total_seconds()
+    except Exception:
+        raise ValueError("STOCK_QUOTE_TIMESTAMP_INVALID")
+    if age < 0 or age > 30:
+        raise ValueError("STOCK_QUOTE_STALE")
+    raw = quote.get("raw") if isinstance(quote.get("raw"), dict) else {}
+    keys = {"price", "last_price", "lastprice", "trade_price", "last"}
+    def find_price(value, depth=0):
+        if depth > 5 or not isinstance(value, dict):
+            return None
+        for key, item in value.items():
+            if str(key).lower() in keys:
+                candidate = _num(item, 0)
+                if candidate and candidate > 0:
+                    return candidate
+        for item in value.values():
+            found = find_price(item, depth + 1)
+            if found:
+                return found
+        return None
+    price = find_price(raw)
+    if not price:
+        bid = _num(raw.get("bid"), 0) or 0
+        ask = _num(raw.get("ask"), 0) or 0
+        if bid > 0 and ask >= bid:
+            price = (bid + ask) / 2
+    if not price or price <= 0:
+        raise ValueError("STOCK_QUOTE_PRICE_MISSING")
+    return float(price), provider + "_stream"
+
+
 def _binance_th_public_price(symbol: str) -> float:
     response = requests.get(
         "https://api.binance.th/api/v1/ticker/price",
@@ -1633,16 +1673,32 @@ def dual_paper_quote(request: Request, market: str, symbol: str):
     _paper_auth_user(request)
     market = str(market or "").lower()
     symbol = str(symbol or "").strip().upper()
-    if market != "crypto" or not symbol.endswith("USDT") or not symbol[:-4].isalnum():
-        raise HTTPException(status_code=422, detail="ขณะนี้ดึงราคาอัตโนมัติได้เฉพาะคู่ Spot USDT ของ Binance TH")
-    try:
-        price = _binance_th_public_price(symbol)
-    except Exception as exc:
-        log.warning("Binance TH quote unavailable for %s: %s", symbol, type(exc).__name__)
-        raise HTTPException(status_code=503, detail="Binance TH ยังไม่ส่งราคาสำหรับคู่นี้ กรุณาลองใหม่หรือใช้ราคาจำลอง")
-    return {"ok": True, "market": "crypto", "symbol": symbol, "price": price,
-            "currency": "USDT", "source": "Binance TH public market-data API",
-            "priceSource": "binance_th_public", "liveOrdersEnabled": False}
+    if market == "crypto":
+        if not symbol.endswith("USDT") or not symbol[:-4].isalnum():
+            raise HTTPException(status_code=422, detail="พอร์ตคริปโตรับเฉพาะคู่ Spot USDT")
+        try:
+            price = _binance_th_public_price(symbol)
+            source = "Binance TH public market-data API"
+            price_source = "binance_th_public"
+            currency = "USDT"
+        except Exception as exc:
+            log.warning("Binance TH quote unavailable for %s: %s", symbol, type(exc).__name__)
+            raise HTTPException(status_code=503, detail="Binance TH ยังไม่ส่งราคาสำหรับคู่นี้ กรุณาลองใหม่หรือใช้ราคาจำลอง")
+    elif market == "stocks":
+        if not symbol or len(symbol) > 10 or not symbol[0].isalpha() or not all(c.isalnum() or c in ".-" for c in symbol):
+            raise HTTPException(status_code=422, detail="สัญลักษณ์หุ้นไม่ถูกต้อง")
+        try:
+            price, price_source = _dual_stock_market_price(symbol)
+            source = "Webull/Alpaca verified streaming quote"
+            currency = "USD"
+        except Exception as exc:
+            log.warning("Stock quote unavailable for %s: %s", symbol, type(exc).__name__)
+            raise HTTPException(status_code=503, detail="ยังไม่มีราคาหุ้นจาก Webull/Alpaca ที่สดไม่เกิน 30 วินาที กรุณาเชื่อม Market Data หรือใช้ราคาจำลอง")
+    else:
+        raise HTTPException(status_code=422, detail="market ต้องเป็น crypto หรือ stocks")
+    return {"ok": True, "market": market, "symbol": symbol, "price": price,
+            "currency": currency, "source": source, "priceSource": price_source,
+            "liveOrdersEnabled": False}
 
 
 @app.post("/ai/dual-paper/order")
@@ -1667,18 +1723,24 @@ async def dual_paper_order(request: Request):
     if market == "stocks" and (symbol.endswith("USDT") or not symbol[0].isalpha()):
         raise HTTPException(status_code=422, detail="พอร์ตหุ้นรับเฉพาะสัญลักษณ์หุ้นสหรัฐ")
     quantity = _dual_paper_number(body.get("quantity"), "quantity")
-    if price_source == "binance_th_public":
-        if market != "crypto":
-            raise HTTPException(status_code=422, detail="ราคาตลาดอัตโนมัติยังรองรับเฉพาะ Binance TH")
+    if price_source == "binance_th_public" and market == "crypto":
         try:
             price = _binance_th_public_price(symbol)
         except Exception as exc:
             log.warning("Binance TH order quote unavailable for %s: %s", symbol, type(exc).__name__)
             raise HTTPException(status_code=503, detail="ดึงราคา Binance TH ไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
+    elif price_source in ("webull_stream", "alpaca_stream") and market == "stocks":
+        try:
+            price, actual_source = _dual_stock_market_price(symbol)
+            if actual_source != price_source:
+                raise ValueError("STOCK_QUOTE_PROVIDER_CHANGED")
+        except Exception as exc:
+            log.warning("Stock order quote unavailable for %s: %s", symbol, type(exc).__name__)
+            raise HTTPException(status_code=503, detail="ดึงราคาหุ้นจาก Market Data ไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
     elif price_source == "manual_simulation":
         price = _dual_paper_number(body.get("price"), "price")
     else:
-        raise HTTPException(status_code=422, detail="ต้องเลือกแหล่งราคา Binance TH หรือราคาจำลองอย่างชัดเจน")
+        raise HTTPException(status_code=422, detail="แหล่งราคานี้ไม่ตรงกับตลาดที่เลือก")
     stop = target = None
     if side == "buy":
         stop_pct = _dual_paper_number(body.get("stop_loss_pct"), "stop_loss_pct")
