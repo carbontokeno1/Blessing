@@ -25,3 +25,21 @@ jobs:
       - name: Run unit tests
         working-directory: realtime
         run: python -m unittest discover -s . -p "test_*.py" -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check inline browser JavaScript
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          for html_path in (Path("public/index.html"), Path("public/paper-reports.html")):
+              html = html_path.read_text(encoding="utf-8")
+              scripts = re.findall(r"<script(?:\\s[^>]*)?>(.*?)</script>", html, flags=re.S | re.I)
+              for index, script in enumerate(scripts):
+                  if script.strip():
+                      Path(f"/tmp/{html_path.stem}-{index}.mjs").write_text(script, encoding="utf-8")
+          PY
+          for file in /tmp/index-*.mjs /tmp/paper-reports-*.mjs; do
+            [ -f "$file" ] && node --check "$file"
+          done
