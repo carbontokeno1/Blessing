@@ -309,6 +309,7 @@ def binance_th_stream_main():
                         items = data if isinstance(data, list) else [data]
                         now = datetime.now(timezone.utc).isoformat()
                         changed = False
+                        changed_quotes = {}
                         for item in items:
                             if not isinstance(item, dict):
                                 continue
@@ -316,7 +317,7 @@ def binance_th_stream_main():
                             price = _num(item.get("c"), 0)
                             if not symbol or price <= 0:
                                 continue
-                            state["crypto_quotes"][symbol] = {
+                            quote_row = {
                                 "symbol": symbol,
                                 "price": float(price),
                                 "bid": _num(item.get("b"), 0),
@@ -325,6 +326,8 @@ def binance_th_stream_main():
                                 "receivedAt": now,
                                 "source": "Binance TH WebSocket live ticker",
                             }
+                            state["crypto_quotes"][symbol] = quote_row
+                            changed_quotes[symbol] = quote_row
                             changed = True
                         if changed:
                             state["lastCryptoMessageAt"] = now
@@ -334,7 +337,7 @@ def binance_th_stream_main():
                                     broadcast({
                                         "type": "market_data",
                                         "data": state["quotes"],
-                                        "cryptoData": state["crypto_quotes"],
+                                        "cryptoData": changed_quotes,
                                         "status": public_status(),
                                     }), loop
                                 )
