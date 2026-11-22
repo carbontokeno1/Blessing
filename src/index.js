@@ -137,7 +137,7 @@ async function altcoinScanner(request) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const pathname = url.pathname.replace(/\\/+$/, "") || "/";
+    const pathname = url.pathname.replace(/\/+$/, "") || "/";
     if (pathname === "/api/altcoin-scanner") {
       if (request.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: {
