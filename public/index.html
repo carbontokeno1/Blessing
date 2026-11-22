@@ -675,19 +675,36 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb = createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
 const gate=document.getElementById('authGate'), form=document.getElementById('authForm'), msg=document.getElementById('authMessage'), submit=document.getElementById('authSubmit');
 function say(t){const m=document.getElementById('authMessage');if(m)m.textContent=t}
+let enteringUserId=null,enteringPromise=null,activeUserId=null;
 async function enter(session){
- if(!session?.user){gate.style.display='grid';return}
- const {data:profile,error}=await sb.from('profiles').select('email,display_name,role,status').eq('user_id',session.user.id).maybeSingle();
- if(error){say('ตรวจสอบสิทธิ์ไม่สำเร็จ กรุณาลองใหม่');await sb.auth.signOut();return}
- if(!profile||profile.status!=='active'||!['super_admin','admin','member'].includes(profile.role)){say('บัญชียังไม่ได้รับอนุมัติหรือถูกระงับ');await sb.auth.signOut();return}
- window.BLESSING_AUTH={client:sb,user:session.user,profile};
- role=profile.role==='member'?'member':'admin';
- const userbox=document.querySelector('.userbox');
- if(userbox)userbox.innerHTML='<span class="pill">'+(role==='admin'?'ADMIN WORKSPACE':'MEMBER WORKSPACE')+'</span><div class="avatar">'+(profile.display_name||profile.email||'U').slice(0,1).toUpperCase()+'</div><div><b>'+((profile.display_name||profile.email||'สมาชิก').replace(/[<>]/g,''))+'</b><div class="small muted">'+profile.role.toUpperCase()+'</div></div><button class="secondary" id="signOutBtn">ออกจากระบบ</button>';
- document.getElementById('signOutBtn')?.addEventListener('click',async()=>{await sb.auth.signOut();location.reload()});
- gate.style.display='none';
- if(role==='member'&&['members','live'].includes(active))active='overview';
- render();
+ if(!session?.user){activeUserId=null;gate.style.display='grid';return}
+ const userId=session.user.id;
+ if(activeUserId===userId&&window.BLESSING_AUTH?.profile)return;
+ if(enteringUserId===userId&&enteringPromise)return enteringPromise;
+ enteringUserId=userId;
+ const task=(async()=>{
+  try{
+   const {data:profile,error}=await sb.from('profiles').select('email,display_name,role,status').eq('user_id',userId).maybeSingle();
+   if(error){say('ตรวจสอบสิทธิ์ไม่สำเร็จ กรุณาลองใหม่');await sb.auth.signOut();return}
+   if(!profile||profile.status!=='active'||!['super_admin','admin','member'].includes(profile.role)){say('บัญชียังไม่ได้รับอนุมัติหรือถูกระงับ');await sb.auth.signOut();return}
+   window.BLESSING_AUTH={client:sb,user:session.user,profile};
+   activeUserId=userId;
+   role=profile.role==='member'?'member':'admin';
+   const userbox=document.querySelector('.userbox');
+   if(userbox)userbox.innerHTML='<span class="pill">'+(role==='admin'?'ADMIN WORKSPACE':'MEMBER WORKSPACE')+'</span><div class="avatar">'+(profile.display_name||profile.email||'U').slice(0,1).toUpperCase()+'</div><div><b>'+((profile.display_name||profile.email||'สมาชิก').replace(/[<>]/g,''))+'</b><div class="small muted">'+profile.role.toUpperCase()+'</div></div><button class="secondary" id="signOutBtn">ออกจากระบบ</button>';
+   document.getElementById('signOutBtn')?.addEventListener('click',async()=>{await sb.auth.signOut();location.reload()});
+   gate.style.display='none';
+   if(role==='member'&&['members','live'].includes(active))active='overview';
+   render();
+  }catch(err){
+   say('เชื่อมต่อระบบตรวจสอบบัญชีไม่สำเร็จ กรุณาลองใหม่');
+  }finally{
+   if(enteringUserId===userId){enteringUserId=null;enteringPromise=null}
+   submit.disabled=false;
+  }
+ })();
+ enteringPromise=task;
+ return task;
 }
 let recoveryMode=location.hash.includes('type=recovery')||location.search.includes('code=');
 document.addEventListener('click',e=>{
@@ -715,7 +732,20 @@ function showRecoveryForm(){
   say('ตั้งรหัสผ่านใหม่สำเร็จ กำลังเข้าสู่ระบบ...');history.replaceState(null,'',location.pathname);recoveryMode=false;const {data}=await sb.auth.getSession();await enter(data.session);
  };
 }
-form.addEventListener('submit',async e=>{if(recoveryMode)return;e.preventDefault();submit.disabled=true;say('กำลังตรวจสอบบัญชี...');const {data,error}=await sb.auth.signInWithPassword({email:document.getElementById('authEmail').value.trim(),password:document.getElementById('authPassword').value});submit.disabled=false;if(error){say('เข้าสู่ระบบไม่สำเร็จ: อีเมลหรือรหัสผ่านไม่ถูกต้อง');return}await enter(data.session)});
+form.addEventListener('submit',async e=>{
+ if(recoveryMode)return;
+ e.preventDefault();
+ if(submit.disabled)return;
+ submit.disabled=true;say('กำลังตรวจสอบบัญชี...');
+ try{
+  const {data,error}=await sb.auth.signInWithPassword({email:document.getElementById('authEmail').value.trim(),password:document.getElementById('authPassword').value});
+  if(error){say('เข้าสู่ระบบไม่สำเร็จ: อีเมลหรือรหัสผ่านไม่ถูกต้อง');submit.disabled=false;return}
+  await enter(data.session);
+ }catch(err){
+  say('เชื่อมต่อระบบเข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่');
+  submit.disabled=false;
+ }
+});
 document.getElementById('authEmail').addEventListener('input',e=>{const x=document.getElementById('forgotEmail');if(x&&!x.value)x.value=e.target.value});
 document.addEventListener('submit',async e=>{
  if(e.target?.id!=='changePasswordForm')return;
