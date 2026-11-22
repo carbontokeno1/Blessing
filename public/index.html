@@ -248,6 +248,22 @@ async function dualQuotePrice(silent=false){
  if(!symbol){if(!silent)alert('กรุณากรอกสัญลักษณ์ก่อน');return}
  try{const q=await dualApi('/ai/dual-paper/quote?market='+encodeURIComponent(market)+'&symbol='+encodeURIComponent(symbol));if(price)price.value=dualFmt(q.price,8)+' '+q.currency;if(info)info.textContent='LIVE · '+q.source+' · '+new Date().toLocaleTimeString('th-TH');const m=document.getElementById('dualMessage');if(m)m.textContent='รับราคาตลาดจริง '+q.symbol+' · '+q.source+' · Paper only'}catch(e){if(price)price.value='ไม่มีราคาตลาดสด';if(info)info.textContent=e.message;if(!silent)alert(e.message)}
 }
+window.updateDualLiveCrypto=function(rows){
+ const market=document.getElementById('dualMarket')?.value,symbol=(document.getElementById('dualSymbol')?.value||'').trim().toUpperCase();
+ if(market!=='crypto'||!rows?.[symbol])return;
+ const q=rows[symbol],price=document.getElementById('dualPrice'),info=document.getElementById('dualPriceInfo');
+ if(price)price.value=dualFmt(q.price,8)+' USDT';
+ if(info)info.textContent='LIVE STREAM · Binance TH · '+new Date(q.receivedAt).toLocaleTimeString('th-TH');
+};
+window.updateDualLiveStocks=function(rows){
+ const market=document.getElementById('dualMarket')?.value,symbol=(document.getElementById('dualSymbol')?.value||'').trim().toUpperCase();
+ if(market!=='stocks'||!rows?.[symbol])return;
+ const q=rows[symbol],raw=q.raw||{},price=Number(raw.price??raw.last_price??raw.lastPrice);
+ if(!Number.isFinite(price)||price<=0)return;
+ const el=document.getElementById('dualPrice'),info=document.getElementById('dualPriceInfo');
+ if(el)el.value=dualFmt(price,8)+' USD';
+ if(info)info.textContent='LIVE STREAM · '+(q.source||'Stock market feed')+' · '+new Date(q.receivedAt).toLocaleTimeString('th-TH');
+};
 async function dualInitialize(){const m=document.getElementById('dualMessage');if(m)m.textContent='กำลังสร้างพอร์ตทดลอง...';try{const r=await dualApi('/ai/dual-paper/initialize',{});if(m)m.textContent=r.message||'สร้างพอร์ตทดลองแล้ว';await dualRefresh(false)}catch(e){if(m)m.textContent=e.message}}
 async function dualStart(market){try{await dualApi('/ai/dual-paper/start',{market});await dualRefresh(false)}catch(e){alert(e.message)}}
 async function dualStop(market){try{await dualApi('/ai/dual-paper/stop',{market});await dualRefresh(false)}catch(e){alert(e.message)}}
@@ -307,7 +323,7 @@ function connectMarketBridge(){
  if(marketBridgeStarted)return;marketBridgeStarted=true;
  fetch(MARKET_BRIDGE_URL+'/status',{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject()).then(s=>{marketStatus=s.connection==='streaming'?'รับข้อมูล Webull สด':s.connection==='connected'?'เชื่อม Webull แล้ว':'Webull: '+s.connection;renderMarketCards()}).catch(()=>{marketStatus='รอเปิดบริการข้อมูลสด';renderMarketCards()});
  const schedule=()=>{if(marketReconnectTimer)clearTimeout(marketReconnectTimer);marketReconnectTimer=setTimeout(open,5000)};
- const open=()=>{try{marketSocket=new WebSocket(MARKET_BRIDGE_URL.replace(/^http/,'ws')+'/stream');marketSocket.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.status){const s=m.status;marketStatus=s.connection==='streaming'?'รับข้อมูล Webull สด':s.connection==='connected'?'เชื่อม Webull แล้ว':'Webull: '+s.connection}if(m.data)marketQuotes=m.data;scanMarketAlerts();renderMarketCards()}catch(err){}};marketSocket.onclose=schedule;marketSocket.onerror=()=>{try{marketSocket.close()}catch(e){}}}catch(e){schedule()}};
+ const open=()=>{try{marketSocket=new WebSocket(MARKET_BRIDGE_URL.replace(/^http/,'ws')+'/stream');marketSocket.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.status){const s=m.status;marketStatus=s.connection==='streaming'?'รับข้อมูล Webull สด':s.connection==='connected'?'เชื่อม Webull แล้ว':'Webull: '+s.connection}if(m.data){marketQuotes=m.data;window.updateDualLiveStocks?.(m.data)}if(m.cryptoData)window.updateDualLiveCrypto?.(m.cryptoData);scanMarketAlerts();renderMarketCards()}catch(err){}};marketSocket.onclose=schedule;marketSocket.onerror=()=>{try{marketSocket.close()}catch(e){}}}catch(e){schedule()}};
  open();window.addEventListener('beforeunload',()=>{if(marketSocket)marketSocket.close()});
 }
 function formatUsd(v){const n=Number(v);return Number.isFinite(n)?'$'+n.toFixed(2):'—'}

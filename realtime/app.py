@@ -49,6 +49,9 @@ state = {
     "alpacaAuthenticated": False,
     "alpacaAuthenticatedAt": None,
     "quotes": {},
+    "crypto_quotes": {},
+    "cryptoConnection": "starting",
+    "lastCryptoMessageAt": None,
     "barHistory": {},
     "sessionOpen": {},
     "sessionDate": {},
@@ -290,6 +293,61 @@ def alpaca_stream_main():
             time.sleep(5)
 
 
+def binance_th_stream_main():
+    """Consume Binance TH all-market ticker updates over its official public WebSocket."""
+    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!ticker@arr"
+    while True:
+        try:
+            async def run_stream():
+                state["cryptoConnection"] = "connecting"
+                async with websockets.connect(url, ping_interval=60, ping_timeout=30, close_timeout=5, max_size=2**22) as ws:
+                    state["cryptoConnection"] = "connected"
+                    log.info("Binance TH all-market live ticker stream connected")
+                    async for raw_message in ws:
+                        payload = json.loads(raw_message)
+                        data = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
+                        items = data if isinstance(data, list) else [data]
+                        now = datetime.now(timezone.utc).isoformat()
+                        changed = False
+                        changed_quotes = {}
+                        for item in items:
+                            if not isinstance(item, dict):
+                                continue
+                            symbol = str(item.get("s") or "").upper()
+                            price = _num(item.get("c"), 0)
+                            if not symbol or price <= 0:
+                                continue
+                            quote_row = {
+                                "symbol": symbol,
+                                "price": float(price),
+                                "bid": _num(item.get("b"), 0),
+                                "ask": _num(item.get("a"), 0),
+                                "eventTime": item.get("E"),
+                                "receivedAt": now,
+                                "source": "Binance TH WebSocket live ticker",
+                            }
+                            state["crypto_quotes"][symbol] = quote_row
+                            changed_quotes[symbol] = quote_row
+                            changed = True
+                        if changed:
+                            state["lastCryptoMessageAt"] = now
+                            state["cryptoConnection"] = "streaming"
+                            if loop and loop.is_running():
+                                asyncio.run_coroutine_threadsafe(
+                                    broadcast({
+                                        "type": "market_data",
+                                        "data": state["quotes"],
+                                        "cryptoData": changed_quotes,
+                                        "status": public_status(),
+                                    }), loop
+                                )
+            asyncio.run(run_stream())
+        except Exception as exc:
+            state["cryptoConnection"] = "reconnecting"
+            log.warning("Binance TH WebSocket disconnected (%s); retrying", type(exc).__name__)
+            time.sleep(5)
+
+
 def public_status() -> dict:
     alpaca_configured = bool(ALPACA_KEY and ALPACA_SECRET)
     return {
@@ -317,6 +375,9 @@ def public_status() -> dict:
             "feed": "iex",
         },
         "marketDataReceived": bool(state["lastMessageAt"]),
+        "cryptoConnection": state.get("cryptoConnection"),
+        "cryptoQuoteCount": len(state.get("crypto_quotes") or {}),
+        "lastCryptoMarketDataAt": state.get("lastCryptoMessageAt"),
         "serverTime": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -325,6 +386,9 @@ def public_status() -> dict:
 async def startup():
     global loop, stream_thread
     loop = asyncio.get_running_loop()
+    global crypto_stream_thread
+    crypto_stream_thread = threading.Thread(target=binance_th_stream_main, name="binance-th-live-ticker", daemon=True)
+    crypto_stream_thread.start()
     if ALPACA_KEY and ALPACA_SECRET:
         state["provider"] = "alpaca"
         state["connection"] = "connecting"
@@ -1732,8 +1796,8 @@ def dual_paper_quote(request: Request, market: str, symbol: str):
         if not symbol.endswith("USDT") or not symbol[:-4].isalnum():
             raise HTTPException(status_code=422, detail="พอร์ตคริปโตรับเฉพาะคู่ Spot USDT")
         try:
-            price = _binance_th_public_price(symbol)
-            source = "Binance TH public market-data API"
+            price = _dual_market_price(market, symbol)
+            source = "Binance TH WebSocket live ticker"
             price_source = "binance_th_public"
             currency = "USDT"
         except Exception as exc:
@@ -1755,95 +1819,6 @@ def dual_paper_quote(request: Request, market: str, symbol: str):
             "currency": currency, "source": source, "priceSource": price_source,
             "liveOrdersEnabled": False}
 
-
-@app.post("/ai/dual-paper/order")
-async def dual_paper_order(request: Request):
-    """Execute an isolated paper order; market prices are server-confirmed."""
-    user = _paper_auth_user(request)
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="ข้อมูลคำขอไม่ถูกต้อง")
-
-    market = str(body.get("market") or "").lower()
-    side = str(body.get("side") or "").lower()
-    symbol = str(body.get("symbol") or "").strip().upper()
-    price_source = str(body.get("price_source") or "")
-    if market not in ("crypto", "stocks") or side not in ("buy", "sell"):
-        raise HTTPException(status_code=422, detail="market หรือ side ไม่ถูกต้อง")
-    if not symbol or len(symbol) > 20 or not all(c.isalnum() or c in ".-" for c in symbol):
-        raise HTTPException(status_code=422, detail="สัญลักษณ์ไม่ถูกต้อง")
-    if market == "crypto" and (not symbol.endswith("USDT") or not symbol[:-4].isalnum()):
-        raise HTTPException(status_code=422, detail="พอร์ตคริปโตรับเฉพาะคู่ Spot USDT")
-    if market == "stocks" and (len(symbol) > 10 or symbol.endswith("USDT") or not symbol[0].isalpha()):
-        raise HTTPException(status_code=422, detail="พอร์ตหุ้นรับเฉพาะสัญลักษณ์หุ้นสหรัฐ")
-
-    # In a configured deployment, reject disabled/uninitialized portfolios
-    # before contacting any market-data provider. Unit tests without Supabase
-    # credentials exercise the isolated request/RPC contract only.
-    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
-        owned = _dual_paper_portfolio_rows(str(user["id"]))
-        portfolio = next((p for p in owned if p.get("market") == market), None)
-        if not portfolio:
-            raise HTTPException(status_code=404, detail="ยังไม่ได้สร้างพอร์ตทดลองสำหรับตลาดนี้")
-        if portfolio.get("mode") != "paper" or not portfolio.get("enabled"):
-            raise HTTPException(status_code=409, detail="พอร์ต Paper ยังไม่เปิดใช้งาน")
-    quantity = _dual_paper_number(body.get("quantity"), "quantity")
-    if price_source == "binance_th_public" and market == "crypto":
-        try:
-            price = _binance_th_public_price(symbol)
-        except Exception as exc:
-            log.warning("Binance TH order quote unavailable for %s (%s)", symbol, type(exc).__name__)
-            raise HTTPException(status_code=503, detail="ดึงราคา Binance TH ไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
-    elif price_source in ("webull_stream", "alpaca_stream") and market == "stocks":
-        try:
-            price, actual_source = _dual_stock_market_price(symbol)
-            if actual_source != price_source:
-                raise ValueError("STOCK_QUOTE_PROVIDER_CHANGED")
-        except Exception as exc:
-            log.warning("Stock order quote unavailable for %s (%s)", symbol, type(exc).__name__)
-            raise HTTPException(status_code=503, detail="ดึงราคาหุ้นสดไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
-    else:
-        raise HTTPException(status_code=422, detail="ต้องระบุแหล่งราคาให้ตรงกับตลาด และห้ามใช้ราคาที่ไม่ตรวจสอบ")
-
-    stop = target = None
-    if side == "buy":
-        stop_pct = _dual_paper_number(body.get("stop_loss_pct"), "stop_loss_pct")
-        target_pct = _dual_paper_number(body.get("take_profit_pct"), "take_profit_pct")
-        if stop_pct > 20 or target_pct > 50:
-            raise HTTPException(status_code=422, detail="Stop Loss สูงสุด 20% และ Take Profit สูงสุด 50%")
-        stop = price * (1 - stop_pct / 100)
-        target = price * (1 + target_pct / 100)
-        if stop <= 0 or target <= price:
-            raise HTTPException(status_code=422, detail="ระดับ Stop/Target ไม่ถูกต้อง")
-
-    idem = str(body.get("idempotency_key") or body.get("idempotencyKey") or "")
-    if len(idem) < 16 or len(idem) > 90:
-        raise HTTPException(status_code=422, detail="idempotency_key ต้องยาว 16–90 ตัวอักษร")
-    idem = market + ":" + idem
-    position_id = (body.get("position_id") or body.get("positionId")) if side == "sell" else None
-    if side == "sell" and not position_id:
-        raise HTTPException(status_code=422, detail="การขายต้องระบุ position_id จากพอร์ตของตนเอง")
-
-    payload = {
-        "p_user_id": str(user["id"]), "p_market": market, "p_symbol": symbol,
-        "p_side": side, "p_quantity": quantity, "p_price": price,
-        "p_stop_loss_price": stop, "p_take_profit_price": target,
-        "p_position_id": position_id, "p_idempotency_key": idem,
-    }
-    try:
-        result = _sb_rpc("blessing_dual_execute_order", payload)
-    except requests.HTTPError as exc:
-        detail = "คำสั่ง Paper ถูกปฏิเสธโดยกฎความเสี่ยงหรือข้อมูลไม่ผ่านการตรวจสอบ"
-        try:
-            detail += ": " + str(exc.response.text)[:240]
-        except Exception:
-            pass
-        raise HTTPException(status_code=409, detail=detail)
-    return {
-        "ok": True, "mode": "paper", "priceSource": price_source,
-        "price": price, "result": result, "liveOrdersEnabled": False,
-    }
 
 
 def _binance_public_price(symbol: str):
@@ -2605,11 +2580,20 @@ def _dual_market_price(market: str, symbol: str) -> float:
     if market == "crypto":
         if not symbol.endswith("USDT"):
             raise HTTPException(status_code=422, detail="คู่เหรียญต้องเป็น Spot/USDT")
+        quote = state.get("crypto_quotes", {}).get(symbol)
+        if not isinstance(quote, dict):
+            raise HTTPException(status_code=503, detail="ยังไม่มีราคา Binance TH WebSocket สำหรับคู่นี้")
         try:
-            return _binance_th_public_price(symbol)
-        except Exception as exc:
-            log.warning("Binance TH live price unavailable for %s (%s)", symbol, type(exc).__name__)
-            raise HTTPException(status_code=503, detail="Binance TH ไม่ส่งราคาจริงแบบสด จึงปฏิเสธคำสั่ง")
+            stamp = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - stamp).total_seconds()
+        except Exception:
+            age = 999999
+        if age < 0 or age > 5:
+            raise HTTPException(status_code=503, detail="ราคา Binance TH เกิน 5 วินาทีหรือไม่มีข้อมูลสด")
+        price = _num(quote.get("price"), 0)
+        if price > 0:
+            return float(price)
+        raise HTTPException(status_code=503, detail="ข้อมูล Binance TH WebSocket ไม่มีราคาซื้อขายจริง")
     if market == "stocks":
         if state.get("provider") not in ("alpaca", "webull"):
             raise HTTPException(status_code=503, detail="ยังไม่ได้เชื่อมต่อแหล่งราคาหุ้นสด")
