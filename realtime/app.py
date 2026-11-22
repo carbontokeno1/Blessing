@@ -2699,7 +2699,7 @@ async def dual_paper_order(request: Request):
             target_pct = float(body.get("takeProfitPct", 2.0))
         except (TypeError, ValueError):
             raise HTTPException(status_code=422, detail="กรุณาระบุเงินลงทุนและระดับ Stop/Take Profit")
-        if not all(math.isfinite(x) for x in (notional, stop_pct, target_pct)) or notional <= 0 or not (0.1 <= stop_pct <= 20) or not (0.1 <= target_pct <= 50):
+        if not all(math.isfinite(x) for x in (notional, stop_pct, target_pct)) or notional <= 0 or not (0.1 <= stop_pct <= (25 if market == "stocks" else 20)) or not (0.1 <= target_pct <= 50):
             raise HTTPException(status_code=422, detail="ค่าการลงทุนหรือ Stop/Take Profit ไม่อยู่ในช่วงที่อนุญาต")
         quantity = round(notional / fill_price, 10 if market == "crypto" else 6)
         stop_price = fill_price * (1 - stop_pct / 100)
