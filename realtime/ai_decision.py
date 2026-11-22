@@ -58,9 +58,9 @@ def build_decision_preview(scanner_payload: dict, open_positions: int = 0,
                            daily_loss_pct: float = 0.0,
                            drawdown_pct: float = 0.0) -> dict:
     policy = risk_policy()
-    provider = str(scanner_payload.get("provider") or "unknown")
+    provider = str(scanner_payload.get("exchange") or scanner_payload.get("provider") or "unknown")
     candidates = scanner_payload.get("candidates") or []
-    source_is_executable = provider.lower() == "binance"
+    source_is_executable = provider.lower().startswith("binance")
     fresh = scanner_payload.get("status") not in ("source_error", "error") and bool(scanner_payload.get("updatedAt"))
     halt_reasons = []
     if not fresh:
