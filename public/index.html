@@ -655,7 +655,7 @@ async function refreshOverview(){
 function memberOverview(){const p=window.BLESSING_AUTH?.profile||{};return '<div class="heading"><div><h1>พื้นที่สมาชิก</h1><div class="muted">บัญชีส่วนตัวและตลาดหุ้นสหรัฐฯ</div></div><span class="pill">MEMBER PORTAL</span></div><div class="grid"><div class="card metric"><label>ชื่อสมาชิก</label><strong style="font-size:18px">'+esc(p.display_name||p.email||'สมาชิก')+'</strong></div><div class="card metric"><label>สถานะบัญชี</label><strong class="positive" style="font-size:18px">ใช้งาน</strong></div><div class="card metric"><label>กระเป๋าจริง</label><strong id="memberBalance" style="font-size:17px">กำลังโหลด</strong></div><div class="card metric"><label>คำสั่งจริงในระบบ</label><strong id="memberTradeCount">กำลังโหลด</strong></div></div><div class="layout"><div class="card"><h3>ข้อมูลบัญชีของฉัน</h3><div class="riskline"><span>อีเมล</span><b>'+esc(p.email||'')+'</b></div><div class="riskline"><span>ประเภทบัญชี</span><b>สมาชิก</b></div><div class="riskline"><span>สิทธิ์ข้อมูล</span><b class="positive">เฉพาะข้อมูลของฉัน</b></div><div class="row"><span>เปลี่ยนรหัสผ่าน</span><button onclick="go(\'settings\')">ตั้งค่า</button></div></div><div class="card"><h3>รายการคำสั่งล่าสุด</h3><div id="memberRecent" class="empty">กำลังโหลดข้อมูลจากฐานข้อมูล...</div></div></div>'+marketAlertPanel()+'<div id="marketLiveMount">'+marketRows()+'</div>'}
 function membersView(){return '<div class="heading"><div><h1>จัดการสมาชิก</h1><div class="muted">รายชื่อจากฐานข้อมูลบัญชีจริง</div></div><span class="pill">ADMIN ONLY</span></div><div class="card"><h3>บัญชีสมาชิก</h3><div id="adminMembersTable" class="empty">กำลังโหลดรายชื่อจากฐานข้อมูล...</div></div><div class="notice">การสร้าง อนุมัติ หรือระงับบัญชีจะเปิดผ่าน API ฝั่งเซิร์ฟเวอร์ที่ตรวจสิทธิ์ Super Admin เท่านั้น</div>'}
 async function loadAdminMembers(){const sb=window.BLESSING_AUTH?.client,el=document.getElementById('adminMembersTable');if(!sb||!el)return;const {data,error}=await sb.from('profiles').select('email,display_name,role,status,created_at').order('created_at',{ascending:false}).limit(200);if(!document.getElementById('adminMembersTable'))return;if(error){el.textContent='โหลดข้อมูลไม่ได้: '+error.message;return}el.innerHTML='<div class="tablewrap"><table><thead><tr><th>ชื่อ</th><th>อีเมล</th><th>สิทธิ์</th><th>สถานะ</th></tr></thead><tbody>'+(data||[]).map(x=>'<tr><td>'+esc(x.display_name||'—')+'</td><td>'+esc(x.email||'')+'</td><td>'+esc(x.role)+'</td><td>'+esc(x.status)+'</td></tr>').join('')+'</tbody></table></div>'}
-let paperAccount=null,paperPositions=[],paperOrders=[],paperTimer=null,paperOrderBusy=false,paperAutoBusy={},paperEntryEnabled=false,paperCycleBusy=false,paperEntryCooldown={},paperLastCycleAt=0;
+let paperAccount=null,paperPositions=[],paperOrders=[],paperTimer=null,paperOrderBusy=false,paperAutoBusy={},paperEntryEnabled=false,paperCycleBusy=false,paperEntryCooldown={},paperLastCycleAt=0,paperServerMode=true;
 function paperView(){
  return '<div class="heading"><div><h1>BLESSING · LIVE PAPER TRADING</h1><div class="muted">สนามเทรด Spot/USDT ด้วยข้อมูลตลาดจริง · เงินจำลองเท่านั้น</div></div><span class="pill">REAL MARKET · NO REAL MONEY</span></div>'+
  '<div class="grid"><div class="card metric"><label>ทุนเริ่มต้น</label><strong>3,000 ฿</strong><div class="small muted">88.41732980 USDT</div></div><div class="card metric"><label>เงินสดจำลอง</label><strong id="paperCash">กำลังโหลด</strong><div class="small muted" id="paperCashTHB">—</div></div><div class="card metric"><label>มูลค่าพอร์ต</label><strong id="paperEquity">—</strong><div class="small muted" id="paperEquityTHB">—</div></div><div class="card metric"><label>กำไร/ขาดทุนรวม</label><strong id="paperTotalPnL">—</strong><div class="small muted" id="paperTotalPnLTHB">—</div></div></div>'+
@@ -687,23 +687,25 @@ function paperSelectedChanged(){
 }
 async function paperInit(){
  const sb=window.BLESSING_AUTH?.client;if(!sb)throw Error('กรุณาเข้าสู่ระบบก่อน');
- const {data,error}=await sb.rpc('paper_account_init');if(error)throw error;paperAccount=data;
  await paperRefresh(false);
+ await paperEngineSync();
 }
 async function paperRefresh(forceScan=false){
  const sb=window.BLESSING_AUTH?.client;if(!sb)return;
  try{
   if(forceScan||!paperPriceFresh())await loadAltcoinScanner(!!forceScan);
   const [a,p,o]=await Promise.all([
-   sb.rpc('paper_account_init'),
-   sb.from('paper_positions').select('symbol,quantity,average_entry_price,updated_at').gt('quantity',0).order('updated_at',{ascending:false}),
-   sb.from('paper_orders').select('id,symbol,side,quantity,fill_price,fee,realized_pnl,created_at').order('created_at',{ascending:false}).limit(30)
+   sb.from('paper_bot_accounts').select('starting_balance,cash_balance,realized_pnl,fees_paid').maybeSingle(),
+   sb.from('paper_bot_positions').select('id,symbol,quantity,entry_price,current_price,take_profit_price,stop_loss_price,unrealized_pnl,updated_at,opened_at').eq('status','open').order('opened_at',{ascending:false}),
+   sb.from('paper_bot_orders').select('id,symbol,side,quantity,price,fee,realized_pnl,created_at').order('created_at',{ascending:false}).limit(30)
   ]);
   if(a.error)throw a.error;if(p.error)throw p.error;if(o.error)throw o.error;
-  paperAccount=a.data;paperPositions=p.data||[];paperOrders=o.data||[];
+  paperAccount=a.data||{starting_balance:88.4173298,cash_balance:88.4173298,realized_pnl:0};
+  paperPositions=(p.data||[]).map(x=>({...x,average_entry_price:x.entry_price}));
+  paperOrders=(o.data||[]).map(x=>({...x,fill_price:x.price}));
   paperRenderScanner();paperRenderPortfolio();
   const st=document.getElementById('paperStatus');if(st)st.textContent='บัญชีจำลองพร้อม · '+(paperPriceFresh()?'รับข้อมูลตลาดล่าสุด':'กำลังรอข้อมูลราคาใหม่');
-  await paperAutoCheck();
+  if(!paperServerMode)await paperAutoCheck();
  }catch(e){const st=document.getElementById('paperStatus');if(st)st.textContent='โหลดบัญชีจำลองไม่สำเร็จ: '+(e.message||e)}
 }
 function paperRenderPortfolio(){
@@ -714,7 +716,7 @@ function paperRenderPortfolio(){
   const value=price===null?q*entry:q*price,pnl=price===null?0:(price-entry)*q;
   marketValue+=value;unrealized+=pnl;
   const tp=entry*1.03,sl=entry*.985;
-  return '<tr><td><b>'+esc(p.symbol)+'</b></td><td>'+paperFmt(q,8)+'</td><td>'+paperFmt(entry,8)+'</td><td>'+ (price===null?'<span class="muted">รอราคา</span>':paperFmt(price,8))+'</td><td class="'+(pnl>0?'positive':pnl<0?'negative':'')+'">'+(price===null?'—':(pnl>=0?'+':'')+paperFmt(pnl,4)+' USDT')+'</td><td>TP '+paperFmt(tp,8)+'<br>SL '+paperFmt(sl,8)+'</td><td><button class="secondary" onclick="paperSellPosition(\''+esc(p.symbol)+'\')">ปิดสถานะ</button></td></tr>';
+  return '<tr><td><b>'+esc(p.symbol)+'</b></td><td>'+paperFmt(q,8)+'</td><td>'+paperFmt(entry,8)+'</td><td>'+ (price===null?'<span class="muted">รอราคา</span>':paperFmt(price,8))+'</td><td class="'+(pnl>0?'positive':pnl<0?'negative':'')+'">'+(price===null?'—':(pnl>=0?'+':'')+paperFmt(pnl,4)+' USDT')+'</td><td>TP '+paperFmt(tp,8)+'<br>SL '+paperFmt(sl,8)+'</td><td><button class="secondary" disabled title="Backend จัดการ TP/SL อัตโนมัติ">'+esc(p.symbol)+'\')">ปิดสถานะ</button></td></tr>';
  }).join('');
  const equity=cash+marketValue,total=realized+unrealized;
  const put=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};
@@ -781,14 +783,41 @@ function paperEngineUi(){
  if(st)st.textContent=paperEntryEnabled?'กำลังค้นหาจังหวะเข้าอัตโนมัติ · กดหยุดได้ทุกเมื่อ':'หยุดรับคำสั่งซื้อใหม่ · ระบบยังติดตาม TP/SL ของสถานะที่เปิดอยู่';
  paperLiveUpdate(paperEntryEnabled?'ENGINE RUNNING':'ENGINE STOPPED',paperEntryEnabled?'กำลังสแกนตลาดเพื่อหา FAST ENTRY':'หยุดเปิดสถานะใหม่ · ติดตาม TP/SL ของสถานะคงค้าง');
 }
-async function paperToggleEngine(){
- if(paperEntryEnabled){paperEntryEnabled=false;paperEngineUi();const st=document.getElementById('paperStatus');if(st)st.textContent='หยุดเปิดสถานะใหม่แล้ว · กำลังดูแลสถานะที่ยังเปิดอยู่';return;}
+const PAPER_ENGINE_API='https://blessing-webull-realtime-djfm.onrender.com';
+async function paperServerRequest(path,method='GET'){
+ const sb=window.BLESSING_AUTH?.client;if(!sb)throw Error('กรุณาเข้าสู่ระบบก่อน');
+ const {data,error}=await sb.auth.getSession();if(error)throw error;
+ const token=data?.session?.access_token;if(!token)throw Error('ไม่พบเซสชัน กรุณาเข้าสู่ระบบใหม่');
+ const response=await fetch(PAPER_ENGINE_API+path,{method,headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'}});
+ const payload=await response.json().catch(()=>({}));
+ if(!response.ok)throw Error(payload.detail||payload.message||('Backend HTTP '+response.status));
+ return payload;
+}
+async function paperEngineSync(){
  try{
-  if(!window.BLESSING_AUTH?.client)throw Error('กรุณาเข้าสู่ระบบก่อน');
-  paperEntryEnabled=true;paperEngineUi();paperLiveUpdate('กำลังเริ่มระบบ','ตรวจสอบบัญชีและโหลดข้อมูลตลาด...');
-  const st=document.getElementById('paperStatus');if(st)st.textContent='กำลังเริ่มระบบคัดเลือกเหรียญอัตโนมัติ...';
-  await paperAutoCycle();
- }catch(e){paperEntryEnabled=false;paperEngineUi();const st=document.getElementById('paperStatus');if(st)st.textContent='เริ่มระบบไม่ได้: '+(e.message||e);}
+  const data=await paperServerRequest('/paper-engine/status');
+  paperEntryEnabled=!!data.enabled;paperServerMode=true;paperEngineUi();
+  paperLiveUpdate(data.enabled?'ENGINE RUNNING':'ENGINE STOPPED',
+   data.enabled?'Backend กำลังสแกนตลาด แม้ปิดหน้าแอป':'Backend หยุดเปิดสถานะใหม่ · สถานะคงค้างยังได้รับการดูแล');
+  const st=document.getElementById('paperStatus');if(st)st.textContent='เชื่อมต่อ Backend แล้ว · '+(data.worker?.status||'รอสถานะ Worker');
+  return data;
+ }catch(e){paperLiveUpdate('BACKEND NOT CONNECTED',e.message||String(e));throw e;}
+}
+async function paperToggleEngine(){
+ const st=document.getElementById('paperStatus');
+ try{
+  if(paperEntryEnabled){
+   await paperServerRequest('/paper-engine/stop','POST');
+   paperEntryEnabled=false;paperEngineUi();
+   if(st)st.textContent='ส่งคำสั่ง STOP ถึง Backend แล้ว · กำลังดูแลสถานะที่เปิดค้าง';
+   await paperRefresh(false);return;
+  }
+  paperLiveUpdate('กำลังเริ่มระบบ','ส่งคำสั่ง START ไปยัง Backend...');
+  const result=await paperServerRequest('/paper-engine/start','POST');
+  paperEntryEnabled=!!result.enabled;paperServerMode=true;paperEngineUi();
+  if(st)st.textContent='Backend รับคำสั่ง START แล้ว · ระบบจะทำงานต่อแม้ปิดหน้าแอป';
+  await paperRefresh(false);
+ }catch(e){paperEntryEnabled=false;paperEngineUi();if(st)st.textContent='สั่งงาน Backend ไม่สำเร็จ: '+(e.message||e);}
 }
 async function paperAutoCycle(){
  if(paperCycleBusy||!paperEntryEnabled)return;
@@ -823,7 +852,7 @@ function startPaperPolling(){
  if(paperTimer)clearInterval(paperTimer);
  paperInit().catch(e=>{const st=document.getElementById('paperStatus');if(st)st.textContent='เริ่มบัญชีไม่ได้: '+(e.message||e)});
  paperTimer=setInterval(()=>{
-  if(active==='paper'||paperEntryEnabled||paperPositions.length){paperRefresh(false);if(paperEntryEnabled&&Date.now()-paperLastCycleAt>=30000){paperLastCycleAt=Date.now();paperLiveUpdate('กำลังสแกนรอบใหม่','รีเฟรชข้อมูลตลาดและตรวจสอบสัญญาณ');paperAutoCycle();}}
+  if(active==='paper'||paperEntryEnabled||paperPositions.length){paperRefresh(false);if(paperServerMode&&active==='paper'&&Date.now()-paperLastCycleAt>=30000){paperLastCycleAt=Date.now();paperEngineSync().catch(()=>{});}}
   else stopPaperPolling();
  },15000);
  paperEngineUi();
