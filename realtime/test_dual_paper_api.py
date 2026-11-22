@@ -26,7 +26,7 @@ class DualPaperApiTests(unittest.TestCase):
             "user_id": "99999999-9999-4999-8999-999999999999",
             "market": "crypto", "symbol": "BTCUSDT", "side": "buy",
             "quantity": 0.001, "price": 60000,
-            "stop_loss_price": 59400, "take_profit_price": 61200,
+            "stop_loss_pct": 1, "take_profit_pct": 2,
             "price_source": "manual_simulation",
             "idempotency_key": "test-order-key-00001",
         })
@@ -47,7 +47,7 @@ class DualPaperApiTests(unittest.TestCase):
         response = self.client_context.post("/ai/dual-paper/order", json={
             "market": "crypto", "symbol": "BTCUSDT", "side": "buy",
             "quantity": 0.001, "price": 1,
-            "stop_loss_price": 60390, "take_profit_price": 62220,
+            "stop_loss_pct": 1, "take_profit_pct": 2,
             "price_source": "binance_th_public",
             "idempotency_key": "test-order-key-00005",
         })
@@ -74,7 +74,7 @@ class DualPaperApiTests(unittest.TestCase):
         response = self.client_context.post("/ai/dual-paper/order", json={
             "market": "crypto", "symbol": "AAPL", "side": "buy",
             "quantity": 1, "price": 100,
-            "stop_loss_price": 99, "take_profit_price": 102,
+            "stop_loss_pct": 1, "take_profit_pct": 2,
             "price_source": "manual_simulation",
             "idempotency_key": "test-order-key-00003",
         })
