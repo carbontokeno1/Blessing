@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +33,7 @@ MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.com")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://blessing.carbontokeno1.workers.dev").split(",")
 
 app = FastAPI(title="Blessing Market Data Bridge", version="0.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in ALLOWED_ORIGINS if x.strip()], allow_credentials=False, allow_methods=["GET"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in ALLOWED_ORIGINS if x.strip()], allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["*"])
 
 state = {
     "provider": "webull",
@@ -1233,3 +1233,200 @@ async def stream(ws: WebSocket):
         clients.discard(ws)
     except Exception:
         clients.discard(ws)
+
+
+# Persistent Paper Trading worker. It runs on the Render service process, not in the browser.
+# Render Free may suspend this process while idle; therefore this is best-effort, not guaranteed 24/7.
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+PAPER_WORKER_INTERVAL = max(10, int(os.getenv("PAPER_WORKER_INTERVAL", "15")))
+PAPER_WORKER_STATE = {"status": "waiting_config" if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY) else "starting",
+                      "lastCycleAt": None, "lastError": None, "cycles": 0, "actions": []}
+PAPER_WORKER_THREAD = None
+PAPER_WORKER_LOCK = threading.Lock()
+PAPER_ENTRY_COOLDOWNS = {}
+
+
+def _sb_headers(prefer=None):
+    headers = {"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": "Bearer " + SUPABASE_SERVICE_ROLE_KEY,
+               "Content-Type": "application/json"}
+    if prefer:
+        headers["Prefer"] = prefer
+    return headers
+
+
+def _sb_rest(table, params=None, method="GET", body=None):
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        raise RuntimeError("SUPABASE_WORKER_CONFIG_MISSING")
+    response = requests.request(method, SUPABASE_URL + "/rest/v1/" + table,
+                                params=params or {}, json=body, headers=_sb_headers("return=representation"),
+                                timeout=(5, 15))
+    response.raise_for_status()
+    return response.json() if response.content else []
+
+
+def _sb_rpc(name, payload):
+    response = requests.post(SUPABASE_URL + "/rest/v1/rpc/" + name, json=payload,
+                             headers=_sb_headers(), timeout=(5, 15))
+    response.raise_for_status()
+    return response.json()
+
+
+def _paper_auth_user(request: Request):
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        raise HTTPException(status_code=503, detail="Paper worker ยังไม่ได้ตั้งค่า Supabase บน Render")
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบก่อน")
+    token = authorization.split(" ", 1)[1].strip()
+    response = requests.get(SUPABASE_URL + "/auth/v1/user",
+                            headers={"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": "Bearer " + token},
+                            timeout=(5, 12))
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่")
+    user = response.json()
+    profiles = _sb_rest("profiles", {"select":"role,status", "user_id":"eq." + str(user.get("id")), "limit":"1"})
+    if not profiles or profiles[0].get("role") not in ("super_admin", "admin") or profiles[0].get("status") != "active":
+        raise HTTPException(status_code=403, detail="สิทธิ์ไม่เพียงพอสำหรับควบคุม Paper Engine")
+    return user
+
+
+@app.post("/paper-engine/start")
+def paper_engine_start(request: Request):
+    user = _paper_auth_user(request)
+    rows = _sb_rest("paper_bot_settings", {"select":"user_id,mode", "user_id":"eq." + str(user["id"]), "limit":"1"})
+    if not rows or rows[0].get("mode") != "paper":
+        raise HTTPException(status_code=404, detail="ไม่พบการตั้งค่า Paper Trading ของบัญชีนี้")
+    _sb_rest("paper_bot_settings", {"user_id":"eq." + str(user["id"])}, "PATCH",
+             {"enabled": True, "updated_at": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True, "enabled": True, "mode": "paper", "message": "ส่งคำสั่งเริ่ม Paper Engine ไปยัง Backend แล้ว"}
+
+
+@app.post("/paper-engine/stop")
+def paper_engine_stop(request: Request):
+    user = _paper_auth_user(request)
+    _sb_rest("paper_bot_settings", {"user_id":"eq." + str(user["id"])}, "PATCH",
+             {"enabled": False, "updated_at": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True, "enabled": False, "message": "หยุดเปิดสถานะใหม่แล้ว; Backend จะจัดการสถานะ Paper ที่ยังเปิดอยู่ต่อจนปิดตาม TP/SL"}
+
+
+@app.get("/paper-engine/status")
+def paper_engine_status(request: Request):
+    user = _paper_auth_user(request)
+    settings = _sb_rest("paper_bot_settings", {"select":"enabled,mode,updated_at", "user_id":"eq." + str(user["id"]), "limit":"1"})
+    positions = _sb_rest("paper_bot_positions", {"select":"id,symbol,quantity,entry_price,current_price,take_profit_price,stop_loss_price,status",
+                                                  "user_id":"eq." + str(user["id"]), "status":"eq.open"})
+    return {"ok": True, "configured": True, "worker": dict(PAPER_WORKER_STATE),
+            "enabled": bool(settings and settings[0].get("enabled")), "mode": "paper",
+            "openPositions": positions}
+
+
+def _paper_worker_cycle():
+    settings_rows = _sb_rest("paper_bot_settings", {"select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,allowed_exchanges",
+                                                     "mode":"eq.paper", "limit":"100"})
+    for setting in settings_rows:
+        uid = setting["user_id"]
+        positions = _sb_rest("paper_bot_positions", {"select":"*", "user_id":"eq." + uid, "status":"eq.open", "limit":"20"})
+        if not setting.get("enabled") and not positions:
+            continue
+        market = altcoin_scanner(0)
+        updated_at = market.get("updatedAt")
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(updated_at.replace("Z","+00:00"))).total_seconds() if updated_at else 999999
+        except Exception:
+            age = 999999
+        fresh = market.get("status") == "ok" and age <= 90
+        candidates = {x.get("symbol"): x for x in (market.get("candidates") or [])
+                      if x.get("symbol") and x.get("source") == "Binance"}
+        held = {p.get("symbol") for p in positions}
+        # Manage existing positions first. No exit is made from stale or missing market prices.
+        for pos in positions:
+            row = candidates.get(pos.get("symbol"))
+            if not row or not fresh:
+                continue
+            price = _num(row.get("price"), 0) or 0
+            if price <= 0:
+                continue
+            _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":"mark","p_symbol":pos["symbol"],
+                    "p_exchange":"Binance","p_price":price,"p_position_id":pos["id"],"p_reason":"MARK_TO_MARKET","p_signal_score":None})
+            reason = "TAKE_PROFIT" if price >= float(pos["take_profit_price"]) else (
+                     "STOP_LOSS" if price <= float(pos["stop_loss_price"]) else None)
+            if reason:
+                result = _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":"sell","p_symbol":pos["symbol"],
+                                 "p_exchange":"Binance","p_price":price,"p_position_id":pos["id"],"p_reason":reason,"p_signal_score":None})
+                PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":"sell",
+                                                       "symbol":pos["symbol"],"reason":reason,"result":result})
+                PAPER_WORKER_STATE["actions"] = PAPER_WORKER_STATE["actions"][-20:]
+        if not setting.get("enabled") or not fresh:
+            continue
+        # Refresh open positions after exits and enforce the persisted position cap.
+        positions = _sb_rest("paper_bot_positions", {"select":"id,symbol,status", "user_id":"eq." + uid, "status":"eq.open", "limit":"20"})
+        if len(positions) >= int(setting.get("max_open_positions") or 5):
+            continue
+        account_rows = _sb_rest("paper_bot_accounts", {"select":"cash_balance,starting_balance,realized_pnl", "user_id":"eq." + uid, "limit":"1"})
+        if not account_rows:
+            continue
+        account = account_rows[0]
+        open_pnl = 0.0
+        for p in positions:
+            q = candidates.get(p.get("symbol"))
+            if q and _num(q.get("price"),0):
+                open_pnl += (_num(q.get("price"),0) - _num(p.get("entry_price"),0)) * _num(p.get("quantity"),0)
+        total_pnl = float(account.get("realized_pnl") or 0) + open_pnl
+        start_balance = float(account.get("starting_balance") or setting.get("starting_balance") or 88.4173298)
+        if total_pnl <= -(start_balance * float(setting.get("daily_loss_limit_pct") or 3) / 100):
+            continue
+        held = {p.get("symbol") for p in positions}
+        ranked = [x for x in candidates.values() if x.get("fastEntry") is True and x.get("symbol") not in held
+                  and x.get("exchangeSymbol") == x.get("symbol") and
+                  _num(x.get("price"),0) and _num(x.get("score"),0) >= 60 and
+                  _num(x.get("rvol"),0) >= 2 and _num(x.get("m1"),0) > 0 and _num(x.get("m5"),0) > 0 and
+                  x.get("breakout") is True and 0 < (_num(x.get("spreadPct"),0) or 0) <= 0.5]
+        ranked.sort(key=lambda x:(x.get("score",0),x.get("rvol",0)),reverse=True)
+        allowed = setting.get("allowed_exchanges") or ["Binance"]
+        if "Binance" not in allowed:
+            continue
+        for candidate in ranked:
+            if len(positions) >= int(setting.get("max_open_positions") or 5):
+                break
+            cooldown_key = uid + ":" + candidate["symbol"]
+            if time.time() - PAPER_ENTRY_COOLDOWNS.get(cooldown_key,0) < 180:
+                continue
+            try:
+                result = _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":"buy","p_symbol":candidate["symbol"],
+                                  "p_exchange":"Binance","p_price":float(candidate["price"]),"p_position_id":None,
+                                  "p_reason":"FAST_ENTRY","p_signal_score":int(candidate.get("score") or 0)})
+                PAPER_ENTRY_COOLDOWNS[cooldown_key] = time.time()
+                PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":"buy",
+                                                       "symbol":candidate["symbol"],"result":result})
+                PAPER_WORKER_STATE["actions"] = PAPER_WORKER_STATE["actions"][-20:]
+                positions.append({"symbol":candidate["symbol"]})
+            except Exception as exc:
+                log.warning("Paper worker buy skipped for %s: %s", candidate["symbol"], type(exc).__name__)
+                continue
+
+
+def _paper_worker_loop():
+    while True:
+        try:
+            if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+                PAPER_WORKER_STATE.update({"status":"waiting_config","lastError":"SUPABASE_WORKER_CONFIG_MISSING"})
+                time.sleep(30)
+                continue
+            _paper_worker_cycle()
+            PAPER_WORKER_STATE.update({"status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
+                                       "lastError":None,"cycles":PAPER_WORKER_STATE.get("cycles",0)+1})
+        except Exception as exc:
+            PAPER_WORKER_STATE.update({"status":"error","lastError":type(exc).__name__,
+                                       "lastCycleAt":datetime.now(timezone.utc).isoformat()})
+            log.exception("Persistent Paper Trading worker cycle failed")
+        time.sleep(PAPER_WORKER_INTERVAL)
+
+
+@app.on_event("startup")
+async def start_paper_worker():
+    global PAPER_WORKER_THREAD
+    if PAPER_WORKER_THREAD is None or not PAPER_WORKER_THREAD.is_alive():
+        PAPER_WORKER_THREAD = threading.Thread(target=_paper_worker_loop, name="paper-trading-worker", daemon=True)
+        PAPER_WORKER_THREAD.start()
+
