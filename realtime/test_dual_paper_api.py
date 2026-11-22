@@ -38,6 +38,24 @@ class DualPaperApiTests(unittest.TestCase):
         self.assertEqual(payload["p_price"], 60000.0)
         self.assertEqual(response.json()["priceSource"], "manual_simulation")
 
+
+    @patch.object(blessing_app, "_binance_th_public_price", return_value=61000.0)
+    @patch.object(blessing_app, "_sb_rpc")
+    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
+    def test_market_price_is_fetched_again_by_server_for_order(self, auth, rpc, quote):
+        rpc.return_value = {"ok": True, "orderId": "paper-order"}
+        response = self.client_context.post("/ai/dual-paper/order", json={
+            "market": "crypto", "symbol": "BTCUSDT", "side": "buy",
+            "quantity": 0.001, "price": 1,
+            "stop_loss_price": 60390, "take_profit_price": 62220,
+            "price_source": "binance_th_public",
+            "idempotency_key": "test-order-key-00005",
+        })
+        self.assertEqual(response.status_code, 200)
+        quote.assert_called_once_with("BTCUSDT")
+        self.assertEqual(rpc.call_args.args[1]["p_price"], 61000.0)
+        self.assertEqual(response.json()["priceSource"], "binance_th_public")
+
     @patch.object(blessing_app, "_sb_rpc")
     @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
     def test_unlabeled_or_live_price_is_rejected(self, auth, rpc):
