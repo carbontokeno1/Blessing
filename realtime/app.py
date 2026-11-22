@@ -1403,7 +1403,24 @@ def paper_engine_status(request: Request):
 
 
 def _binance_public_price(symbol: str):
+    # Binance's /ticker/price endpoint can return HTTP 403 on some hosted IPs.
+    # The scanner already uses /ticker/24hr successfully, so try that public
+    # endpoint first before falling back to /ticker/price.
     last_error = None
+    for host in ("https://data-api.binance.vision", "https://api.binance.com"):
+        try:
+            response = requests.get(host + "/api/v3/ticker/24hr",
+                                    params={"symbol": symbol}, timeout=(4, 8),
+                                    headers={"User-Agent":"BlessingPaperWorker/1.0"})
+            response.raise_for_status()
+            payload = response.json()
+            price = _num(payload.get("lastPrice"), 0) if isinstance(payload, dict) else 0
+            if price and price > 0:
+                return price
+            last_error = RuntimeError("BINANCE_INVALID_24H_PRICE_RESPONSE")
+        except Exception as exc:
+            last_error = exc
+            log.warning("Binance 24h price host failed for %s (%s): %s", symbol, host, type(exc).__name__)
     for host in ("https://data-api.binance.vision", "https://api.binance.com"):
         try:
             response = requests.get(host + "/api/v3/ticker/price",
@@ -1431,6 +1448,16 @@ def _paper_worker_cycle():
         if not setting.get("enabled") and not positions:
             continue
         market = altcoin_scanner(0)
+        PAPER_WORKER_STATE["scanner"] = {
+            "status": market.get("status"),
+            "provider": market.get("exchange") or market.get("provider"),
+            "scanned": market.get("scanned", 0),
+            "evaluated": market.get("evaluated", 0),
+            "fastEntryCount": market.get("fastEntryCount", 0),
+            "candleErrors": market.get("candleErrors", 0),
+            "updatedAt": market.get("updatedAt"),
+            "metricsSource": market.get("metricsSource"),
+        }
         updated_at = market.get("updatedAt")
         try:
             age = (datetime.now(timezone.utc) - datetime.fromisoformat(updated_at.replace("Z","+00:00"))).total_seconds() if updated_at else 999999
