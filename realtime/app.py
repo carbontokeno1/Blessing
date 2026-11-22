@@ -1297,6 +1297,9 @@ def paper_engine_start(request: Request):
     rows = _sb_rest("paper_bot_settings", {"select":"user_id,mode", "user_id":"eq." + str(user["id"]), "limit":"1"})
     if not rows or rows[0].get("mode") != "paper":
         raise HTTPException(status_code=404, detail="ไม่พบการตั้งค่า Paper Trading ของบัญชีนี้")
+    account = _sb_rest("paper_bot_accounts", {"select":"user_id", "user_id":"eq." + str(user["id"]), "limit":"1"})
+    if not account:
+        _sb_rest("paper_bot_accounts", {}, "POST", {"user_id":str(user["id"]), "status":"active"})
     _sb_rest("paper_bot_settings", {"user_id":"eq." + str(user["id"])}, "PATCH",
              {"enabled": True, "updated_at": datetime.now(timezone.utc).isoformat()})
     return {"ok": True, "enabled": True, "mode": "paper", "message": "ส่งคำสั่งเริ่ม Paper Engine ไปยัง Backend แล้ว"}
