@@ -1326,14 +1326,15 @@ PAPER_ENTRY_COOLDOWNS = {}
 
 
 def _sb_headers(prefer=None):
-    # Supabase REST needs the service-role JWT in both headers:
-    # apikey identifies the project key; Authorization selects the service_role
-    # Postgres role so backend workers can bypass member-facing RLS safely.
+    # Legacy service_role keys are JWTs and belong in both headers.
+    # New sb_secret_* keys are opaque API keys, not JWTs: send them only
+    # in apikey or Supabase rejects the Authorization bearer as Invalid JWT.
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": "Bearer " + SUPABASE_SERVICE_ROLE_KEY,
         "Content-Type": "application/json",
     }
+    if not SUPABASE_SERVICE_ROLE_KEY.startswith("sb_secret_"):
+        headers["Authorization"] = "Bearer " + SUPABASE_SERVICE_ROLE_KEY
     if prefer:
         headers["Prefer"] = prefer
     return headers
