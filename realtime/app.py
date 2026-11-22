@@ -1455,6 +1455,197 @@ def paper_engine_status(request: Request):
             "openPositions": positions}
 
 
+
+# Independent crypto/US-equity paper portfolios. These endpoints are admin-only,
+# authenticate the Supabase session server-side, and never call a broker order API.
+def _dual_paper_number(value, field):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail=field + " ต้องเป็นตัวเลข")
+    if not math.isfinite(number) or number <= 0:
+        raise HTTPException(status_code=422, detail=field + " ต้องมากกว่า 0")
+    return number
+
+
+def _dual_paper_portfolio_rows(user_id):
+    return _sb_rest("blessing_dual_portfolios", {
+        "select": "*", "user_id": "eq." + str(user_id), "order": "market.asc"
+    })
+
+
+@app.get("/ai/portfolio-overview")
+def dual_paper_overview(request: Request):
+    _paper_auth_user(request)
+    return portfolio_overview()
+
+
+@app.post("/ai/dual-paper/initialize")
+def dual_paper_initialize(request: Request):
+    user = _paper_auth_user(request)
+    uid = str(user["id"])
+    existing = _dual_paper_portfolio_rows(uid)
+    by_market = {row.get("market"): row for row in existing}
+    created = []
+    configs = {
+        "crypto": {"broker": "binance_th", "currency": "USDT", "capital": 100},
+        "stocks": {"broker": "webull", "currency": "USD", "capital": 100},
+    }
+    for market, config in configs.items():
+        if market in by_market:
+            continue
+        payload = {
+            "user_id": uid, "market": market, "broker": config["broker"],
+            "currency": config["currency"], "initial_capital": config["capital"],
+            "cash_balance": config["capital"], "mode": "paper", "enabled": False,
+            "reserve_cash_pct": 20, "risk_per_trade_pct": 1,
+            "max_daily_loss_pct": 3, "max_weekly_loss_pct": 6,
+            "max_drawdown_pct": 10, "max_open_positions": 2,
+            "peak_equity": config["capital"],
+        }
+        rows = _sb_rest("blessing_dual_portfolios", {}, "POST", payload)
+        if not rows:
+            raise HTTPException(status_code=502, detail="สร้างพอร์ตทดลองไม่สำเร็จ")
+        created.append(market)
+    return {
+        "ok": True, "created": created, "alreadyExisted": [m for m in configs if m in by_market],
+        "enabled": False, "mode": "paper",
+        "message": "สร้างพอร์ตทดลองแยก 100 USDT และ 100 USD แล้ว โดยยังปิดการซื้อขายไว้",
+    }
+
+
+@app.get("/ai/dual-paper/status")
+def dual_paper_status(request: Request):
+    user = _paper_auth_user(request)
+    uid = str(user["id"])
+    portfolios = _dual_paper_portfolio_rows(uid)
+    result = {}
+    for portfolio in portfolios:
+        pid = str(portfolio["id"])
+        positions = _sb_rest("blessing_dual_positions", {
+            "select": "id,market,symbol,quantity,entry_price,current_price,stop_loss_price,take_profit_price,entry_fee,unrealized_pnl,status,opened_at",
+            "portfolio_id": "eq." + pid, "user_id": "eq." + uid, "status": "eq.open",
+            "order": "opened_at.desc", "limit": "50",
+        })
+        orders = _sb_rest("blessing_dual_orders", {
+            "select": "id,market,symbol,side,quantity,price,notional,fee,status,reason,realized_pnl,created_at",
+            "portfolio_id": "eq." + pid, "user_id": "eq." + uid,
+            "order": "created_at.desc", "limit": "30",
+        })
+        unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+        position_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
+        cash = float(portfolio.get("cash_balance") or 0)
+        result[portfolio["market"]] = {
+            "id": pid, "broker": portfolio["broker"], "currency": portfolio["currency"],
+            "initialCapital": float(portfolio["initial_capital"]), "cashBalance": cash,
+            "equity": cash + position_value, "realizedPnl": float(portfolio.get("realized_pnl") or 0),
+            "unrealizedPnl": unrealized, "feesPaid": float(portfolio.get("fees_paid") or 0),
+            "enabled": bool(portfolio.get("enabled")), "mode": "paper",
+            "risk": {"reserveCashPct": float(portfolio["reserve_cash_pct"]),
+                     "riskPerTradePct": float(portfolio["risk_per_trade_pct"]),
+                     "maxDailyLossPct": float(portfolio["max_daily_loss_pct"]),
+                     "maxWeeklyLossPct": float(portfolio["max_weekly_loss_pct"]),
+                     "maxDrawdownPct": float(portfolio["max_drawdown_pct"]),
+                     "maxOpenPositions": int(portfolio["max_open_positions"])},
+            "positions": positions, "orders": orders,
+        }
+    return {"ok": True, "mode": "paper", "liveOrdersEnabled": False,
+            "crossPortfolioTransfersEnabled": False, "portfolios": result}
+
+
+@app.post("/ai/dual-paper/enable")
+async def dual_paper_enable(request: Request):
+    user = _paper_auth_user(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="ข้อมูลคำขอไม่ถูกต้อง")
+    market = str(body.get("market") or "").lower()
+    if market not in ("crypto", "stocks"):
+        raise HTTPException(status_code=422, detail="market ต้องเป็น crypto หรือ stocks")
+    rows = _sb_rest("blessing_dual_portfolios", {
+        "select": "id,enabled", "user_id": "eq." + str(user["id"]),
+        "market": "eq." + market, "limit": "1",
+    })
+    if not rows:
+        raise HTTPException(status_code=404, detail="ยังไม่ได้สร้างพอร์ตทดลอง")
+    _sb_rest("blessing_dual_portfolios", {
+        "id": "eq." + str(rows[0]["id"]), "user_id": "eq." + str(user["id"]),
+    }, "PATCH", {"enabled": True, "updated_at": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True, "market": market, "enabled": True, "mode": "paper"}
+
+
+@app.post("/ai/dual-paper/disable")
+async def dual_paper_disable(request: Request):
+    user = _paper_auth_user(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="ข้อมูลคำขอไม่ถูกต้อง")
+    market = str(body.get("market") or "").lower()
+    if market not in ("crypto", "stocks"):
+        raise HTTPException(status_code=422, detail="market ต้องเป็น crypto หรือ stocks")
+    rows = _sb_rest("blessing_dual_portfolios", {
+        "select": "id", "user_id": "eq." + str(user["id"]),
+        "market": "eq." + market, "limit": "1",
+    })
+    if not rows:
+        raise HTTPException(status_code=404, detail="ไม่พบพอร์ตทดลอง")
+    _sb_rest("blessing_dual_portfolios", {
+        "id": "eq." + str(rows[0]["id"]), "user_id": "eq." + str(user["id"]),
+    }, "PATCH", {"enabled": False, "updated_at": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True, "market": market, "enabled": False, "mode": "paper"}
+
+
+@app.post("/ai/dual-paper/order")
+async def dual_paper_order(request: Request):
+    user = _paper_auth_user(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="ข้อมูลคำขอไม่ถูกต้อง")
+    # Explicitly simulated prices only for this first manual test interface.
+    # No broker adapter, API key, or live order endpoint is reachable here.
+    if body.get("price_source") != "manual_simulation":
+        raise HTTPException(status_code=422, detail="รอบทดสอบนี้รับเฉพาะราคาจำลองที่ระบุชัดเจน")
+    market = str(body.get("market") or "").lower()
+    side = str(body.get("side") or "").lower()
+    symbol = str(body.get("symbol") or "").strip().upper()
+    if market not in ("crypto", "stocks") or side not in ("buy", "sell"):
+        raise HTTPException(status_code=422, detail="market หรือ side ไม่ถูกต้อง")
+    if not symbol or len(symbol) > 20 or not all(c.isalnum() or c in ".-" for c in symbol):
+        raise HTTPException(status_code=422, detail="สัญลักษณ์ไม่ถูกต้อง")
+    if market == "crypto" and (not symbol.endswith("USDT") or not symbol[:-4].isalnum()):
+        raise HTTPException(status_code=422, detail="พอร์ตคริปโตรับเฉพาะคู่ Spot ที่ลงท้าย USDT")
+    if market == "stocks" and (symbol.endswith("USDT") or not symbol[0].isalpha()):
+        raise HTTPException(status_code=422, detail="พอร์ตหุ้นรับเฉพาะสัญลักษณ์หุ้นสหรัฐ")
+    quantity = _dual_paper_number(body.get("quantity"), "quantity")
+    price = _dual_paper_number(body.get("price"), "price")
+    stop = _dual_paper_number(body.get("stop_loss_price"), "stop_loss_price") if side == "buy" else None
+    target = _dual_paper_number(body.get("take_profit_price"), "take_profit_price") if side == "buy" else None
+    idem = str(body.get("idempotency_key") or "")
+    if len(idem) < 16 or len(idem) > 100:
+        raise HTTPException(status_code=422, detail="idempotency_key ต้องยาว 16–100 ตัวอักษร")
+    position_id = body.get("position_id") if side == "sell" else None
+    if side == "sell" and not position_id:
+        raise HTTPException(status_code=422, detail="การขายต้องระบุ position_id จากพอร์ตของตนเอง")
+    payload = {
+        "p_user_id": str(user["id"]), "p_market": market, "p_symbol": symbol,
+        "p_side": side, "p_quantity": quantity, "p_price": price,
+        "p_stop_loss_price": stop, "p_take_profit_price": target,
+        "p_position_id": position_id, "p_idempotency_key": idem,
+    }
+    try:
+        result = _sb_rpc("blessing_dual_execute_order", payload)
+    except requests.HTTPError as exc:
+        detail = "คำสั่ง Paper ถูกปฏิเสธโดยกฎความเสี่ยงหรือข้อมูลไม่ผ่านการตรวจสอบ"
+        try:
+            detail += ": " + str(exc.response.text)[:240]
+        except Exception:
+            pass
+        raise HTTPException(status_code=409, detail=detail)
+    return {"ok": True, "mode": "paper", "priceSource": "manual_simulation", "result": result}
+
 def _binance_public_price(symbol: str):
     # Binance's /ticker/price endpoint can return HTTP 403 on some hosted IPs.
     # The scanner already uses /ticker/24hr successfully, so try that public
