@@ -479,9 +479,9 @@ function altcoinView(){
  '<div class="card section"><div class="heading"><div><h3>ALTCOIN MOMENTUM RADAR</h3><div class="small muted" id="altStatus">กำลังโหลดข้อมูลตลาด...</div></div><button class="secondary" onclick="loadAltcoinScanner(true)">สแกนใหม่</button></div>'+
  '<div class="toolbar"><span class="pill" id="altUpdated">รอข้อมูล</span><span class="pill">Spot / USDT</span><span class="pill">Auto refresh 60s</span></div>'+
  '<div class="tablewrap"><table><thead><tr><th>อันดับ</th><th>เหรียญ</th><th>ราคา USDT</th><th>24h</th><th>1m</th><th>5m</th><th>RVOL</th><th>มูลค่าซื้อขาย 24h</th><th>สถานะ</th><th>แผนจำลอง</th></tr></thead><tbody id="altRows"><tr><td colspan="10">กำลังดึงข้อมูล...</td></tr></tbody></table></div>'+
- '<div class="notice">ข้อมูลตลาด Spot สาธารณะจาก BitMart · คัดกรองเหรียญสภาพคล่องต่ำและเหรียญ Stablecoin/Leveraged Token ออก · ราคาเป้าหมาย +3% และ Stop -1.5% เป็นแผนจำลองอ้างอิง ไม่ใช่คำสั่งซื้อขายหรือการรับประกันผลตอบแทน</div></div>';
+ '<div class="notice">ข้อมูลตลาด Spot สาธารณะจาก BitMart · คัดกรองเหรียญสภาพคล่องต่ำและเหรียญ Stablecoin/Leveraged Token ออก · ค่า 1m/5m และ RVOL จะแสดงเมื่อมีข้อมูลแท่งเทียนรองรับ · ราคาเป้าหมาย +3% และ Stop -1.5% เป็นแผนจำลองอ้างอิง ไม่ใช่คำสั่งซื้อขายหรือการรับประกันผลตอบแทน</div></div>';
 }
-function fmtAlt(n){const x=Number(n);return Number.isFinite(x)?x.toLocaleString('en-US',{maximumFractionDigits:x<1?8:4}):'—'}
+function fmtAlt(n){if(n===null||n===undefined||n==='')return '—';const x=Number(n);return Number.isFinite(x)?x.toLocaleString('en-US',{maximumFractionDigits:x<1?8:4}):'—'}
 async function loadAltcoinScanner(force=false){
  if(altcoinBusy)return;altcoinBusy=true;
  const status=document.getElementById('altStatus');if(status)status.textContent='กำลังสแกนตลาด BitMart Spot...';
@@ -506,7 +506,7 @@ function renderAltcoinScanner(){
  const el=document.getElementById('altRows');if(!el)return;
  if(!rows.length){el.innerHTML='<tr><td colspan="10">'+(d.message||'ยังไม่พบเหรียญที่ผ่านเกณฑ์ในรอบนี้')+'</td></tr>';return}
  el.innerHTML=rows.map((x,i)=>{
-  const pct=(v)=>Number.isFinite(Number(v))?(Number(v)>=0?'+':'')+Number(v).toFixed(2)+'%':'—';
+  const pct=(v)=>v===null||v===undefined||v===''?'—':Number.isFinite(Number(v))?(Number(v)>=0?'+':'')+Number(v).toFixed(2)+'%':'—';
   const signal=x.breakout?'BREAKOUT':x.volumeSpike?'VOLUME SPIKE':x.momentum?'MOMENTUM':'WATCH';
   const entry=Number(x.price),target=entry*1.03,stop=entry*.985;
   const turnover=fmtAlt(x.quoteVolume24h??x.quoteVolume??x.turnover24h??x.volume24h);
