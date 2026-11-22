@@ -2365,7 +2365,7 @@ async def dual_paper_order(request: Request):
         "p_user_id": str(user["id"]), "p_market": market, "p_symbol": symbol,
         "p_side": side, "p_quantity": quantity, "p_price": fill_price,
         "p_stop_loss_price": stop_price, "p_take_profit_price": target_price,
-        "p_position_id": position_id, "p_idempotency_key": str(uuid.uuid4())
+        "p_position_id": position_id, "p_idempotency_key": str(body.get("idempotencyKey") or uuid.uuid4())
     })
     return {"ok": True, "mode": "paper", "liveOrdersEnabled": False,
             "marketPrice": market_price, "simulatedFillPrice": fill_price, "result": result}
