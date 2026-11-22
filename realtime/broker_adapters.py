@@ -49,11 +49,11 @@ def _binance_account_snapshot() -> dict:
     # Binance TH documents account information at /api/v1/accountV2 and
     # authenticates this read endpoint with X-MBX-APIKEY. Do not call Binance
     # Global /sapi routes from a Binance TH account integration.
-    api_key = (os.getenv("BINANCE_TH_API_KEY") or os.getenv("BINANCE_API_KEY") or "").strip()
+    api_key = os.getenv("BINANCE_TH_API_KEY", "").strip()
     if not api_key:
         return {"status": "not_configured", "credentialsConfigured": False}
 
-    base_url = (os.getenv("BINANCE_TH_API_BASE_URL") or os.getenv("BINANCE_API_BASE_URL") or "https://api.binance.th").rstrip("/")
+    base_url = os.getenv("BINANCE_TH_API_BASE_URL", "https://api.binance.th").rstrip("/")
     params = {"timestamp": int(time.time() * 1000), "recvWindow": 5000}
     try:
         response = requests.get(
