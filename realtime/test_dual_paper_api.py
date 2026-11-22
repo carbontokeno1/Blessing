@@ -36,6 +36,8 @@ class DualPaperApiTests(unittest.TestCase):
         self.assertEqual(payload["p_market"], "crypto")
         self.assertEqual(payload["p_idempotency_key"], "crypto:test-order-key-00001")
         self.assertEqual(payload["p_price"], 60000.0)
+        self.assertEqual(payload["p_stop_loss_price"], 59400.0)
+        self.assertEqual(payload["p_take_profit_price"], 61200.0)
         self.assertEqual(response.json()["priceSource"], "manual_simulation")
 
 
@@ -54,6 +56,8 @@ class DualPaperApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         quote.assert_called_once_with("BTCUSDT")
         self.assertEqual(rpc.call_args.args[1]["p_price"], 61000.0)
+        self.assertEqual(rpc.call_args.args[1]["p_stop_loss_price"], 60390.0)
+        self.assertEqual(rpc.call_args.args[1]["p_take_profit_price"], 62220.0)
         self.assertEqual(response.json()["priceSource"], "binance_th_public")
 
     @patch.object(blessing_app, "_sb_rpc")
