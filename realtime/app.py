@@ -1720,7 +1720,7 @@ async def dual_paper_order(request: Request):
         raise HTTPException(status_code=422, detail="สัญลักษณ์ไม่ถูกต้อง")
     if market == "crypto" and (not symbol.endswith("USDT") or not symbol[:-4].isalnum()):
         raise HTTPException(status_code=422, detail="พอร์ตคริปโตรับเฉพาะคู่ Spot ที่ลงท้าย USDT")
-    if market == "stocks" and (symbol.endswith("USDT") or not symbol[0].isalpha()):
+    if market == "stocks" and (len(symbol) > 10 or symbol.endswith("USDT") or not symbol[0].isalpha()):
         raise HTTPException(status_code=422, detail="พอร์ตหุ้นรับเฉพาะสัญลักษณ์หุ้นสหรัฐ")
     quantity = _dual_paper_number(body.get("quantity"), "quantity")
     if price_source == "binance_th_public" and market == "crypto":
