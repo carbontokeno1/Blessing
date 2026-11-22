@@ -688,16 +688,19 @@ async function enter(session){
    if(error){say('ตรวจสอบสิทธิ์ไม่สำเร็จ กรุณาลองใหม่');await sb.auth.signOut();return}
    if(!profile||profile.status!=='active'||!['super_admin','admin','member'].includes(profile.role)){say('บัญชียังไม่ได้รับอนุมัติหรือถูกระงับ');await sb.auth.signOut();return}
    window.BLESSING_AUTH={client:sb,user:session.user,profile};
-   activeUserId=userId;
    role=profile.role==='member'?'member':'admin';
    const userbox=document.querySelector('.userbox');
    if(userbox)userbox.innerHTML='<span class="pill">'+(role==='admin'?'ADMIN WORKSPACE':'MEMBER WORKSPACE')+'</span><div class="avatar">'+(profile.display_name||profile.email||'U').slice(0,1).toUpperCase()+'</div><div><b>'+((profile.display_name||profile.email||'สมาชิก').replace(/[<>]/g,''))+'</b><div class="small muted">'+profile.role.toUpperCase()+'</div></div><button class="secondary" id="signOutBtn">ออกจากระบบ</button>';
    document.getElementById('signOutBtn')?.addEventListener('click',async()=>{await sb.auth.signOut();location.reload()});
-   gate.style.display='none';
    if(role==='member'&&['members','live'].includes(active))active='overview';
+   gate.style.display='none';
    render();
+   activeUserId=userId;
   }catch(err){
-   say('เชื่อมต่อระบบตรวจสอบบัญชีไม่สำเร็จ กรุณาลองใหม่');
+   console.error('[BLESSING_AUTH] post-login initialization failed:',err);
+   activeUserId=null;
+   gate.style.display='grid';
+   say('เข้าสู่ระบบแล้ว แต่เปิดหน้าหลักไม่สำเร็จ: '+String(err?.message||err||'unknown error').slice(0,180));
   }finally{
    if(enteringUserId===userId){enteringUserId=null;enteringPromise=null}
    submit.disabled=false;
