@@ -1508,6 +1508,12 @@ def _paper_worker_loop():
                 time.sleep(30)
                 continue
             _paper_worker_cycle()
+            try:
+                _stock_paper_worker_cycle()
+            except Exception as stock_exc:
+                STOCK_PAPER_WORKER_STATE.update({"status":"error","lastError":type(stock_exc).__name__,
+                                                 "lastCycleAt":datetime.now(timezone.utc).isoformat()})
+                log.exception("Stock Paper Trading worker cycle failed")
             PAPER_WORKER_STATE.update({"status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
                                        "lastError":None,"cycles":PAPER_WORKER_STATE.get("cycles",0)+1})
         except Exception as exc:
@@ -1524,3 +1530,234 @@ async def start_paper_worker():
         PAPER_WORKER_THREAD = threading.Thread(target=_paper_worker_loop, name="paper-trading-worker", daemon=True)
         PAPER_WORKER_THREAD.start()
 
+
+
+# Separate US-equity Paper Trading engine. It shares market data only; its
+# accounts, settings, positions, orders and risk limits are isolated from crypto.
+STOCK_PAPER_WORKER_STATE = {
+    "status": "waiting_credentials" if not (ALPACA_KEY and ALPACA_SECRET) else "starting",
+    "lastCycleAt": None, "lastError": None, "cycles": 0, "actions": []
+}
+STOCK_PAPER_ENTRY_COOLDOWNS = {}
+
+
+def _stock_paper_engine_user(request: Request):
+    return _paper_auth_user(request)
+
+
+def _stock_paper_ensure_user(user_id: str):
+    settings = _sb_rest("stock_paper_settings", {
+        "select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,fee_pct,slippage_bps",
+        "user_id":"eq." + user_id, "limit":"1"
+    })
+    if not settings:
+        settings = _sb_rest("stock_paper_settings", {}, "POST", {
+            "user_id": user_id, "enabled": False, "mode": "paper",
+            "starting_balance": 3000, "order_budget": 100,
+            "max_open_positions": 5, "take_profit_pct": 3,
+            "stop_loss_pct": 1.5, "daily_loss_limit_pct": 3,
+            "fee_pct": 0.10, "slippage_bps": 5
+        })
+        settings = settings or _sb_rest("stock_paper_settings", {
+            "select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,fee_pct,slippage_bps",
+            "user_id":"eq." + user_id, "limit":"1"
+        })
+    accounts = _sb_rest("stock_paper_accounts", {
+        "select":"user_id", "user_id":"eq." + user_id, "limit":"1"
+    })
+    if not accounts:
+        _sb_rest("stock_paper_accounts", {}, "POST", {
+            "user_id": user_id, "starting_balance": 3000,
+            "cash_balance": 3000, "status": "active"
+        })
+    return settings[0] if settings else {}
+
+
+@app.post("/stock-paper-engine/start")
+def stock_paper_engine_start(request: Request):
+    user = _stock_paper_engine_user(request)
+    setting = _stock_paper_ensure_user(str(user["id"]))
+    _sb_rest("stock_paper_settings", {"user_id":"eq." + str(user["id"])}, "PATCH", {
+        "enabled": True, "updated_at": datetime.now(timezone.utc).isoformat()
+    })
+    return {"ok": True, "enabled": True, "mode": "paper", "settings": setting,
+            "message": "Stock Paper Engine enabled; no live orders are sent."}
+
+
+@app.post("/stock-paper-engine/stop")
+def stock_paper_engine_stop(request: Request):
+    user = _stock_paper_engine_user(request)
+    _stock_paper_ensure_user(str(user["id"]))
+    _sb_rest("stock_paper_settings", {"user_id":"eq." + str(user["id"])}, "PATCH", {
+        "enabled": False, "updated_at": datetime.now(timezone.utc).isoformat()
+    })
+    return {"ok": True, "enabled": False,
+            "message": "หยุดเปิดสถานะหุ้นใหม่แล้ว; ระบบยังติดตาม TP/SL ของสถานะที่เปิดอยู่"}
+
+
+@app.get("/stock-paper-engine/status")
+def stock_paper_engine_status(request: Request):
+    user = _stock_paper_engine_user(request)
+    uid = str(user["id"])
+    _stock_paper_ensure_user(uid)
+    settings = _sb_rest("stock_paper_settings", {
+        "select":"enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,fee_pct,slippage_bps,updated_at",
+        "user_id":"eq." + uid, "limit":"1"
+    })
+    accounts = _sb_rest("stock_paper_accounts", {
+        "select":"starting_balance,cash_balance,realized_pnl,fees_paid,status",
+        "user_id":"eq." + uid, "limit":"1"
+    })
+    positions = _sb_rest("stock_paper_positions", {
+        "select":"id,symbol,quantity,entry_price,current_price,take_profit_price,stop_loss_price,unrealized_pnl,opened_at,status",
+        "user_id":"eq." + uid, "status":"eq.open", "order":"opened_at.desc", "limit":"50"
+    })
+    return {"ok": True, "configured": bool(settings), "enabled": bool(settings and settings[0].get("enabled")),
+            "mode":"paper", "settings": settings[0] if settings else None,
+            "account": accounts[0] if accounts else None, "openPositions": positions,
+            "worker": dict(STOCK_PAPER_WORKER_STATE),
+            "scanner": {"status":UNIVERSE_STATE.get("status"), "updatedAt":UNIVERSE_STATE.get("updatedAt"),
+                        "candidateCount":UNIVERSE_STATE.get("candidateCount"), "feed":"Alpaca IEX"}}
+
+
+def _stock_snapshot_price(symbol: str):
+    snapshots = _alpaca_snapshots([symbol])
+    snap = snapshots.get(symbol) or {}
+    trade = snap.get("latestTrade") or {}
+    minute = snap.get("minuteBar") or {}
+    price = _num(trade.get("p"), _num(minute.get("c"), 0)) or 0
+    stamp = trade.get("t") or minute.get("t")
+    return (price if price > 0 else None), stamp
+
+
+def _stock_paper_worker_cycle():
+    if not (ALPACA_KEY and ALPACA_SECRET):
+        STOCK_PAPER_WORKER_STATE.update({"status":"waiting_credentials","lastError":"ALPACA_CREDENTIALS_MISSING"})
+        return
+    settings_rows = _sb_rest("stock_paper_settings", {
+        "select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,fee_pct,slippage_bps",
+        "mode":"eq.paper", "limit":"100"
+    })
+    with UNIVERSE_LOCK:
+        scanner = dict(UNIVERSE_STATE)
+    updated = scanner.get("updatedAt")
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(updated.replace("Z","+00:00"))).total_seconds() if updated else 999999
+    except Exception:
+        age = 999999
+    fresh = scanner.get("status") == "ok" and age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
+    candidates = {x.get("symbol"):x for x in (scanner.get("candidates") or [])
+                  if x.get("symbol") and x.get("fastEntry") is True and _num(x.get("price"),0)}
+    for setting in settings_rows:
+        uid = str(setting["user_id"])
+        positions = _sb_rest("stock_paper_positions", {
+            "select":"*", "user_id":"eq." + uid, "status":"eq.open", "limit":"30"
+        })
+        if not setting.get("enabled") and not positions:
+            continue
+        # Manage open stock positions from current IEX snapshots, independently of new entries.
+        prices = {}
+        if positions:
+            symbols = list(dict.fromkeys(p["symbol"] for p in positions))
+            for offset in range(0, len(symbols), 100):
+                batch = symbols[offset:offset+100]
+                try:
+                    snaps = _alpaca_snapshots(batch)
+                except Exception as quote_error:
+                    log.warning("Stock Paper price refresh failed: %s", type(quote_error).__name__)
+                    snaps = {}
+                for symbol, snap in snaps.items():
+                    trade = snap.get("latestTrade") or {}
+                    minute = snap.get("minuteBar") or {}
+                    px = _num(trade.get("p"), _num(minute.get("c"), 0)) or 0
+                    if px > 0:
+                        prices[symbol] = px
+        for pos in positions:
+            price = prices.get(pos["symbol"])
+            if not price:
+                continue
+            _sb_rpc("stock_paper_worker_trade", {
+                "p_user_id":uid,"p_action":"mark","p_symbol":pos["symbol"],
+                "p_price":price,"p_position_id":pos["id"],"p_reason":"MARK_TO_MARKET","p_signal_score":None
+            })
+            reason = "TAKE_PROFIT" if price >= float(pos["take_profit_price"]) else (
+                     "STOP_LOSS" if price <= float(pos["stop_loss_price"]) else None)
+            if reason:
+                result = _sb_rpc("stock_paper_worker_trade", {
+                    "p_user_id":uid,"p_action":"sell","p_symbol":pos["symbol"],
+                    "p_price":price,"p_position_id":pos["id"],"p_reason":reason,"p_signal_score":None
+                })
+                STOCK_PAPER_WORKER_STATE["actions"].append({
+                    "at":datetime.now(timezone.utc).isoformat(),"action":"sell",
+                    "symbol":pos["symbol"],"reason":reason,"result":result
+                })
+                STOCK_PAPER_WORKER_STATE["actions"] = STOCK_PAPER_WORKER_STATE["actions"][-20:]
+        if not setting.get("enabled") or not fresh:
+            continue
+        positions = _sb_rest("stock_paper_positions", {
+            "select":"id,symbol,quantity,entry_price","user_id":"eq." + uid,
+            "status":"eq.open","limit":"30"
+        })
+        if len(positions) >= int(setting.get("max_open_positions") or 5):
+            continue
+        account_rows = _sb_rest("stock_paper_accounts", {
+            "select":"cash_balance,starting_balance","user_id":"eq." + uid,"limit":"1"
+        })
+        if not account_rows:
+            continue
+        account = account_rows[0]
+        day_start = datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+        todays = _sb_rest("stock_paper_orders", {
+            "select":"side,realized_pnl","user_id":"eq." + uid,
+            "created_at":"gte." + day_start,"side":"eq.sell","limit":"500"
+        })
+        daily_realized = sum(_num(x.get("realized_pnl"),0) or 0 for x in todays)
+        open_pnl = 0.0
+        for pos in positions:
+            px = prices.get(pos["symbol"]) or _num((candidates.get(pos["symbol"]) or {}).get("price"),0) or 0
+            if px > 0:
+                open_pnl += (px-float(pos["entry_price"]))*float(pos["quantity"])
+        daily_loss = daily_realized + open_pnl
+        loss_limit = float(account.get("starting_balance") or setting.get("starting_balance") or 3000) * float(setting.get("daily_loss_limit_pct") or 3)/100
+        if daily_loss <= -loss_limit:
+            continue
+        held = {p["symbol"] for p in positions}
+        ranked = [x for x in candidates.values() if x["symbol"] not in held
+                  and _num(x.get("spreadPct"),0) is not None
+                  and 0 < float(x.get("spreadPct") or 0) <= 0.5
+                  and _num(x.get("m1"),0) > 0 and _num(x.get("m5"),0) > 0
+                  and _num(x.get("relativeVolume"),0) >= 2 and x.get("breakout") is True]
+        ranked.sort(key=lambda x:(
+            float(x.get("relativeVolume") or 0)*2 + float(x.get("m5") or 0) + float(x.get("m1") or 0)
+            + min(float(x.get("dailyVolumeIex") or 0)/1000000,5)
+        ),reverse=True)
+        for candidate in ranked:
+            if len(positions) >= int(setting.get("max_open_positions") or 5):
+                break
+            cooldown_key = uid + ":" + candidate["symbol"]
+            if time.time() - STOCK_PAPER_ENTRY_COOLDOWNS.get(cooldown_key,0) < 180:
+                continue
+            try:
+                result = _sb_rpc("stock_paper_worker_trade", {
+                    "p_user_id":uid,"p_action":"buy","p_symbol":candidate["symbol"],
+                    "p_price":float(candidate["price"]),"p_position_id":None,
+                    "p_reason":"ALPACA_IEX_FAST_ENTRY","p_signal_score":min(100,int(
+                        40 + float(candidate.get("relativeVolume") or 0)*8
+                        + max(0,float(candidate.get("m1") or 0))*3
+                        + max(0,float(candidate.get("m5") or 0))*2
+                    ))
+                })
+                STOCK_PAPER_ENTRY_COOLDOWNS[cooldown_key] = time.time()
+                STOCK_PAPER_WORKER_STATE["actions"].append({
+                    "at":datetime.now(timezone.utc).isoformat(),"action":"buy",
+                    "symbol":candidate["symbol"],"result":result
+                })
+                STOCK_PAPER_WORKER_STATE["actions"] = STOCK_PAPER_WORKER_STATE["actions"][-20:]
+                positions.append({"symbol":candidate["symbol"]})
+            except Exception as exc:
+                log.warning("Stock Paper buy skipped for %s: %s",candidate["symbol"],type(exc).__name__)
+    STOCK_PAPER_WORKER_STATE.update({
+        "status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
+        "lastError":None,"cycles":STOCK_PAPER_WORKER_STATE.get("cycles",0)+1,
+        "scannerAgeSeconds":int(age),"scannerFresh":fresh,"candidateCount":len(candidates)
+    })
