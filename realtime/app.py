@@ -1555,6 +1555,12 @@ def dual_paper_status(request: Request):
             "crossPortfolioTransfersEnabled": False, "portfolios": result}
 
 
+@app.post("/ai/dual-paper/refresh")
+async def dual_paper_refresh(request: Request):
+    _paper_auth_user(request)
+    return {"ok": True, "priceMarking": "disabled_until_broker_feed_verification"}
+
+
 @app.post("/ai/dual-paper/start")
 @app.post("/ai/dual-paper/enable")
 async def dual_paper_enable(request: Request):
