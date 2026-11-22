@@ -89,6 +89,11 @@ def _binance_readonly() -> dict:
             "accountType": payload.get("accountType"),
             "canTrade": payload.get("canTrade"),
             "canWithdraw": payload.get("canWithdraw"),
+            "permissionSafe": payload.get("canTrade") is False and payload.get("canWithdraw") is False,
+            "securityWarnings": (
+                [] if payload.get("canTrade") is False and payload.get("canWithdraw") is False
+                else ["API key permissions are not confirmed read-only; disable trading and withdrawals before use."]
+            ),
             "balances": balances,
             "permissionMode": "read_only_required",
         }
