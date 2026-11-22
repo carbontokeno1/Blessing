@@ -46,46 +46,42 @@ def _as_list(payload: Any) -> list[dict]:
 
 
 def _binance_account_snapshot() -> dict:
-    api_key = os.getenv("BINANCE_API_KEY", "").strip()
-    api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
-    if not api_key or not api_secret:
+    # Binance TH documents account information at /api/v1/accountV2 and
+    # authenticates this read endpoint with X-MBX-APIKEY. Do not call Binance
+    # Global /sapi routes from a Binance TH account integration.
+    api_key = (os.getenv("BINANCE_TH_API_KEY") or os.getenv("BINANCE_API_KEY") or "").strip()
+    if not api_key:
         return {"status": "not_configured", "credentialsConfigured": False}
 
-    base_url = os.getenv("BINANCE_API_BASE_URL", "https://api.binance.com").rstrip("/")
+    base_url = (os.getenv("BINANCE_TH_API_BASE_URL") or os.getenv("BINANCE_API_BASE_URL") or "https://api.binance.th").rstrip("/")
     params = {"timestamp": int(time.time() * 1000), "recvWindow": 5000}
-    query = urlencode(params)
-    signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
     try:
         response = requests.get(
-            base_url + "/api/v3/account?" + query + "&signature=" + signature,
+            base_url + "/api/v1/accountV2",
+            params=params,
             headers={"X-MBX-APIKEY": api_key, "Accept": "application/json"},
             timeout=(4, 12),
         )
-        ok, payload, status = _response_payload(response)
-        if not ok or not isinstance(payload, dict):
+        ok, raw_payload, status = _response_payload(response)
+        if not ok or not isinstance(raw_payload, dict):
             return {
                 "status": "connection_error",
                 "credentialsConfigured": True,
                 "httpStatus": status,
-                "apiCode": payload.get("code") if isinstance(payload, dict) else None,
+                "apiCode": raw_payload.get("code") if isinstance(raw_payload, dict) else None,
             }
-        # Verify actual API-key permissions separately from account-level canTrade.
-        restrictions = {}
-        restrictions_status = None
-        try:
-            rparams = {"timestamp": int(time.time() * 1000), "recvWindow": 5000}
-            rquery = urlencode(rparams)
-            rsig = hmac.new(api_secret.encode("utf-8"), rquery.encode("utf-8"), hashlib.sha256).hexdigest()
-            rresponse = requests.get(
-                base_url + "/sapi/v1/account/apiRestrictions?" + rquery + "&signature=" + rsig,
-                headers={"X-MBX-APIKEY": api_key, "Accept": "application/json"},
-                timeout=(4, 12),
-            )
-            rok, rpayload, restrictions_status = _response_payload(rresponse)
-            if rok and isinstance(rpayload, dict):
-                restrictions = rpayload
-        except Exception:
-            restrictions = {}
+
+        # Binance TH may return the documented object directly or wrap it in
+        # {code, msg, timestamp, data}. Fail closed on an explicit API error.
+        if "code" in raw_payload and raw_payload.get("code") not in (0, "0", None):
+            return {
+                "status": "connection_error",
+                "credentialsConfigured": True,
+                "httpStatus": status,
+                "apiCode": raw_payload.get("code"),
+                "apiMessage": str(raw_payload.get("msg") or "")[:180],
+            }
+        payload = raw_payload.get("data") if isinstance(raw_payload.get("data"), dict) else raw_payload
 
         balances = []
         for item in payload.get("balances", []) or []:
@@ -101,52 +97,39 @@ def _binance_account_snapshot() -> dict:
                     "locked": locked,
                     "total": free + locked,
                 })
-        trade_enabled = restrictions.get("enableSpotAndMarginTrading")
-        withdrawal_enabled = restrictions.get("enableWithdrawals")
-        ip_restricted = restrictions.get("ipRestrict")
-        permissions_verified = bool(restrictions)
-        warnings = []
-        if not permissions_verified:
-            warnings.append("ไม่สามารถอ่าน API key restrictions ได้ ต้องตรวจสอบสิทธิ์ใน Binance ด้วยตนเอง")
-        if trade_enabled is not True:
-            warnings.append("ยังไม่เปิดสิทธิ์ Spot Trading ให้ API Key")
-        if withdrawal_enabled is not False:
-            warnings.append("คำเตือน: ต้องปิดสิทธิ์ถอนเงินผ่าน API")
-        if ip_restricted is not True:
-            warnings.append("API Key ยังไม่ได้จำกัด IP; ควร whitelist IP ขาออกของเซิร์ฟเวอร์ก่อนเปิดซื้อขาย")
-        if payload.get("canTrade") is not True:
-            warnings.append("บัญชี Spot ยังไม่ยืนยันสิทธิ์ซื้อขาย")
+
+        # /accountV2 confirms account data and account-level canTrade/canWithdraw.
+        # It does not prove API-key withdrawal restrictions. Keep live readiness
+        # false until key permissions are independently verified in the exchange UI.
+        warnings = [
+            "เชื่อมต่อ Binance TH แบบอ่านข้อมูลบัญชีเท่านั้น",
+            "ยังยืนยันสิทธิ์ API Key สำหรับการซื้อขายและการถอนจาก endpoint นี้ไม่ได้",
+            "คำสั่งซื้อขายจริงถูกปิดไว้จนกว่าจะตรวจสอบสิทธิ์และความปลอดภัยแยกต่างหาก",
+        ]
         return {
             "status": "connected",
             "credentialsConfigured": True,
-            "accountType": payload.get("accountType"),
+            "broker": "binance_th",
             "accountCanTrade": payload.get("canTrade"),
             "accountCanWithdraw": payload.get("canWithdraw"),
+            "accountCanDeposit": payload.get("canDeposit"),
             "apiKeyPermissions": {
-                "spotTrading": trade_enabled,
-                "withdrawals": withdrawal_enabled,
-                "ipRestricted": ip_restricted,
-                "reading": restrictions.get("enableReading"),
-                "margin": restrictions.get("enableMargin"),
-                "futures": restrictions.get("enableFutures"),
-                "internalTransfer": restrictions.get("enableInternalTransfer"),
-                "universalTransfer": restrictions.get("permitsUniversalTransfer"),
-                "verified": permissions_verified,
-                "httpStatus": restrictions_status,
+                "spotTrading": None,
+                "withdrawals": None,
+                "ipRestricted": None,
+                "verified": False,
+                "verificationSource": "not_available_from_accountV2",
             },
-            "liveTradingPermissionReady": (
-                permissions_verified and trade_enabled is True
-                and withdrawal_enabled is False and ip_restricted is True
-                and payload.get("canTrade") is True
-            ),
+            "liveTradingPermissionReady": False,
             "securityWarnings": warnings,
             "balances": balances,
-            "permissionMode": "spot_trade_no_withdrawal",
+            "permissionMode": "read_only_snapshot",
         }
     except Exception as exc:
         return {
             "status": "connection_error",
             "credentialsConfigured": True,
+            "broker": "binance_th",
             "errorType": type(exc).__name__,
         }
 
