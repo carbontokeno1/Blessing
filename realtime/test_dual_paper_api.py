@@ -41,6 +41,34 @@ class DualPaperApiTests(unittest.TestCase):
         self.assertEqual(response.json()["priceSource"], "manual_simulation")
 
 
+
+    @patch.object(blessing_app, "_binance_th_public_price", return_value=61000.0)
+    @patch.object(blessing_app, "_sb_rest")
+    @patch.object(blessing_app, "_dual_paper_portfolio_rows", return_value=[{
+        "id": "22222222-2222-4222-8222-222222222222",
+        "market": "crypto", "cash_balance": 39.94,
+        "initial_capital": 100, "peak_equity": 100,
+    }])
+    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
+    def test_refresh_marks_to_market_and_updates_peak_equity(self, auth, portfolios, sb_rest, quote):
+        sb_rest.side_effect = [
+            [{"id": "33333333-3333-4333-8333-333333333333", "symbol": "BTCUSDT",
+              "quantity": 0.001, "entry_price": 60000, "entry_fee": 0.06}],
+            [],
+            [{"quantity": 0.001, "current_price": 61000, "entry_price": 60000}],
+            [],
+        ]
+        response = self.client_context.post("/ai/dual-paper/refresh", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["updatedCount"], 1)
+        self.assertFalse(response.json()["automaticTakeProfitStopLoss"])
+        position_patch = sb_rest.call_args_list[1].args[1]
+        position_body = sb_rest.call_args_list[1].args[3]
+        self.assertEqual(position_body["current_price"], 61000.0)
+        self.assertAlmostEqual(position_body["unrealized_pnl"], 0.94, places=8)
+        portfolio_body = sb_rest.call_args_list[3].args[3]
+        self.assertAlmostEqual(portfolio_body["peak_equity"], 100.94, places=8)
+
     @patch.object(blessing_app, "_binance_th_public_price", return_value=61000.0)
     @patch.object(blessing_app, "_sb_rpc")
     @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
