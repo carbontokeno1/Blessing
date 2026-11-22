@@ -2196,13 +2196,9 @@ def _dual_rpc_order(payload: dict):
 
 
 @app.post("/ai/dual-paper/start")
-def dual_paper_start(request: Request):
+async def dual_paper_start(request: Request):
     user = _paper_auth_user(request)
-    body = {}
-    try:
-        body = request.state.body if hasattr(request.state, "body") else {}
-    except Exception:
-        body = {}
+    body = await request.json()
     market = str(body.get("market") or "crypto").lower()
     if market not in DUAL_PAPER_PORTFOLIOS:
         raise HTTPException(status_code=422, detail="ตลาดไม่ถูกต้อง")
