@@ -219,7 +219,7 @@ function stocksView(){
 let dualTimer=null,dualBusy=false,dualSnapshot=null;
 function dualView(){
  return '<div class="heading"><div><h1>BLESSING · DUAL PAPER PORTFOLIOS</h1><div class="muted">พอร์ตทดลองแยกอิสระ · Binance TH Spot 100 USDT · Webull US Equities 100 USD</div></div><span class="pill">PAPER ONLY · LIVE ORDERS LOCKED</span></div>'+
- '<div class="card section"><div class="heading"><div><h3>เริ่มต้นระบบทดลอง</h3><div class="small muted">สร้างพอร์ตใหม่โดยไม่แก้ไขบัญชี Paper เดิม</div></div><div class="toolbar"><button class="primary" onclick="dualInitialize()">สร้างพอร์ตทดลอง 2 บัญชี</button><button class="secondary" onclick="dualRefresh(true)">รีเฟรชราคา/พอร์ต</button></div></div><div class="notice">ค่าธรรมเนียมจำลอง 0.10% · เงินสำรอง 20% · เสี่ยงต่อคำสั่งไม่เกิน 1% · ขาดทุนรายวันไม่เกิน 3% · สูงสุด 2 สถานะต่อพอร์ต<br>ราคาในหน้านี้เป็นราคาจำลองที่ผู้ดูแลกรอกเอง · การอัปเดตราคาอัตโนมัติและการปิด TP/SL อัตโนมัติยังไม่เปิดใช้</div><div id="dualMessage" class="small muted" style="margin-top:10px">กำลังตรวจสอบพอร์ต...</div></div>'+
+ '<div class="card section"><div class="heading"><div><h3>เริ่มต้นระบบทดลอง</h3><div class="small muted">สร้างพอร์ตใหม่โดยไม่แก้ไขบัญชี Paper เดิม</div></div><div class="toolbar"><button class="primary" onclick="dualInitialize()">สร้างพอร์ตทดลอง 2 บัญชี</button><button class="secondary" onclick="dualRefresh(true)">รีเฟรชพอร์ต</button></div></div><div class="notice">ค่าธรรมเนียมจำลอง 0.10% · เงินสำรอง 20% · เสี่ยงต่อคำสั่งไม่เกิน 1% · ขาดทุนรายวันไม่เกิน 3% · สูงสุด 2 สถานะต่อพอร์ต<br>ราคาในหน้านี้เป็นราคาจำลองที่ผู้ดูแลกรอกเอง · การอัปเดตราคาอัตโนมัติและการปิด TP/SL อัตโนมัติยังไม่เปิดใช้</div><div id="dualMessage" class="small muted" style="margin-top:10px">กำลังตรวจสอบพอร์ต...</div></div>'+
  '<div id="dualPortfolioCards" class="grid"><div class="card">กำลังโหลดพอร์ต...</div></div>'+
  '<div class="card section"><h3>ส่งคำสั่งทดลองด้วยราคาจำลอง</h3><div class="small muted">กรอกราคาเพื่อจำลองการจับคู่เท่านั้น · ยังไม่ใช้ราคา Broker และไม่มีการส่งคำสั่งเงินจริง</div><div class="grid" style="margin-top:12px">'+
  '<div><label class="small">ตลาด</label><select id="dualMarket" class="input" onchange="dualMarketChanged()"><option value="crypto">Crypto · Binance TH Spot · USDT</option><option value="stocks">US Stocks · Webull · USD</option></select></div>'+
@@ -232,7 +232,7 @@ function dualView(){
  '<div class="card section"><h3>ประวัติคำสั่งล่าสุด</h3><div class="tablewrap"><table><thead><tr><th>เวลา</th><th>ตลาด</th><th>สินทรัพย์</th><th>ด้าน</th><th>จำนวน</th><th>ราคา</th><th>Fee</th><th>Realized P/L</th></tr></thead><tbody id="dualOrders"><tr><td colspan="8">ยังไม่มีคำสั่ง</td></tr></tbody></table></div></div>'+
  '<div class="notice dangerbox">บัญชีนี้เป็น Paper Trading เท่านั้น · ไม่มีการเชื่อมคำสั่งซื้อขายจริง · ไม่มี Futures, Margin, Leverage หรือการโอนเงินข้ามพอร์ต</div>';
 }
-function dualMarketChanged(){const m=document.getElementById('dualMarket')?.value,s=document.getElementById('dualSymbol');if(s)s.value=m==='crypto'?'BTCUSDT':'AAPL'}
+function dualMarketChanged(){const m=document.getElementById('dualMarket')?.value,s=document.getElementById('dualSymbol'),p=document.getElementById('dualPrice');if(s)s.value=m==='crypto'?'BTCUSDT':'AAPL';if(p)p.value=m==='crypto'?'60000':'200'}
 function dualFmt(n,d=2){const x=Number(n);return Number.isFinite(x)?x.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}):'—'}
 function dualMoney(n,c){return dualFmt(n,2)+' '+c}
 async function dualApi(path,body){
