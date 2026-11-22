@@ -1768,7 +1768,6 @@ async def dual_paper_order(request: Request):
     market = str(body.get("market") or "").lower()
     side = str(body.get("side") or "").lower()
     symbol = str(body.get("symbol") or "").strip().upper()
-    price_source = str(body.get("price_source") or "")
     if market not in ("crypto", "stocks") or side not in ("buy", "sell"):
         raise HTTPException(status_code=422, detail="market หรือ side ไม่ถูกต้อง")
     if not symbol or len(symbol) > 20 or not all(c.isalnum() or c in ".-" for c in symbol):
@@ -1788,28 +1787,30 @@ async def dual_paper_order(request: Request):
             raise HTTPException(status_code=404, detail="ยังไม่ได้สร้างพอร์ตทดลองสำหรับตลาดนี้")
         if portfolio.get("mode") != "paper" or not portfolio.get("enabled"):
             raise HTTPException(status_code=409, detail="พอร์ต Paper ยังไม่เปิดใช้งาน")
-    quantity = _dual_paper_number(body.get("quantity"), "quantity")
-    if price_source == "binance_th_public" and market == "crypto":
+    # Ignore any client-supplied price or provider. The server obtains a fresh quote itself.
+    if market == "crypto":
         try:
             price = _binance_th_public_price(symbol)
+            price_source = "binance_th_public"
         except Exception as exc:
             log.warning("Binance TH order quote unavailable for %s (%s)", symbol, type(exc).__name__)
-            raise HTTPException(status_code=503, detail="ดึงราคา Binance TH ไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
-    elif price_source in ("webull_stream", "alpaca_stream") and market == "stocks":
-        try:
-            price, actual_source = _dual_stock_market_price(symbol)
-            if actual_source != price_source:
-                raise ValueError("STOCK_QUOTE_PROVIDER_CHANGED")
-        except Exception as exc:
-            log.warning("Stock order quote unavailable for %s (%s)", symbol, type(exc).__name__)
-            raise HTTPException(status_code=503, detail="ดึงราคาหุ้นสดไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
+            raise HTTPException(status_code=503, detail="Binance TH ไม่มีราคาจริงแบบสด คำสั่งถูกปฏิเสธ")
     else:
-        raise HTTPException(status_code=422, detail="ต้องระบุแหล่งราคาให้ตรงกับตลาด และห้ามใช้ราคาที่ไม่ตรวจสอบ")
+        try:
+            price, price_source = _dual_stock_market_price(symbol)
+        except Exception as exc:
+            log.warning("Stock live order quote unavailable for %s (%s)", symbol, type(exc).__name__)
+            raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้นจริงที่สดภายใน 5 วินาที คำสั่งถูกปฏิเสธ")
+    notional = body.get("notional")
+    if notional is not None:
+        quantity = _dual_paper_number(notional, "notional") / price
+    else:
+        quantity = _dual_paper_number(body.get("quantity"), "quantity")
 
     stop = target = None
     if side == "buy":
-        stop_pct = _dual_paper_number(body.get("stop_loss_pct"), "stop_loss_pct")
-        target_pct = _dual_paper_number(body.get("take_profit_pct"), "take_profit_pct")
+        stop_pct = _dual_paper_number(body.get("stop_loss_pct", body.get("stopLossPct")), "stop_loss_pct")
+        target_pct = _dual_paper_number(body.get("take_profit_pct", body.get("takeProfitPct")), "take_profit_pct")
         if stop_pct > 20 or target_pct > 50:
             raise HTTPException(status_code=422, detail="Stop Loss สูงสุด 20% และ Take Profit สูงสุด 50%")
         stop = price * (1 - stop_pct / 100)
