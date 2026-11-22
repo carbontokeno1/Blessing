@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 520" role="img" aria-labelledby="title desc">
+<title id="title">BLESSING Golden Eagle</title><desc id="desc">Majestic golden eagle emblem with spread wings above the BLESSING wordmark.</desc>
+<defs>
+ <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff4bd"/><stop offset=".24" stop-color="#f6d36f"/><stop offset=".55" stop-color="#bd7b18"/><stop offset=".78" stop-color="#ffe7a0"/><stop offset="1" stop-color="#8b520d"/></linearGradient>
+ <linearGradient id="dark" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#17263c"/><stop offset="1" stop-color="#050912"/></linearGradient>
+ <radialGradient id="glow"><stop stop-color="#f5c45a" stop-opacity=".35"/><stop offset="1" stop-color="#f5c45a" stop-opacity="0"/></radialGradient>
+ <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feGaussianBlur stdDeviation="7"/></filter>
+</defs>
+<circle cx="320" cy="205" r="205" fill="url(#glow)"/>
+<circle cx="320" cy="205" r="176" fill="none" stroke="#c58b2b" stroke-opacity=".55" stroke-width="2"/>
+<circle cx="320" cy="205" r="164" fill="url(#dark)" stroke="#f1c35b" stroke-width="3"/>
+<path d="M320 60 L338 92 L374 75 L360 111 L398 120 L363 139 L384 169 L345 160 L320 193 L295 160 L256 169 L277 139 L242 120 L280 111 L266 75 L302 92Z" fill="#dca63f" opacity=".14"/>
+<path d="M318 214 C262 151 190 117 48 107 C91 143 128 173 170 190 C118 185 76 190 22 214 C91 224 144 238 195 261 C137 257 93 270 54 296 C147 291 213 283 270 266 C288 255 303 238 318 214Z" fill="url(#gold)" stroke="#fff0b0" stroke-width="3" stroke-linejoin="round"/>
+<path d="M322 214 C378 151 450 117 592 107 C549 143 512 173 470 190 C522 185 564 190 618 214 C549 224 496 238 445 261 C503 257 547 270 586 296 C493 291 427 283 370 266 C352 255 337 238 322 214Z" fill="url(#gold)" stroke="#fff0b0" stroke-width="3" stroke-linejoin="round"/>
+<g fill="#3a2815" stroke="#f4d27a" stroke-width="2">
+<path d="M67 119 Q125 144 176 182 L124 169Z"/><path d="M43 211 Q117 205 187 229 L112 225Z"/><path d="M82 286 Q151 259 222 267 L145 282Z"/>
+<path d="M573 119 Q515 144 464 182 L516 169Z"/><path d="M597 211 Q523 205 453 229 L528 225Z"/><path d="M558 286 Q489 259 418 267 L495 282Z"/>
+</g>
+<path d="M320 92 C282 91 254 117 252 158 C251 193 278 225 320 249 C362 225 389 193 388 158 C386 117 358 91 320 92Z" fill="url(#gold)" stroke="#fff0b0" stroke-width="3"/>
+<path d="M281 135 Q303 119 320 131 Q337 119 359 135 L344 168 Q320 186 296 168Z" fill="#f5f0df"/>
+<path d="M294 146 Q307 138 318 147 L310 157Z M346 146 Q333 138 322 147 L330 157Z" fill="#101722"/>
+<circle cx="307" cy="150" r="4" fill="#ffcb43"/><circle cx="333" cy="150" r="4" fill="#ffcb43"/>
+<path d="M320 159 L346 171 L322 180 L302 171Z" fill="#d99a22" stroke="#fff0b0" stroke-width="2"/>
+<path d="M304 179 Q320 188 336 179 Q331 206 320 212 Q309 206 304 179Z" fill="#1b1c20" stroke="#dba33c" stroke-width="2"/>
+<path d="M285 207 Q320 228 355 207 L342 256 L320 275 L298 256Z" fill="url(#gold)" stroke="#f9df94" stroke-width="2"/>
+<path d="M295 245 L279 274 L311 265 L320 283 L329 265 L361 274 L345 245" fill="#b87919" stroke="#f7d982" stroke-width="2"/>
+<path d="M145 328 Q320 292 495 328 L474 350 Q320 326 166 350Z" fill="url(#gold)" stroke="#fff0b0" stroke-width="2"/>
+<text x="320" y="397" text-anchor="middle" font-family="Georgia,serif" font-size="62" font-weight="bold" letter-spacing="4" fill="url(#gold)" stroke="#4d2e0a" stroke-width="1.5">BLESSING</text>
+<path d="M120 414 H520" stroke="#dba33c" stroke-width="2"/>
+<text x="320" y="448" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" font-weight="bold" letter-spacing="5" fill="#f5d78b">TRADE  •  INVEST  •  GROW</text>
+</svg>
