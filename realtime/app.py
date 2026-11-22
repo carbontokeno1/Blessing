@@ -1468,7 +1468,7 @@ def _dual_stock_market_price(symbol: str) -> tuple[float, str]:
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(received).replace("Z", "+00:00"))).total_seconds()
     except Exception:
         raise ValueError("STOCK_QUOTE_TIMESTAMP_INVALID")
-    if age < 0 or age > 30:
+    if age < 0 or age > 5:
         raise ValueError("STOCK_QUOTE_STALE")
     raw = quote.get("raw") if isinstance(quote.get("raw"), dict) else {}
     keys = {"price", "last_price", "lastprice", "trade_price", "last"}
@@ -1738,7 +1738,7 @@ def dual_paper_quote(request: Request, market: str, symbol: str):
             currency = "USDT"
         except Exception as exc:
             log.warning("Binance TH quote unavailable for %s: %s", symbol, type(exc).__name__)
-            raise HTTPException(status_code=503, detail="Binance TH ยังไม่ส่งราคาสำหรับคู่นี้ กรุณาลองใหม่หรือใช้ราคาจำลอง")
+            raise HTTPException(status_code=503, detail="Binance TH ไม่มีราคาสดสำหรับคู่นี้ ขณะนี้จึงไม่รับคำสั่ง")
     elif market == "stocks":
         if not symbol or len(symbol) > 10 or not symbol[0].isalpha() or not all(c.isalnum() or c in ".-" for c in symbol):
             raise HTTPException(status_code=422, detail="สัญลักษณ์หุ้นไม่ถูกต้อง")
@@ -1748,7 +1748,7 @@ def dual_paper_quote(request: Request, market: str, symbol: str):
             currency = "USD"
         except Exception as exc:
             log.warning("Stock quote unavailable for %s: %s", symbol, type(exc).__name__)
-            raise HTTPException(status_code=503, detail="ยังไม่มีราคาหุ้นจาก Webull/Alpaca ที่สดไม่เกิน 30 วินาที กรุณาเชื่อม Market Data หรือใช้ราคาจำลอง")
+            raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้นจริงที่อัปเดตภายใน 5 วินาที จึงไม่รับคำสั่ง")
     else:
         raise HTTPException(status_code=422, detail="market ต้องเป็น crypto หรือ stocks")
     return {"ok": True, "market": market, "symbol": symbol, "price": price,
@@ -1789,9 +1789,7 @@ async def dual_paper_order(request: Request):
         if portfolio.get("mode") != "paper" or not portfolio.get("enabled"):
             raise HTTPException(status_code=409, detail="พอร์ต Paper ยังไม่เปิดใช้งาน")
     quantity = _dual_paper_number(body.get("quantity"), "quantity")
-    if price_source == "manual_simulation":
-        price = _dual_paper_number(body.get("price"), "price")
-    elif price_source == "binance_th_public" and market == "crypto":
+    if price_source == "binance_th_public" and market == "crypto":
         try:
             price = _binance_th_public_price(symbol)
         except Exception as exc:
@@ -2603,54 +2601,35 @@ def _dual_price_number(value):
 
 
 def _dual_market_price(market: str, symbol: str) -> float:
-    """Use only backend-observed public/live market data; never accept a browser price."""
+    """Return only fresh, server-observed live prices. Never use browser/manual/stale fallbacks."""
     if market == "crypto":
         if not symbol.endswith("USDT"):
             raise HTTPException(status_code=422, detail="คู่เหรียญต้องเป็น Spot/USDT")
         try:
-            response = requests.get(
-                "https://api.binance.th/api/v1/ticker/price",
-                params={"symbol": symbol},
-                headers={"User-Agent": "BLESSING-DualPaper/1.0"},
-                timeout=(4, 8),
-            )
-            response.raise_for_status()
-            payload = response.json()
-            price = _dual_price_number(payload)
-            if price:
-                return price
+            return _binance_th_public_price(symbol)
         except Exception as exc:
-            log.warning("Binance TH public price unavailable for %s (%s)", symbol, type(exc).__name__)
-        raise HTTPException(status_code=503, detail="ยังรับราคาสดจาก Binance TH ไม่ได้ จึงไม่จำลองคำสั่งด้วยราคาคาดเดา")
-
+            log.warning("Binance TH live price unavailable for %s (%s)", symbol, type(exc).__name__)
+            raise HTTPException(status_code=503, detail="Binance TH ไม่ส่งราคาจริงแบบสด จึงปฏิเสธคำสั่ง")
     if market == "stocks":
+        if state.get("provider") not in ("alpaca", "webull"):
+            raise HTTPException(status_code=503, detail="ยังไม่ได้เชื่อมต่อแหล่งราคาหุ้นสด")
+        if state.get("provider") == "alpaca" and ALPACA_FEED == "delayed_sip":
+            raise HTTPException(status_code=503, detail="ฟีดหุ้นเป็นข้อมูลล่าช้า ไม่อนุญาตให้ใช้กับ Paper Trading")
         quote = state.get("quotes", {}).get(symbol)
-        if not quote:
-            raise HTTPException(status_code=503, detail="ยังไม่มีข้อมูลราคาหุ้นจากแหล่งข้อมูลที่เชื่อมต่อ")
+        if not isinstance(quote, dict):
+            raise HTTPException(status_code=503, detail="ยังไม่มีราคาหุ้นสดสำหรับสัญลักษณ์นี้")
         received = quote.get("receivedAt")
         try:
             stamp = datetime.fromisoformat(str(received).replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - stamp).total_seconds()
         except Exception:
             age = 999999
-        if age > 120:
-            raise HTTPException(status_code=503, detail="ข้อมูลราคาหุ้นเก่าเกิน 120 วินาที กรุณารอข้อมูลสด")
+        if age < 0 or age > 5:
+            raise HTTPException(status_code=503, detail="ราคาหุ้นเกิน 5 วินาทีหรือไม่มีข้อมูลสด จึงปฏิเสธคำสั่ง")
         price = _dual_price_number(quote.get("raw") or quote)
-        if price:
+        if price and price > 0:
             return price
-        # The existing bridge has an explicitly labelled unofficial Yahoo fallback.
-        # Use it only when its underlying market timestamp is recent; never use stale cache.
-        try:
-            fallback = _fetch_yahoo_chart_quote(symbol)
-            fallback_price = _dual_price_number(fallback)
-            price_time = float(fallback.get("priceTime") or 0) / 1000
-            age = time.time() - price_time if price_time else 999999
-            if fallback_price and 0 <= age <= 120:
-                return fallback_price
-        except Exception as exc:
-            log.info("Fresh stock quote fallback unavailable for %s (%s)", symbol, type(exc).__name__)
-        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้นสดที่ตรวจสอบได้จาก Webull/Alpaca หรือแหล่งสำรองภายใน 120 วินาที")
-
+        raise HTTPException(status_code=503, detail="ข้อมูลฟีดหุ้นไม่มีราคาซื้อขายจริง")
     raise HTTPException(status_code=422, detail="เลือกตลาด crypto หรือ stocks เท่านั้น")
 
 
