@@ -1758,31 +1758,34 @@ def dual_paper_quote(request: Request, market: str, symbol: str):
 
 @app.post("/ai/dual-paper/order")
 async def dual_paper_order(request: Request):
+    """Execute an isolated paper order; market prices are server-confirmed."""
     user = _paper_auth_user(request)
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="ข้อมูลคำขอไม่ถูกต้อง")
-    # Prices are either explicitly simulated or fetched afresh by this server
-    # from Binance TH public market data. The browser never supplies a trusted quote.
-    price_source = str(body.get("price_source") or "")
+
     market = str(body.get("market") or "").lower()
     side = str(body.get("side") or "").lower()
     symbol = str(body.get("symbol") or "").strip().upper()
+    price_source = str(body.get("price_source") or "")
     if market not in ("crypto", "stocks") or side not in ("buy", "sell"):
         raise HTTPException(status_code=422, detail="market หรือ side ไม่ถูกต้อง")
     if not symbol or len(symbol) > 20 or not all(c.isalnum() or c in ".-" for c in symbol):
         raise HTTPException(status_code=422, detail="สัญลักษณ์ไม่ถูกต้อง")
     if market == "crypto" and (not symbol.endswith("USDT") or not symbol[:-4].isalnum()):
-        raise HTTPException(status_code=422, detail="พอร์ตคริปโตรับเฉพาะคู่ Spot ที่ลงท้าย USDT")
+        raise HTTPException(status_code=422, detail="พอร์ตคริปโตรับเฉพาะคู่ Spot USDT")
     if market == "stocks" and (len(symbol) > 10 or symbol.endswith("USDT") or not symbol[0].isalpha()):
         raise HTTPException(status_code=422, detail="พอร์ตหุ้นรับเฉพาะสัญลักษณ์หุ้นสหรัฐ")
+
     quantity = _dual_paper_number(body.get("quantity"), "quantity")
-    if price_source == "binance_th_public" and market == "crypto":
+    if price_source == "manual_simulation":
+        price = _dual_paper_number(body.get("price"), "price")
+    elif price_source == "binance_th_public" and market == "crypto":
         try:
             price = _binance_th_public_price(symbol)
         except Exception as exc:
-            log.warning("Binance TH order quote unavailable for %s: %s", symbol, type(exc).__name__)
+            log.warning("Binance TH order quote unavailable for %s (%s)", symbol, type(exc).__name__)
             raise HTTPException(status_code=503, detail="ดึงราคา Binance TH ไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
     elif price_source in ("webull_stream", "alpaca_stream") and market == "stocks":
         try:
@@ -1790,23 +1793,22 @@ async def dual_paper_order(request: Request):
             if actual_source != price_source:
                 raise ValueError("STOCK_QUOTE_PROVIDER_CHANGED")
         except Exception as exc:
-            log.warning("Stock order quote unavailable for %s: %s", symbol, type(exc).__name__)
-            raise HTTPException(status_code=503, detail="ดึงราคาหุ้นจาก Market Data ไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
-    elif price_source == "manual_simulation":
-        price = _dual_paper_number(body.get("price"), "price")
+            log.warning("Stock order quote unavailable for %s (%s)", symbol, type(exc).__name__)
+            raise HTTPException(status_code=503, detail="ดึงราคาหุ้นสดไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
     else:
-        raise HTTPException(status_code=422, detail="แหล่งราคานี้ไม่ตรงกับตลาดที่เลือก")
+        raise HTTPException(status_code=422, detail="ต้องระบุแหล่งราคาให้ตรงกับตลาด และห้ามใช้ราคาที่ไม่ตรวจสอบ")
+
     stop = target = None
     if side == "buy":
         stop_pct = _dual_paper_number(body.get("stop_loss_pct"), "stop_loss_pct")
         target_pct = _dual_paper_number(body.get("take_profit_pct"), "take_profit_pct")
         if stop_pct > 20 or target_pct > 50:
             raise HTTPException(status_code=422, detail="Stop Loss สูงสุด 20% และ Take Profit สูงสุด 50%")
-        # Calculate protection levels from the server-confirmed fill price.
         stop = price * (1 - stop_pct / 100)
         target = price * (1 + target_pct / 100)
         if stop <= 0 or target <= price:
             raise HTTPException(status_code=422, detail="ระดับ Stop/Target ไม่ถูกต้อง")
+
     idem = str(body.get("idempotency_key") or body.get("idempotencyKey") or "")
     if len(idem) < 16 or len(idem) > 90:
         raise HTTPException(status_code=422, detail="idempotency_key ต้องยาว 16–90 ตัวอักษร")
@@ -1814,6 +1816,7 @@ async def dual_paper_order(request: Request):
     position_id = (body.get("position_id") or body.get("positionId")) if side == "sell" else None
     if side == "sell" and not position_id:
         raise HTTPException(status_code=422, detail="การขายต้องระบุ position_id จากพอร์ตของตนเอง")
+
     payload = {
         "p_user_id": str(user["id"]), "p_market": market, "p_symbol": symbol,
         "p_side": side, "p_quantity": quantity, "p_price": price,
@@ -1829,7 +1832,11 @@ async def dual_paper_order(request: Request):
         except Exception:
             pass
         raise HTTPException(status_code=409, detail=detail)
-    return {"ok": True, "mode": "paper", "priceSource": price_source, "result": result}
+    return {
+        "ok": True, "mode": "paper", "priceSource": price_source,
+        "price": price, "result": result, "liveOrdersEnabled": False,
+    }
+
 
 def _binance_public_price(symbol: str):
     # Binance's /ticker/price endpoint can return HTTP 403 on some hosted IPs.
