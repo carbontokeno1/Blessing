@@ -1679,8 +1679,17 @@ async def dual_paper_order(request: Request):
         price = _dual_paper_number(body.get("price"), "price")
     else:
         raise HTTPException(status_code=422, detail="ต้องเลือกแหล่งราคา Binance TH หรือราคาจำลองอย่างชัดเจน")
-    stop = _dual_paper_number(body.get("stop_loss_price"), "stop_loss_price") if side == "buy" else None
-    target = _dual_paper_number(body.get("take_profit_price"), "take_profit_price") if side == "buy" else None
+    stop = target = None
+    if side == "buy":
+        stop_pct = _dual_paper_number(body.get("stop_loss_pct"), "stop_loss_pct")
+        target_pct = _dual_paper_number(body.get("take_profit_pct"), "take_profit_pct")
+        if stop_pct > 20 or target_pct > 50:
+            raise HTTPException(status_code=422, detail="Stop Loss สูงสุด 20% และ Take Profit สูงสุด 50%")
+        # Calculate protection levels from the server-confirmed fill price.
+        stop = price * (1 - stop_pct / 100)
+        target = price * (1 + target_pct / 100)
+        if stop <= 0 or target <= price:
+            raise HTTPException(status_code=422, detail="ระดับ Stop/Target ไม่ถูกต้อง")
     idem = str(body.get("idempotency_key") or body.get("idempotencyKey") or "")
     if len(idem) < 16 or len(idem) > 90:
         raise HTTPException(status_code=422, detail="idempotency_key ต้องยาว 16–90 ตัวอักษร")
