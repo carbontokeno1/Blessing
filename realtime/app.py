@@ -8,6 +8,7 @@ import requests
 import json
 import websockets
 import logging
+import math
 import os
 import threading
 import time
@@ -2109,6 +2110,224 @@ def dual_paper_status(request: Request):
         }
     return {"ok":True,"mode":"paper","liveOrdersEnabled":False,
             "crossPortfolioTransfersEnabled":False,"portfolios":result}
+
+
+
+
+def _dual_price_number(value):
+    """Find a plausible last price in a nested broker quote without inventing one."""
+    keys = {"price", "last_price", "lastprice", "last", "close", "trade_price", "p"}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() in keys:
+                try:
+                    number = float(item)
+                    if math.isfinite(number) and number > 0:
+                        return number
+                except (TypeError, ValueError):
+                    pass
+        for item in value.values():
+            found = _dual_price_number(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _dual_price_number(item)
+            if found:
+                return found
+    return None
+
+
+def _dual_market_price(market: str, symbol: str) -> float:
+    """Use only backend-observed public/live market data; never accept a browser price."""
+    if market == "crypto":
+        if not symbol.endswith("USDT"):
+            raise HTTPException(status_code=422, detail="คู่เหรียญต้องเป็น Spot/USDT")
+        try:
+            response = requests.get(
+                "https://api.binance.th/api/v3/ticker/price",
+                params={"symbol": symbol},
+                headers={"User-Agent": "BLESSING-DualPaper/1.0"},
+                timeout=(4, 8),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            price = _dual_price_number(payload)
+            if price:
+                return price
+        except Exception as exc:
+            log.warning("Binance TH public price unavailable for %s (%s)", symbol, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="ยังรับราคาสดจาก Binance TH ไม่ได้ จึงไม่จำลองคำสั่งด้วยราคาคาดเดา")
+
+    if market == "stocks":
+        quote = state.get("quotes", {}).get(symbol)
+        if not quote:
+            raise HTTPException(status_code=503, detail="ยังไม่มีข้อมูลราคาหุ้นจากแหล่งข้อมูลที่เชื่อมต่อ")
+        received = quote.get("receivedAt")
+        try:
+            stamp = datetime.fromisoformat(str(received).replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - stamp).total_seconds()
+        except Exception:
+            age = 999999
+        if age > 120:
+            raise HTTPException(status_code=503, detail="ข้อมูลราคาหุ้นเก่าเกิน 120 วินาที กรุณารอข้อมูลสด")
+        price = _dual_price_number(quote.get("raw") or quote)
+        if price:
+            return price
+        raise HTTPException(status_code=503, detail="ข้อมูลหุ้นไม่มีราคาซื้อขายที่ตรวจสอบได้")
+
+    raise HTTPException(status_code=422, detail="เลือกตลาด crypto หรือ stocks เท่านั้น")
+
+
+def _dual_rpc_order(payload: dict):
+    try:
+        return _sb_rpc("blessing_dual_execute_order", payload)
+    except requests.HTTPError as exc:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", 400)
+        detail = "คำสั่งจำลองไม่ผ่านการตรวจสอบความเสี่ยง"
+        if response is not None:
+            try:
+                raw = response.json()
+                detail = str(raw.get("message") or raw.get("details") or raw.get("hint") or detail)[:240]
+            except Exception:
+                pass
+        raise HTTPException(status_code=400 if status < 500 else 503, detail=detail)
+
+
+@app.post("/ai/dual-paper/start")
+def dual_paper_start(request: Request):
+    user = _paper_auth_user(request)
+    body = {}
+    try:
+        body = request.state.body if hasattr(request.state, "body") else {}
+    except Exception:
+        body = {}
+    market = str(body.get("market") or "crypto").lower()
+    if market not in DUAL_PAPER_PORTFOLIOS:
+        raise HTTPException(status_code=422, detail="ตลาดไม่ถูกต้อง")
+    row = _dual_paper_ensure_portfolio(str(user["id"]), DUAL_PAPER_PORTFOLIOS[market])
+    if row.get("mode") != "paper":
+        raise HTTPException(status_code=409, detail="อนุญาตเฉพาะ Paper mode")
+    _sb_rest("blessing_dual_portfolios", {
+        "id": "eq." + str(row["id"]), "user_id": "eq." + str(user["id"])
+    }, "PATCH", {"enabled": True, "updated_at": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True, "market": market, "enabled": True, "mode": "paper", "liveOrdersEnabled": False}
+
+
+@app.post("/ai/dual-paper/stop")
+async def dual_paper_stop(request: Request):
+    user = _paper_auth_user(request)
+    body = await request.json()
+    market = str(body.get("market") or "").lower()
+    if market not in DUAL_PAPER_PORTFOLIOS:
+        raise HTTPException(status_code=422, detail="ตลาดไม่ถูกต้อง")
+    rows = _sb_rest("blessing_dual_portfolios", {
+        "select": "id", "user_id": "eq." + str(user["id"]),
+        "market": "eq." + market, "limit": "1"
+    })
+    if not rows:
+        raise HTTPException(status_code=404, detail="ยังไม่ได้สร้างพอร์ตทดลอง")
+    _sb_rest("blessing_dual_portfolios", {
+        "id": "eq." + str(rows[0]["id"]), "user_id": "eq." + str(user["id"])
+    }, "PATCH", {"enabled": False, "updated_at": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True, "market": market, "enabled": False, "mode": "paper", "message": "หยุดเปิดสถานะใหม่แล้ว; ระบบยังติดตาม Stop Loss/Take Profit ของสถานะเดิม"}
+
+
+@app.post("/ai/dual-paper/order")
+async def dual_paper_order(request: Request):
+    user = _paper_auth_user(request)
+    body = await request.json()
+    market = str(body.get("market") or "").lower()
+    side = str(body.get("side") or "").lower()
+    symbol = str(body.get("symbol") or "").strip().upper()
+    if market not in DUAL_PAPER_PORTFOLIOS or side not in {"buy", "sell"}:
+        raise HTTPException(status_code=422, detail="ข้อมูลตลาดหรือด้านคำสั่งไม่ถูกต้อง")
+    rows = _sb_rest("blessing_dual_portfolios", {
+        "select": "id,mode,enabled", "user_id": "eq." + str(user["id"]),
+        "market": "eq." + market, "limit": "1"
+    })
+    if not rows:
+        raise HTTPException(status_code=404, detail="ยังไม่ได้สร้างพอร์ตทดลอง")
+    portfolio = rows[0]
+    if portfolio.get("mode") != "paper" or not portfolio.get("enabled"):
+        raise HTTPException(status_code=409, detail="กรุณาเริ่มพอร์ต Paper ก่อนส่งคำสั่งจำลอง")
+    market_price = _dual_market_price(market, symbol)
+    # Conservative simulated slippage: buys pay 5 bps more; sells receive 5 bps less.
+    fill_price = market_price * (1.0005 if side == "buy" else 0.9995)
+    position_id = None
+    stop_price = None
+    target_price = None
+    if side == "buy":
+        try:
+            notional = float(body.get("notional"))
+            stop_pct = float(body.get("stopLossPct", 1.0))
+            target_pct = float(body.get("takeProfitPct", 2.0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="กรุณาระบุเงินลงทุนและระดับ Stop/Take Profit")
+        if not all(math.isfinite(x) for x in (notional, stop_pct, target_pct)) or notional <= 0 or not (0.1 <= stop_pct <= 20) or not (0.1 <= target_pct <= 50):
+            raise HTTPException(status_code=422, detail="ค่าการลงทุนหรือ Stop/Take Profit ไม่อยู่ในช่วงที่อนุญาต")
+        quantity = round(notional / fill_price, 10 if market == "crypto" else 6)
+        stop_price = fill_price * (1 - stop_pct / 100)
+        target_price = fill_price * (1 + target_pct / 100)
+    else:
+        position_id = str(body.get("positionId") or "")
+        positions = _sb_rest("blessing_dual_positions", {
+            "select": "id,symbol,quantity", "id": "eq." + position_id,
+            "portfolio_id": "eq." + str(portfolio["id"]),
+            "user_id": "eq." + str(user["id"]), "status": "eq.open", "limit": "1"
+        })
+        if not positions:
+            raise HTTPException(status_code=404, detail="ไม่พบสถานะเปิดที่ต้องการปิด")
+        if positions[0]["symbol"] != symbol:
+            raise HTTPException(status_code=422, detail="สัญลักษณ์ไม่ตรงกับสถานะที่เลือก")
+        quantity = float(positions[0]["quantity"])
+
+    result = _dual_rpc_order({
+        "p_user_id": str(user["id"]), "p_market": market, "p_symbol": symbol,
+        "p_side": side, "p_quantity": quantity, "p_price": fill_price,
+        "p_stop_loss_price": stop_price, "p_take_profit_price": target_price,
+        "p_position_id": position_id, "p_idempotency_key": str(uuid.uuid4())
+    })
+    return {"ok": True, "mode": "paper", "liveOrdersEnabled": False,
+            "marketPrice": market_price, "simulatedFillPrice": fill_price, "result": result}
+
+
+@app.post("/ai/dual-paper/refresh")
+async def dual_paper_refresh(request: Request):
+    user = _paper_auth_user(request)
+    uid = str(user["id"])
+    checked = 0
+    exits = []
+    unavailable = []
+    for market in DUAL_PAPER_PORTFOLIOS:
+        portfolios = _sb_rest("blessing_dual_portfolios", {
+            "select": "id", "user_id": "eq." + uid, "market": "eq." + market, "limit": "1"
+        })
+        if not portfolios:
+            continue
+        positions = _sb_rest("blessing_dual_positions", {
+            "select": "id,symbol", "user_id": "eq." + uid,
+            "portfolio_id": "eq." + str(portfolios[0]["id"]),
+            "status": "eq.open", "limit": "100"
+        }) or []
+        for position in positions:
+            try:
+                price = _dual_market_price(market, position["symbol"])
+                result = _sb_rpc("blessing_dual_mark_position", {
+                    "p_user_id": uid, "p_market": market,
+                    "p_position_id": str(position["id"]), "p_price": price
+                })
+                checked += 1
+                if isinstance(result, dict) and result.get("closed"):
+                    exits.append(result)
+            except HTTPException as exc:
+                unavailable.append({"market": market, "symbol": position["symbol"], "reason": exc.detail})
+            except Exception as exc:
+                log.warning("Dual paper mark failed for %s %s (%s)", market, position["symbol"], type(exc).__name__)
+                unavailable.append({"market": market, "symbol": position["symbol"], "reason": "price_or_database_unavailable"})
+    return {"ok": True, "checked": checked, "automaticExits": exits, "unavailable": unavailable,
+            "liveOrdersEnabled": False}
 
 
 @app.get("/ai/portfolio-overview")
