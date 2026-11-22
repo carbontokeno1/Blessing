@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BLESSING | Paper Trading Reports</title>
+<style>
+:root{color-scheme:dark;--bg:#080d18;--panel:#111b2c;--line:#263750;--muted:#91a4be;--text:#eef4ff;--gold:#f4b544;--green:#36d399;--red:#ff6b78;--blue:#6db8ff}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#172744 0,#080d18 55%);color:var(--text);font:15px system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:auto;padding:22px 16px 50px}.top{display:flex;justify-content:space-between;gap:14px;align-items:center;flex-wrap:wrap}
+.brand{font-weight:900;letter-spacing:1.8px;color:var(--gold);font-size:20px}.sub{color:var(--muted);font-size:12px;margin-top:4px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.btn{border:1px solid var(--line);background:#101a2a;color:var(--text);border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}.btn.active{background:var(--gold);border-color:var(--gold);color:#17202e}.btn:disabled{opacity:.5}
+.status{color:var(--muted);font-size:12px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.card{background:linear-gradient(150deg,#142139,#0e1727);border:1px solid var(--line);border-radius:15px;padding:16px;min-width:0}.label{font-size:12px;color:var(--muted)}.value{font-size:clamp(19px,3vw,28px);font-weight:850;margin-top:8px;overflow-wrap:anywhere}.positive{color:var(--green)}.negative{color:var(--red)}.muted{color:var(--muted)}
+.section{margin-top:14px}.section h2{font-size:16px;margin:0 0 14px}.split{display:grid;grid-template-columns:1.1fr .9fr;gap:12px}.chart{width:100%;height:190px;display:block}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:13px}th,td{text-align:left;padding:11px 10px;border-bottom:1px solid #263750}th{color:var(--muted);font-weight:650}.pill{border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:11px;color:var(--muted)}
+.note{background:#18263c;border:1px solid #344b6b;border-radius:12px;padding:12px;color:#c3d2e8;font-size:12px;margin-top:14px}.error{color:#ff9da5}.foot{margin-top:18px;color:var(--muted);font-size:11px}
+@media(max-width:760px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.split{grid-template-columns:1fr}.value{font-size:21px}}
+</style></head>
+<body><main>
+<div class="top"><div><div class="brand">BLESSING / PERFORMANCE CENTER</div><div class="sub">รายงาน Paper Trading แยกพอร์ตหุ้นและคริปโต · ข้อมูลจากฐานข้อมูลคำสั่งจำลอง</div></div><div class="status" id="updated">กำลังเชื่อมต่อ...</div></div>
+<div class="controls">
+<button class="btn active" data-market="crypto">CRYPTO PAPER</button><button class="btn" data-market="stocks">STOCK PAPER</button>
+<span style="width:1px;background:var(--line);margin:0 4px"></span>
+<button class="btn active" data-period="24h">24 ชม.</button><button class="btn" data-period="7d">7 วัน</button><button class="btn" data-period="30d">30 วัน</button><button class="btn" data-period="all">ทั้งหมด</button>
+<button class="btn" id="refresh" style="margin-left:auto">↻ รีเฟรช</button></div>
+<div class="grid">
+<div class="card"><div class="label">มูลค่าพอร์ตรวม (Equity)</div><div class="value" id="equity">—</div><div class="sub" id="cash">เงินสด —</div></div>
+<div class="card"><div class="label">กำไร/ขาดทุนรวม</div><div class="value" id="totalPnl">—</div><div class="sub" id="returnPct">ผลตอบแทน —</div></div>
+<div class="card"><div class="label">Realized P/L</div><div class="value" id="realized">—</div><div class="sub">กำไร/ขาดทุนจากรายการที่ปิดแล้ว</div></div>
+<div class="card"><div class="label">Unrealized P/L</div><div class="value" id="unrealized">—</div><div class="sub" id="openCount">สถานะเปิด —</div></div>
+<div class="card"><div class="label">Win Rate</div><div class="value" id="winRate">—</div><div class="sub" id="winLoss">ชนะ — / แพ้ —</div></div>
+<div class="card"><div class="label">Profit Factor</div><div class="value" id="profitFactor">—</div><div class="sub">Gross Profit ÷ Gross Loss</div></div>
+<div class="card"><div class="label">จำนวนคำสั่ง</div><div class="value" id="orders">—</div><div class="sub" id="buySell">Buy — / Sell —</div></div>
+<div class="card"><div class="label">ค่าธรรมเนียม</div><div class="value" id="fees">—</div><div class="sub">ค่าธรรมเนียมในช่วงรายงาน</div></div>
+</div>
+<div class="split section">
+<div class="card"><h2>ผลกำไรรายวัน (Realized P/L)</h2><svg id="chart" class="chart" viewBox="0 0 620 190" role="img" aria-label="กราฟกำไรรายวัน"></svg><div class="sub" id="chartNote">รอข้อมูลรายงาน</div></div>
+<div class="card"><h2>ภาพรวมระบบ</h2><div class="sub" id="engine">Engine —</div><div style="height:12px"></div><div class="label">ทุนเริ่มต้น</div><div class="value" id="starting">—</div><div style="height:12px"></div><div class="label">จำนวนรายการที่ปิดแล้วในช่วงนี้</div><div class="value" id="closedCount">—</div><div style="height:12px"></div><div class="label">ข้อมูลรายงาน</div><div class="sub" id="source">—</div></div>
+</div>
+<div class="card section"><h2>สถานะที่ยังเปิดอยู่</h2><div class="tablewrap"><table><thead><tr><th>สินทรัพย์</th><th>จำนวน</th><th>ราคาเข้า</th><th>ราคาล่าสุด</th><th>กำไร/ขาดทุน</th><th>เปิดเมื่อ</th></tr></thead><tbody id="openRows"><tr><td colspan="6">กำลังโหลด...</td></tr></tbody></table></div></div>
+<div class="card section"><h2>รายการซื้อขายล่าสุด</h2><div class="tablewrap"><table><thead><tr><th>เวลา</th><th>สินทรัพย์</th><th>Side</th><th>จำนวน</th><th>ราคา</th><th>ค่าธรรมเนียม</th><th>Realized P/L</th><th>เหตุผล</th></tr></thead><tbody id="orderRows"><tr><td colspan="8">กำลังโหลด...</td></tr></tbody></table></div></div>
+<div class="note">ตัวเลขทั้งหมดเป็นผลการจำลอง Paper Trading ไม่ใช่กำไรที่เกิดขึ้นจริง ราคาหุ้นใช้ข้อมูล Alpaca IEX ซึ่งอาจมีข้อจำกัดด้าน coverage/ความล่าช้า ส่วนคริปโตใช้ราคาที่บันทึกในระบบจำลอง รายงานจะรีเฟรชทุก 15 วินาทีเมื่อเปิดหน้านี้</div>
+<div class="foot">BLESSING · PAPER ONLY · รายงานนี้ไม่ส่งคำสั่งซื้อขายเงินจริง</div>
+</main>
+<script>
+const API="https://blessing-webull-realtime-djfm.onrender.com";
+let market="crypto",period="24h",busy=false,timer=null,lastReport=null;
+function token(){
+ for(const store of [localStorage,sessionStorage]){
+  for(let i=0;i<store.length;i++){
+   const k=store.key(i)||"";if(!k.includes("auth-token"))continue;
+   try{const v=JSON.parse(store.getItem(k));const t=v?.access_token||v?.currentSession?.access_token;if(t)return t}catch(e){}
+  }
+ }
+ return null;
+}
+function fmt(n,d=2){const x=Number(n);return Number.isFinite(x)?x.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}):"—"}
+function money(n){const unit=market==="crypto"?"USDT":"USD";const x=Number(n)||0;return (x<0?"-":"")+unit+" "+fmt(Math.abs(x))}
+function set(id,v){const e=document.getElementById(id);if(e)e.textContent=v}
+function cls(id,n){const e=document.getElementById(id);if(e)e.className="value "+(Number(n)>=0?"positive":"negative")}
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function drawChart(rows){
+ const svg=document.getElementById("chart");if(!rows?.length){svg.innerHTML='<text x="20" y="95" fill="#91a4be" font-size="13">ยังไม่มีรายการปิดในช่วงนี้</text>';return}
+ const data=rows.slice(-20),max=Math.max(1,...data.map(x=>Math.abs(Number(x.realizedPnl)||0))),w=620,h=190,base=92,step=570/data.length,bw=Math.max(5,step*.58);
+ let s='<line x1="20" y1="'+base+'" x2="600" y2="'+base+'" stroke="#52637c" stroke-width="1"/>';
+ data.forEach((x,i)=>{const v=Number(x.realizedPnl)||0,bar=Math.max(2,Math.abs(v)/max*72),xx=28+i*step;s+='<rect x="'+xx+'" y="'+(v>=0?base-bar:base)+'" width="'+bw+'" height="'+bar+'" rx="3" fill="'+(v>=0?'#36d399':'#ff6b78')+'"><title>'+esc(x.date)+' '+fmt(v,2)+'</title></rect>'});
+ svg.innerHTML=s;set("chartNote",data.length+" วัน/ช่วงที่มีรายการปิด · แท่งเขียวกำไร แดงขาดทุน");
+}
+async function load(){
+ if(busy)return;busy=true;set("updated","กำลังอัปเดตรายงาน...");
+ try{
+  const t=token();if(!t){set("updated","กรุณาเข้าสู่ระบบหลักก่อน แล้วกลับมารีเฟรชหน้านี้");throw new Error("ไม่พบ session ของระบบ Blessing ในเบราว์เซอร์นี้")}
+  const res=await fetch(API+"/paper-reports/"+market+"?period="+period,{headers:{Authorization:"Bearer "+t,Accept:"application/json"},cache:"no-store"});
+  const data=await res.json();if(!res.ok)throw new Error(data.detail||data.message||"โหลดรายงานไม่สำเร็จ ("+res.status+")");
+  lastReport=data;const a=data.account,p=data.performance,unit=data.currency;
+  const fmtm=n=>(Number(n)<0?"-":"")+unit+" "+fmt(Math.abs(Number(n)||0));
+  set("equity",fmtm(a.equity));set("cash","เงินสด "+fmtm(a.cashBalance)+" · มูลค่าสินทรัพย์ "+fmtm(a.marketValue));
+  set("totalPnl",fmtm(a.totalPnl));cls("totalPnl",a.totalPnl);set("returnPct",fmt(a.returnPct,2)+"% ผลตอบแทนสะสม");
+  set("realized",fmtm(a.realizedPnlAllTime));cls("realized",a.realizedPnlAllTime);
+  set("unrealized",fmtm(a.unrealizedPnl));cls("unrealized",a.unrealizedPnl);set("openCount","สถานะเปิด "+p.openPositions);
+  set("winRate",fmt(p.winRatePct,1)+"%");set("winLoss","ชนะ "+p.wins+" / แพ้ "+p.losses);
+  set("profitFactor",p.profitFactor==="infinite"?"∞":p.profitFactor===null?"—":fmt(p.profitFactor,2));
+  set("orders",String(p.buyOrders+p.sellOrders));set("buySell","Buy "+p.buyOrders+" / Sell "+p.sellOrders);
+  set("fees",fmtm(p.fees));set("starting",fmtm(a.startingBalance));set("closedCount",String(p.closedTrades));
+  set("engine",data.engine.enabled?"ENGINE ENABLED · PAPER ONLY":"ENGINE PAUSED · PAPER ONLY");
+  set("source",data.source+" · "+data.period+" · "+data.limits.databaseRowsScanned+" rows scanned");
+  set("updated","อัปเดต "+new Date(data.generatedAt).toLocaleString("th-TH"));
+  drawChart(data.dailySeries);
+  document.getElementById("openRows").innerHTML=data.openPositions.length?data.openPositions.map(x=>'<tr><td><b>'+esc(x.symbol)+'</b></td><td>'+fmt(x.quantity,6)+'</td><td>'+fmt(x.entry_price,6)+'</td><td>'+fmt(x.current_price,6)+'</td><td class="'+(Number(x.unrealized_pnl)>=0?'positive':'negative')+'">'+fmtm(x.unrealized_pnl)+'</td><td>'+new Date(x.opened_at).toLocaleString("th-TH")+'</td></tr>').join(""):'<tr><td colspan="6">ไม่มีสถานะเปิด</td></tr>';
+  document.getElementById("orderRows").innerHTML=data.recentOrders.length?data.recentOrders.map(x=>'<tr><td>'+new Date(x.created_at).toLocaleString("th-TH")+'</td><td><b>'+esc(x.symbol)+'</b></td><td class="'+(x.side==="buy"?"positive":"negative")+'">'+esc(x.side).toUpperCase()+'</td><td>'+fmt(x.quantity,6)+'</td><td>'+fmt(x.price,6)+'</td><td>'+fmt(x.fee,6)+'</td><td>'+(x.realized_pnl==null?"—":fmtm(x.realized_pnl))+'</td><td>'+esc(x.reason)+'</td></tr>').join(""):'<tr><td colspan="8">ยังไม่มีคำสั่งในช่วงนี้</td></tr>';
+ }catch(e){set("updated","รายงานไม่พร้อม");const note=document.querySelector(".note");note.innerHTML='<span class="error">'+esc(e.message)+'</span><br>หากยังไม่ได้เข้าสู่ระบบ ให้เปิด Blessing ในแท็บเดิม เข้าสู่ระบบ แล้วกลับมารีเฟรชหน้านี้'}
+ finally{busy=false}
+}
+document.querySelectorAll("[data-market]").forEach(b=>b.addEventListener("click",()=>{market=b.dataset.market;document.querySelectorAll("[data-market]").forEach(x=>x.classList.toggle("active",x===b));load()}));
+document.querySelectorAll("[data-period]").forEach(b=>b.addEventListener("click",()=>{period=b.dataset.period;document.querySelectorAll("[data-period]").forEach(x=>x.classList.toggle("active",x===b));load()}));
+document.getElementById("refresh").addEventListener("click",load);
+load();timer=setInterval(load,15000);
+</script></body></html>
