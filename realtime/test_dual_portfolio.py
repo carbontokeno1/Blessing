@@ -29,7 +29,7 @@ class DualPortfolioTests(unittest.TestCase):
         crypto = calculate_position_size("crypto", "100", "1.5")
         stocks = calculate_position_size("stocks", "100", "2")
         self.assertEqual(Decimal(crypto["riskBudget"]), Decimal("1"))
-        self.assertEqual(Decimal(crypto["maxNotional"]).quantize(Decimal("0.01")), Decimal("66.66"))
+        self.assertEqual(Decimal(crypto["maxNotional"]).quantize(Decimal("0.01")), Decimal("66.67"))
         self.assertEqual(Decimal(stocks["riskBudget"]), Decimal("1"))
         self.assertEqual(Decimal(stocks["maxNotional"]), Decimal("50"))
 
