@@ -137,7 +137,30 @@ async function altcoinScanner(request) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/api/altcoin-scanner" && request.method === "GET") return altcoinScanner(request);
+    const pathname = url.pathname.replace(/\\/+$/, "") || "/";
+    if (pathname === "/api/altcoin-scanner") {
+      if (request.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: {
+          "access-control-allow-origin": "*",
+          "access-control-allow-methods": "GET, OPTIONS",
+          "access-control-allow-headers": "Accept, Content-Type",
+          "access-control-max-age": "86400"
+        }});
+      }
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return json({ status: "method_not_allowed", message: "GET only" }, 405, { "allow": "GET, HEAD, OPTIONS" });
+      }
+      try {
+        const response = await altcoinScanner(request);
+        const headers = new Headers(response.headers);
+        headers.set("content-type", "application/json; charset=utf-8");
+        headers.set("x-blessing-api", "altcoin-scanner-v2");
+        headers.set("cache-control", "no-store");
+        return new Response(request.method === "HEAD" ? null : response.body, { status: response.status, headers });
+      } catch (error) {
+        return json({ status: "source_error", message: error?.message || "scanner_failed", candidates: [], updatedAt: new Date().toISOString() }, 502);
+      }
+    }
     return env.ASSETS.fetch(request);
   }
 };
