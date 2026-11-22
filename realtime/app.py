@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from broker_adapters import brokerage_readonly_snapshot
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO)
@@ -1981,3 +1982,10 @@ def paper_trading_report(market: str, request: Request, period: str = "30d"):
                   "ordersReturned":min(len(recent_orders),100),"databaseRowsScanned":len(positions)+len(orders)}
     }
     return report
+
+
+@app.get("/broker/read-only")
+def broker_readonly(request: Request):
+    """Admin-only account snapshot; read-only adapter has no order functions."""
+    _paper_auth_user(request)
+    return brokerage_readonly_snapshot()
