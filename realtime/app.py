@@ -1811,8 +1811,9 @@ async def dual_paper_order(request: Request):
     if side == "buy":
         stop_pct = _dual_paper_number(body.get("stop_loss_pct", body.get("stopLossPct")), "stop_loss_pct")
         target_pct = _dual_paper_number(body.get("take_profit_pct", body.get("takeProfitPct")), "take_profit_pct")
-        if stop_pct > 20 or target_pct > 50:
-            raise HTTPException(status_code=422, detail="Stop Loss สูงสุด 20% และ Take Profit สูงสุด 50%")
+        stop_limit = 25 if market == "stocks" else 20
+        if stop_pct > stop_limit or target_pct > 50:
+            raise HTTPException(status_code=422, detail=f"Stop Loss สูงสุด {stop_limit}% สำหรับตลาดนี้ และ Take Profit สูงสุด 50%")
         stop = price * (1 - stop_pct / 100)
         target = price * (1 + target_pct / 100)
         if stop <= 0 or target <= price:
