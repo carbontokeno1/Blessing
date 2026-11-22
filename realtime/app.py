@@ -677,7 +677,7 @@ def forecast_10m_from_bars(bars, price):
 # Basic websocket trade/quote subscription is limited to 30 symbols.
 UNIVERSE_SCAN_INTERVAL = max(60, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "60")))
 UNIVERSE_LIQUIDITY_LIMIT = max(200, min(2000, int(os.getenv("UNIVERSE_LIQUIDITY_LIMIT", "1200"))))
-UNIVERSE_BATCH_SIZE = 200
+UNIVERSE_BATCH_SIZE = 100
 UNIVERSE_CANDIDATE_LIMIT = 150
 UNIVERSE_CACHE_SECONDS = 6 * 60 * 60
 UNIVERSE_STATE: dict[str, Any] = {
