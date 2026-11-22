@@ -1456,6 +1456,27 @@ def paper_engine_status(request: Request):
 
 
 
+def _binance_th_public_price(symbol: str) -> float:
+    response = requests.get(
+        "https://api.binance.th/api/v1/ticker/price",
+        params={"symbol": symbol},
+        headers={"Accept": "application/json", "User-Agent": "BLESSING-DualPaper/1.0"},
+        timeout=(4, 10),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if isinstance(payload, dict) and "code" in payload:
+        if payload.get("code") not in (0, "0", None):
+            raise ValueError("BINANCE_TH_API_ERROR:" + str(payload.get("code")))
+        payload = payload.get("data") or payload
+    if isinstance(payload, list):
+        payload = next((row for row in payload if isinstance(row, dict) and row.get("symbol") == symbol), None)
+    if not isinstance(payload, dict) or str(payload.get("symbol") or symbol).upper() != symbol:
+        raise ValueError("BINANCE_TH_INVALID_PRICE_RESPONSE")
+    price = _dual_paper_number(payload.get("price"), "market_price")
+    return price
+
+
 # Independent crypto/US-equity paper portfolios. These endpoints are admin-only,
 # authenticate the Supabase session server-side, and never call a broker order API.
 def _dual_paper_number(value, field):
@@ -1607,6 +1628,23 @@ async def dual_paper_disable(request: Request):
     return {"ok": True, "market": market, "enabled": False, "mode": "paper"}
 
 
+@app.get("/ai/dual-paper/quote")
+def dual_paper_quote(request: Request, market: str, symbol: str):
+    _paper_auth_user(request)
+    market = str(market or "").lower()
+    symbol = str(symbol or "").strip().upper()
+    if market != "crypto" or not symbol.endswith("USDT") or not symbol[:-4].isalnum():
+        raise HTTPException(status_code=422, detail="ขณะนี้ดึงราคาอัตโนมัติได้เฉพาะคู่ Spot USDT ของ Binance TH")
+    try:
+        price = _binance_th_public_price(symbol)
+    except Exception as exc:
+        log.warning("Binance TH quote unavailable for %s: %s", symbol, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Binance TH ยังไม่ส่งราคาสำหรับคู่นี้ กรุณาลองใหม่หรือใช้ราคาจำลอง")
+    return {"ok": True, "market": "crypto", "symbol": symbol, "price": price,
+            "currency": "USDT", "source": "Binance TH public market-data API",
+            "priceSource": "binance_th_public", "liveOrdersEnabled": False}
+
+
 @app.post("/ai/dual-paper/order")
 async def dual_paper_order(request: Request):
     user = _paper_auth_user(request)
@@ -1614,10 +1652,9 @@ async def dual_paper_order(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="ข้อมูลคำขอไม่ถูกต้อง")
-    # Explicitly simulated prices only for this first manual test interface.
-    # No broker adapter, API key, or live order endpoint is reachable here.
-    if body.get("price_source") != "manual_simulation":
-        raise HTTPException(status_code=422, detail="รอบทดสอบนี้รับเฉพาะราคาจำลองที่ระบุชัดเจน")
+    # Prices are either explicitly simulated or fetched afresh by this server
+    # from Binance TH public market data. The browser never supplies a trusted quote.
+    price_source = str(body.get("price_source") or "")
     market = str(body.get("market") or "").lower()
     side = str(body.get("side") or "").lower()
     symbol = str(body.get("symbol") or "").strip().upper()
@@ -1630,7 +1667,18 @@ async def dual_paper_order(request: Request):
     if market == "stocks" and (symbol.endswith("USDT") or not symbol[0].isalpha()):
         raise HTTPException(status_code=422, detail="พอร์ตหุ้นรับเฉพาะสัญลักษณ์หุ้นสหรัฐ")
     quantity = _dual_paper_number(body.get("quantity"), "quantity")
-    price = _dual_paper_number(body.get("price"), "price")
+    if price_source == "binance_th_public":
+        if market != "crypto":
+            raise HTTPException(status_code=422, detail="ราคาตลาดอัตโนมัติยังรองรับเฉพาะ Binance TH")
+        try:
+            price = _binance_th_public_price(symbol)
+        except Exception as exc:
+            log.warning("Binance TH order quote unavailable for %s: %s", symbol, type(exc).__name__)
+            raise HTTPException(status_code=503, detail="ดึงราคา Binance TH ไม่สำเร็จ คำสั่งยังไม่ถูกส่ง")
+    elif price_source == "manual_simulation":
+        price = _dual_paper_number(body.get("price"), "price")
+    else:
+        raise HTTPException(status_code=422, detail="ต้องเลือกแหล่งราคา Binance TH หรือราคาจำลองอย่างชัดเจน")
     stop = _dual_paper_number(body.get("stop_loss_price"), "stop_loss_price") if side == "buy" else None
     target = _dual_paper_number(body.get("take_profit_price"), "take_profit_price") if side == "buy" else None
     idem = str(body.get("idempotency_key") or body.get("idempotencyKey") or "")
@@ -1655,7 +1703,7 @@ async def dual_paper_order(request: Request):
         except Exception:
             pass
         raise HTTPException(status_code=409, detail=detail)
-    return {"ok": True, "mode": "paper", "priceSource": "manual_simulation", "result": result}
+    return {"ok": True, "mode": "paper", "priceSource": price_source, "result": result}
 
 def _binance_public_price(symbol: str):
     # Binance's /ticker/price endpoint can return HTTP 403 on some hosted IPs.
