@@ -2109,9 +2109,80 @@ def dual_paper_status(request: Request):
             "liveOrdersEnabled":False
         }
     return {"ok":True,"mode":"paper","liveOrdersEnabled":False,
-            "crossPortfolioTransfersEnabled":False,"portfolios":result}
+            "crossPortfolioTransfersEnabled":False,"portfolios":result,
+            "worker":dict(DUAL_PAPER_WORKER_STATE)}
 
 
+
+
+
+DUAL_PAPER_WORKER_INTERVAL = max(15, int(os.getenv("DUAL_PAPER_WORKER_INTERVAL", "20")))
+DUAL_PAPER_WORKER_STATE = {
+    "status": "waiting_config" if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY) else "starting",
+    "lastCycleAt": None, "lastError": None, "cycles": 0, "positionsChecked": 0, "automaticExits": 0
+}
+DUAL_PAPER_WORKER_THREAD = None
+DUAL_PAPER_WORKER_LOCK = threading.Lock()
+
+
+def _dual_paper_worker_cycle():
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        DUAL_PAPER_WORKER_STATE.update({"status": "waiting_config", "lastError": "SUPABASE_CONFIG_MISSING"})
+        return
+    if not DUAL_PAPER_WORKER_LOCK.acquire(blocking=False):
+        return
+    try:
+        rows = _sb_rest("blessing_dual_positions", {
+            "select": "id,user_id,market,symbol",
+            "status": "eq.open", "order": "opened_at.asc", "limit": "100"
+        }) or []
+        checked = 0
+        exits = 0
+        for position in rows:
+            try:
+                price = _dual_market_price(position["market"], position["symbol"])
+                result = _sb_rpc("blessing_dual_mark_position", {
+                    "p_user_id": str(position["user_id"]),
+                    "p_market": position["market"],
+                    "p_position_id": str(position["id"]),
+                    "p_price": price
+                })
+                checked += 1
+                if isinstance(result, dict) and result.get("closed"):
+                    exits += 1
+            except Exception as exc:
+                log.info("Dual paper monitor skipped %s/%s (%s)",
+                         position.get("market"), position.get("symbol"), type(exc).__name__)
+        DUAL_PAPER_WORKER_STATE.update({
+            "status": "running", "lastCycleAt": datetime.now(timezone.utc).isoformat(),
+            "lastError": None, "cycles": DUAL_PAPER_WORKER_STATE["cycles"] + 1,
+            "positionsChecked": checked, "automaticExits": exits
+        })
+    except Exception as exc:
+        DUAL_PAPER_WORKER_STATE.update({"status": "error", "lastError": type(exc).__name__})
+        log.exception("Dual Paper monitor cycle failed")
+    finally:
+        DUAL_PAPER_WORKER_LOCK.release()
+
+
+def _dual_paper_worker_loop():
+    while True:
+        _dual_paper_worker_cycle()
+        time.sleep(DUAL_PAPER_WORKER_INTERVAL)
+
+
+@app.on_event("startup")
+async def dual_paper_worker_startup():
+    global DUAL_PAPER_WORKER_THREAD
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        DUAL_PAPER_WORKER_STATE["status"] = "waiting_config"
+        return
+    if DUAL_PAPER_WORKER_THREAD and DUAL_PAPER_WORKER_THREAD.is_alive():
+        return
+    DUAL_PAPER_WORKER_THREAD = threading.Thread(
+        target=_dual_paper_worker_loop, name="dual-paper-monitor", daemon=True
+    )
+    DUAL_PAPER_WORKER_THREAD.start()
 
 
 def _dual_price_number(value):
