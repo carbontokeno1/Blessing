@@ -45,7 +45,7 @@ def _as_list(payload: Any) -> list[dict]:
     return []
 
 
-def _binance_readonly() -> dict:
+def _binance_account_snapshot() -> dict:
     api_key = os.getenv("BINANCE_API_KEY", "").strip()
     api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
     if not api_key or not api_secret:
@@ -69,6 +69,24 @@ def _binance_readonly() -> dict:
                 "httpStatus": status,
                 "apiCode": payload.get("code") if isinstance(payload, dict) else None,
             }
+        # Verify actual API-key permissions separately from account-level canTrade.
+        restrictions = {}
+        restrictions_status = None
+        try:
+            rparams = {"timestamp": int(time.time() * 1000), "recvWindow": 5000}
+            rquery = urlencode(rparams)
+            rsig = hmac.new(api_secret.encode("utf-8"), rquery.encode("utf-8"), hashlib.sha256).hexdigest()
+            rresponse = requests.get(
+                base_url + "/sapi/v1/account/apiRestrictions?" + rquery + "&signature=" + rsig,
+                headers={"X-MBX-APIKEY": api_key, "Accept": "application/json"},
+                timeout=(4, 12),
+            )
+            rok, rpayload, restrictions_status = _response_payload(rresponse)
+            if rok and isinstance(rpayload, dict):
+                restrictions = rpayload
+        except Exception:
+            restrictions = {}
+
         balances = []
         for item in payload.get("balances", []) or []:
             try:
@@ -83,19 +101,47 @@ def _binance_readonly() -> dict:
                     "locked": locked,
                     "total": free + locked,
                 })
+        trade_enabled = restrictions.get("enableSpotAndMarginTrading")
+        withdrawal_enabled = restrictions.get("enableWithdrawals")
+        ip_restricted = restrictions.get("ipRestrict")
+        permissions_verified = bool(restrictions)
+        warnings = []
+        if not permissions_verified:
+            warnings.append("ไม่สามารถอ่าน API key restrictions ได้ ต้องตรวจสอบสิทธิ์ใน Binance ด้วยตนเอง")
+        if trade_enabled is not True:
+            warnings.append("ยังไม่เปิดสิทธิ์ Spot Trading ให้ API Key")
+        if withdrawal_enabled is not False:
+            warnings.append("คำเตือน: ต้องปิดสิทธิ์ถอนเงินผ่าน API")
+        if ip_restricted is not True:
+            warnings.append("API Key ยังไม่ได้จำกัด IP; ควร whitelist IP ขาออกของเซิร์ฟเวอร์ก่อนเปิดซื้อขาย")
+        if payload.get("canTrade") is not True:
+            warnings.append("บัญชี Spot ยังไม่ยืนยันสิทธิ์ซื้อขาย")
         return {
             "status": "connected",
             "credentialsConfigured": True,
             "accountType": payload.get("accountType"),
-            "canTrade": payload.get("canTrade"),
-            "canWithdraw": payload.get("canWithdraw"),
-            "permissionSafe": payload.get("canTrade") is False and payload.get("canWithdraw") is False,
-            "securityWarnings": (
-                [] if payload.get("canTrade") is False and payload.get("canWithdraw") is False
-                else ["API key permissions are not confirmed read-only; disable trading and withdrawals before use."]
+            "accountCanTrade": payload.get("canTrade"),
+            "accountCanWithdraw": payload.get("canWithdraw"),
+            "apiKeyPermissions": {
+                "spotTrading": trade_enabled,
+                "withdrawals": withdrawal_enabled,
+                "ipRestricted": ip_restricted,
+                "reading": restrictions.get("enableReading"),
+                "margin": restrictions.get("enableMargin"),
+                "futures": restrictions.get("enableFutures"),
+                "internalTransfer": restrictions.get("enableInternalTransfer"),
+                "universalTransfer": restrictions.get("permitsUniversalTransfer"),
+                "verified": permissions_verified,
+                "httpStatus": restrictions_status,
+            },
+            "liveTradingPermissionReady": (
+                permissions_verified and trade_enabled is True
+                and withdrawal_enabled is False and ip_restricted is True
+                and payload.get("canTrade") is True
             ),
+            "securityWarnings": warnings,
             "balances": balances,
-            "permissionMode": "read_only_required",
+            "permissionMode": "spot_trade_no_withdrawal",
         }
     except Exception as exc:
         return {
@@ -178,9 +224,9 @@ def _webull_readonly() -> dict:
 def brokerage_readonly_snapshot() -> dict:
     """Return sanitized account snapshots. Never sends a trading instruction."""
     return {
-        "mode": "read_only",
+        "mode": "account_permission_check",
         "liveOrdersEnabled": False,
         "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "binance": _binance_readonly(),
+        "binance": _binance_account_snapshot(),
         "webull": _webull_readonly(),
     }
