@@ -1768,3 +1768,106 @@ def _stock_paper_worker_cycle():
         "lastError":None,"cycles":STOCK_PAPER_WORKER_STATE.get("cycles",0)+1,
         "scannerAgeSeconds":int(age),"scannerFresh":fresh,"candidateCount":len(candidates)
     })
+
+
+
+@app.get("/paper-reports/{market}")
+def paper_trading_report(market: str, request: Request, period: str = "30d"):
+    """Authenticated, read-only performance report for one isolated paper market."""
+    user = _paper_auth_user(request)
+    uid = str(user["id"])
+    market_key = market.lower()
+    if market_key not in ("crypto", "stocks"):
+        raise HTTPException(status_code=404, detail="UNKNOWN_PAPER_MARKET")
+    if period not in ("24h", "7d", "30d", "all"):
+        raise HTTPException(status_code=400, detail="INVALID_REPORT_PERIOD")
+
+    prefix = "paper_bot" if market_key == "crypto" else "stock_paper"
+    settings_rows = _sb_rest(prefix + "_settings", {
+        "select":"enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,updated_at",
+        "user_id":"eq." + uid, "limit":"1"
+    })
+    account_rows = _sb_rest(prefix + "_accounts", {
+        "select":"starting_balance,cash_balance,realized_pnl,fees_paid,status,starting_balance_thb,initial_fx_rate",
+        "user_id":"eq." + uid, "limit":"1"
+    })
+    positions = _sb_rest(prefix + "_positions", {
+        "select":"id,symbol,quantity,entry_price,current_price,entry_fee,exit_fee,realized_pnl,unrealized_pnl,status,opened_at,closed_at,close_reason,signal_score",
+        "user_id":"eq." + uid, "order":"opened_at.desc", "limit":"1000"
+    })
+    orders = _sb_rest(prefix + "_orders", {
+        "select":"id,position_id,symbol,side,quantity,price,notional,fee,status,reason,realized_pnl,created_at",
+        "user_id":"eq." + uid, "order":"created_at.desc", "limit":"1000"
+    })
+    positions = positions or []
+    orders = orders or []
+    account = account_rows[0] if account_rows else {}
+    setting = settings_rows[0] if settings_rows else {}
+
+    now = datetime.now(timezone.utc)
+    span_seconds = {"24h":86400, "7d":7*86400, "30d":30*86400}.get(period)
+    cutoff = now.timestamp() - span_seconds if span_seconds else 0
+    def in_period(value):
+        if not span_seconds:
+            return True
+        try:
+            return datetime.fromisoformat(str(value).replace("Z","+00:00")).timestamp() >= cutoff
+        except Exception:
+            return False
+
+    closed = [p for p in positions if p.get("status") == "closed"]
+    opened = [p for p in positions if p.get("status") == "open"]
+    closed_period = [p for p in closed if in_period(p.get("closed_at"))]
+    open_pnl = sum(float(p.get("unrealized_pnl") or 0) for p in opened)
+    realized_total = sum(float(p.get("realized_pnl") or 0) for p in closed)
+    realized_period = sum(float(p.get("realized_pnl") or 0) for p in closed_period)
+    winning = [p for p in closed_period if float(p.get("realized_pnl") or 0) > 0]
+    losing = [p for p in closed_period if float(p.get("realized_pnl") or 0) < 0]
+    gross_profit = sum(float(p.get("realized_pnl") or 0) for p in winning)
+    gross_loss = abs(sum(float(p.get("realized_pnl") or 0) for p in losing))
+    win_rate = (len(winning) / len(closed_period) * 100) if closed_period else 0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (None if gross_profit <= 0 else "infinite")
+    market_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in opened)
+    cash = float(account.get("cash_balance") or 0)
+    equity = cash + market_value
+    start_balance = float(account.get("starting_balance") or setting.get("starting_balance") or 0)
+    recent_orders = [o for o in orders if in_period(o.get("created_at"))]
+    buys = sum(1 for o in recent_orders if o.get("side") == "buy" and o.get("status") == "filled")
+    sells = sum(1 for o in recent_orders if o.get("side") == "sell" and o.get("status") == "filled")
+    fees_period = sum(float(o.get("fee") or 0) for o in recent_orders)
+    daily = {}
+    for p in closed_period:
+        stamp = p.get("closed_at") or p.get("opened_at")
+        try:
+            day = datetime.fromisoformat(str(stamp).replace("Z","+00:00")).astimezone(timezone.utc).strftime("%Y-%m-%d")
+        except Exception:
+            day = "unknown"
+        daily[day] = daily.get(day, 0) + float(p.get("realized_pnl") or 0)
+    daily_series = [{"date":k,"realizedPnl":round(v,8)} for k,v in sorted(daily.items())]
+    report = {
+        "ok": True, "market":market_key, "currency":"USDT" if market_key == "crypto" else "USD",
+        "period":period, "generatedAt":now.isoformat(), "source":"paper trading database",
+        "engine":{"enabled":bool(setting.get("enabled")),"mode":"paper"},
+        "account":{
+            "startingBalance":start_balance, "cashBalance":cash,
+            "marketValue":market_value, "equity":equity,
+            "realizedPnlAllTime":realized_total, "unrealizedPnl":open_pnl,
+            "totalPnl":realized_total+open_pnl, "feesPaidAllTime":float(account.get("fees_paid") or 0),
+            "returnPct":((realized_total+open_pnl)/start_balance*100) if start_balance else 0
+        },
+        "performance":{
+            "closedTrades":len(closed_period), "wins":len(winning), "losses":len(losing),
+            "winRatePct":win_rate, "grossProfit":gross_profit, "grossLoss":gross_loss,
+            "profitFactor":profit_factor, "realizedPnl":realized_period,
+            "unrealizedPnl":open_pnl, "fees":fees_period,
+            "buyOrders":buys, "sellOrders":sells, "openPositions":len(opened)
+        },
+        "dailySeries":daily_series,
+        "openPositions":opened[:100],
+        "closedTrades":closed_period[:100],
+        "recentOrders":recent_orders[:100],
+        "settings":setting,
+        "limits":{"positionsReturned":min(len(opened),100),"tradesReturned":min(len(closed_period),100),
+                  "ordersReturned":min(len(recent_orders),100),"databaseRowsScanned":len(positions)+len(orders)}
+    }
+    return report
