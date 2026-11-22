@@ -224,7 +224,7 @@ function dualView(){
  '<div class="card section"><h3>ส่งคำสั่งทดลองด้วยราคาจำลอง</h3><div class="small muted">กรอกราคาเพื่อจำลองการจับคู่เท่านั้น · ยังไม่ใช้ราคา Broker และไม่มีการส่งคำสั่งเงินจริง</div><div class="grid" style="margin-top:12px">'+
  '<div><label class="small">ตลาด</label><select id="dualMarket" class="input" onchange="dualMarketChanged()"><option value="crypto">Crypto · Binance TH Spot · USDT</option><option value="stocks">US Stocks · Webull · USD</option></select></div>'+
  '<div><label class="small">สัญลักษณ์</label><input id="dualSymbol" class="input" value="BTCUSDT" maxlength="20" autocapitalize="characters"></div>'+
- '<div><label class="small">ราคาจำลอง</label><input id="dualPrice" class="input" type="number" min="0.000001" step="any" value="60000"></div><div><label class="small">เงินลงทุน (USDT/USD)</label><input id="dualNotional" class="input" type="number" min="1" step="0.01" value="20"></div>'+
+ '<div><label class="small">ราคาที่ใช้จำลอง</label><input id="dualPrice" class="input" type="number" min="0.000001" step="any" value="60000" oninput="document.getElementById('dualPriceSource').value='manual_simulation'"><input id="dualPriceSource" type="hidden" value="manual_simulation"><button class="secondary" style="margin-top:6px" onclick="dualQuotePrice()">ดึงราคาจาก Binance TH</button></div><div><label class="small">เงินลงทุน (USDT/USD)</label><input id="dualNotional" class="input" type="number" min="1" step="0.01" value="20"></div>'+
  '<div><label class="small">Stop Loss (%)</label><input id="dualStopPct" class="input" type="number" min="0.1" max="20" step="0.1" value="1"></div>'+
  '<div><label class="small">Take Profit (%)</label><input id="dualTargetPct" class="input" type="number" min="0.1" max="50" step="0.1" value="2"></div></div>'+
  '<div class="toolbar" style="margin-top:12px"><button class="primary" onclick="dualSubmitOrder()">BUY · เปิดสถานะจำลอง</button><span class="small muted">ปิดสถานะจากตารางด้านล่าง</span></div></div>'+
@@ -232,7 +232,7 @@ function dualView(){
  '<div class="card section"><h3>ประวัติคำสั่งล่าสุด</h3><div class="tablewrap"><table><thead><tr><th>เวลา</th><th>ตลาด</th><th>สินทรัพย์</th><th>ด้าน</th><th>จำนวน</th><th>ราคา</th><th>Fee</th><th>Realized P/L</th></tr></thead><tbody id="dualOrders"><tr><td colspan="8">ยังไม่มีคำสั่ง</td></tr></tbody></table></div></div>'+
  '<div class="notice dangerbox">บัญชีนี้เป็น Paper Trading เท่านั้น · ไม่มีการเชื่อมคำสั่งซื้อขายจริง · ไม่มี Futures, Margin, Leverage หรือการโอนเงินข้ามพอร์ต</div>';
 }
-function dualMarketChanged(){const m=document.getElementById('dualMarket')?.value,s=document.getElementById('dualSymbol'),p=document.getElementById('dualPrice');if(s)s.value=m==='crypto'?'BTCUSDT':'AAPL';if(p)p.value=m==='crypto'?'60000':'200'}
+function dualMarketChanged(){const m=document.getElementById('dualMarket')?.value,s=document.getElementById('dualSymbol'),p=document.getElementById('dualPrice'),src=document.getElementById('dualPriceSource');if(s)s.value=m==='crypto'?'BTCUSDT':'AAPL';if(p)p.value=m==='crypto'?'60000':'200';if(src)src.value='manual_simulation'}
 function dualFmt(n,d=2){const x=Number(n);return Number.isFinite(x)?x.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}):'—'}
 function dualMoney(n,c){return dualFmt(n,2)+' '+c}
 async function dualApi(path,body){
@@ -242,6 +242,12 @@ async function dualApi(path,body){
  const j=await r.json().catch(()=>({}));
  if(!r.ok)throw Error(j.detail||j.message||'เชื่อมต่อ Dual Paper ไม่สำเร็จ (HTTP '+r.status+')');
  return j;
+}
+async function dualQuotePrice(){
+ const market=document.getElementById('dualMarket')?.value,symbol=(document.getElementById('dualSymbol')?.value||'').trim().toUpperCase(),price=document.getElementById('dualPrice'),source=document.getElementById('dualPriceSource');
+ if(market!=='crypto'){alert('ราคาหุ้นอัตโนมัติยังไม่เปิดใช้ รอเชื่อมต่อ Webull Market Data ก่อน');return}
+ if(!symbol){alert('กรุณากรอกสัญลักษณ์ก่อน');return}
+ try{const q=await dualApi('/ai/dual-paper/quote?market='+encodeURIComponent(market)+'&symbol='+encodeURIComponent(symbol));if(price)price.value=q.price;if(source)source.value='binance_th_public';const m=document.getElementById('dualMessage');if(m)m.textContent='รับราคา '+q.symbol+' จาก Binance TH · '+new Date().toLocaleTimeString('th-TH')+' · ระบบยังเป็น Paper only'}catch(e){alert(e.message)}
 }
 async function dualInitialize(){const m=document.getElementById('dualMessage');if(m)m.textContent='กำลังสร้างพอร์ตทดลอง...';try{const r=await dualApi('/ai/dual-paper/initialize',{});if(m)m.textContent=r.message||'สร้างพอร์ตทดลองแล้ว';await dualRefresh(false)}catch(e){if(m)m.textContent=e.message}}
 async function dualStart(market){try{await dualApi('/ai/dual-paper/start',{market});await dualRefresh(false)}catch(e){alert(e.message)}}
@@ -254,13 +260,13 @@ async function dualSubmitOrder(){
  const notional=Number(document.getElementById('dualNotional')?.value),price=Number(document.getElementById('dualPrice')?.value),stopLossPct=Number(document.getElementById('dualStopPct')?.value),takeProfitPct=Number(document.getElementById('dualTargetPct')?.value);
  if(!symbol||!Number.isFinite(notional)||notional<=0||!Number.isFinite(price)||price<=0||!Number.isFinite(stopLossPct)||stopLossPct<=0||!Number.isFinite(takeProfitPct)||takeProfitPct<=0){alert('กรุณาตรวจสอบสัญลักษณ์ ราคา และจำนวนเงิน');return}
  if(!confirm('ยืนยันเปิด BUY ในพอร์ตทดลอง '+market+' สำหรับ '+symbol+' ที่ราคาจำลอง '+price+'? ไม่มีการส่งคำสั่งเงินจริง'))return;
- try{const order={market,symbol,side:'buy',price,quantity:notional/price,price_source:'manual_simulation',stop_loss_price:price*(1-stopLossPct/100),take_profit_price:price*(1+takeProfitPct/100)};order.idempotency_key=dualOrderKey(order);const r=await dualApi('/ai/dual-paper/order',order);dualOrderSucceeded();alert('บันทึกคำสั่ง Paper แล้ว · ราคา Fill '+dualFmt(r.result?.price,6));await dualRefresh(false)}catch(e){alert(e.message)}
+ try{const priceSource=document.getElementById('dualPriceSource')?.value||'manual_simulation';const order={market,symbol,side:'buy',price,quantity:notional/price,price_source:priceSource,stop_loss_price:price*(1-stopLossPct/100),take_profit_price:price*(1+takeProfitPct/100)};order.idempotency_key=dualOrderKey(order);const r=await dualApi('/ai/dual-paper/order',order);dualOrderSucceeded();alert('บันทึกคำสั่ง Paper แล้ว · ราคา Fill '+dualFmt(r.result?.price,6));await dualRefresh(false)}catch(e){alert(e.message)}
 }
 async function dualClosePosition(market,positionId,symbol){
  const price=Number(document.getElementById('dualPrice')?.value),p=(dualSnapshot?.portfolios?.[market]?.openPositions||[]).find(x=>x.id===positionId);
  if(!p||!Number.isFinite(price)||price<=0){alert('กรุณาตรวจสอบสถานะและราคาจำลองก่อนปิด');return}
  if(!confirm('ยืนยันปิดสถานะจำลอง '+symbol+' ที่ราคาจำลอง '+price+'?'))return;
- try{const order={market,symbol,side:'sell',price,quantity:Number(p.quantity),position_id:positionId,price_source:'manual_simulation'};order.idempotency_key=dualOrderKey(order);const r=await dualApi('/ai/dual-paper/order',order);dualOrderSucceeded();alert('ปิดสถานะ Paper แล้ว · P/L '+dualFmt(r.result?.realizedPnl,4));await dualRefresh(false)}catch(e){alert(e.message)}
+ try{const priceSource=document.getElementById('dualPriceSource')?.value||'manual_simulation';const order={market,symbol,side:'sell',price,quantity:Number(p.quantity),position_id:positionId,price_source:priceSource};order.idempotency_key=dualOrderKey(order);const r=await dualApi('/ai/dual-paper/order',order);dualOrderSucceeded();alert('ปิดสถานะ Paper แล้ว · P/L '+dualFmt(r.result?.realizedPnl,4));await dualRefresh(false)}catch(e){alert(e.message)}
 }
 function dualRender(snapshot){
  const cards=document.getElementById('dualPortfolioCards'),positions=document.getElementById('dualPositions'),orders=document.getElementById('dualOrders'),msg=document.getElementById('dualMessage');if(!cards)return;
