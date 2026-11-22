@@ -34,6 +34,7 @@ class DualPaperApiTests(unittest.TestCase):
             "notional": 20,
             "stopLossPct": 1,
             "takeProfitPct": 2,
+            "idempotencyKey": "test-client-key-00000001",
             "price": 1,
         })
         self.assertEqual(response.status_code, 200)
@@ -48,6 +49,7 @@ class DualPaperApiTests(unittest.TestCase):
         self.assertAlmostEqual(args["p_take_profit_price"], 102.051, places=6)
         self.assertEqual(args["p_market"], "crypto")
         self.assertEqual(args["p_side"], "buy")
+        self.assertEqual(args["p_idempotency_key"], "test-client-key-00000001")
 
     @patch.object(blessing_app, "_dual_rpc_order")
     @patch.object(blessing_app, "_dual_market_price", return_value=50.0)
