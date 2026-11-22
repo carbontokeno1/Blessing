@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from broker_adapters import brokerage_readonly_snapshot
+from ai_decision import build_decision_preview
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO)
@@ -1989,3 +1990,15 @@ def broker_readonly(request: Request):
     """Admin-only account snapshot; read-only adapter has no order functions."""
     _paper_auth_user(request)
     return brokerage_readonly_snapshot()
+
+
+@app.get("/ai/decision-preview")
+def ai_decision_preview(request: Request, refresh: int = 0):
+    """Admin-only explainable signal preview. Does not place or queue orders."""
+    _paper_auth_user(request)
+    market = altcoin_scanner(refresh=1 if refresh else 0)
+    result = build_decision_preview(market, open_positions=0, daily_loss_pct=0.0, drawdown_pct=0.0)
+    result["riskMetricsSource"] = "preview_defaults_not_live_account_metrics"
+    result["entryGateOpen"] = False
+    result["liveOrdersEnabled"] = False
+    return result
