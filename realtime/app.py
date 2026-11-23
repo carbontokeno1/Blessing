@@ -2593,6 +2593,25 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     equity += market_value
     if any(p.get("symbol")==symbol for p in positions):
         return None
+    now=datetime.now(timezone.utc)
+    day_start=now.replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+    week_start=(now-timedelta(days=now.weekday())).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+    today_orders=_sb_rest("blessing_dual_orders",{
+        "select":"realized_pnl","portfolio_id":"eq."+str(portfolio["id"]),
+        "side":"eq.sell","created_at":"gte."+day_start,"status":"eq.filled","limit":"1000"
+    }) or []
+    week_orders=_sb_rest("blessing_dual_orders",{
+        "select":"realized_pnl","portfolio_id":"eq."+str(portfolio["id"]),
+        "side":"eq.sell","created_at":"gte."+week_start,"status":"eq.filled","limit":"1000"
+    }) or []
+    open_unrealized=sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+    daily_pnl=sum(float(x.get("realized_pnl") or 0) for x in today_orders)+open_unrealized
+    weekly_pnl=sum(float(x.get("realized_pnl") or 0) for x in week_orders)+open_unrealized
+    initial=float(portfolio.get("initial_capital") or equity)
+    if daily_pnl <= -(initial*float(portfolio.get("max_daily_loss_pct") or 3)/100):
+        return None
+    if weekly_pnl <= -(initial*float(portfolio.get("max_weekly_loss_pct") or 6)/100):
+        return None
     if len(positions) >= int(portfolio.get("max_open_positions") or 2):
         return None
     stop_pct, target_pct = ((1.0,2.0) if market=="crypto" else (25.0,20.0))
