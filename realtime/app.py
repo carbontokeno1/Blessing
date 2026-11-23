@@ -937,6 +937,7 @@ def _num(value, default=None):
 
 
 def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) -> dict | None:
+    """Score liquid US equities for speculative momentum; return watchlist and strong setups."""
     trade = snap.get("latestTrade") or {}
     quote = snap.get("latestQuote") or {}
     minute = snap.get("minuteBar") or {}
@@ -946,6 +947,7 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     daily_volume = _num(daily.get("v"), 0) or 0
     if not price or price < 1 or not daily_open or daily_volume < 10000:
         return None
+
     bid, ask = _num(quote.get("bp")), _num(quote.get("ap"))
     spread = ((ask - bid) / price) * 100 if bid and ask and ask >= bid else None
     change = ((price / daily_open) - 1) * 100 if daily_open else None
@@ -959,17 +961,75 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
                 "volume": _num(b.get("v"), 0) or 0, "time": b.get("t"),
             })
     bars = bars[-15:]
-    if len(bars) < 6:
+    if len(bars) < 3:
         return None
+
     closes = [x["close"] for x in bars]
     m1 = ((closes[-1] / closes[-2]) - 1) * 100 if closes[-2] else None
-    m5 = ((closes[-1] / closes[-6]) - 1) * 100 if closes[-6] else None
+    m5 = ((closes[-1] / closes[-6]) - 1) * 100 if len(closes) >= 6 and closes[-6] else None
     previous_volumes = [x["volume"] for x in bars[-6:-1]]
     average_volume = sum(previous_volumes) / len(previous_volumes) if previous_volumes else 0
     rvol = bars[-1]["volume"] / average_volume if average_volume > 0 else None
     prior_highs = [x["high"] for x in bars[-6:-1] if x["high"]]
     breakout = bool(prior_highs and price > max(prior_highs))
-    forecast = forecast_10m_from_bars(bars, price)
+
+    score = 0.0
+    reasons = []
+    risks = []
+    if change is not None:
+        if change >= 5:
+            score += 2
+            reasons.append("ราคาวันนี้บวกตั้งแต่ 5%")
+        elif change >= 2:
+            score += 1
+            reasons.append("ราคาวันนี้มีแรงซื้อ")
+        elif change >= 1:
+            score += 0.5
+            reasons.append("ราคาเริ่มฟื้นตัว")
+    if m1 is not None and m1 > 0:
+        score += 1
+        reasons.append("โมเมนตัม 1 นาทีเป็นบวก")
+    if m5 is not None:
+        if m5 >= 0.5:
+            score += 2
+            reasons.append("โมเมนตัม 5 นาทีแข็งแรง")
+        elif m5 >= 0.15:
+            score += 1
+            reasons.append("โมเมนตัม 5 นาทีเป็นบวก")
+        elif m5 < 0:
+            risks.append("แรงขายระยะ 5 นาที")
+    if rvol is not None:
+        if rvol >= 2:
+            score += 2
+            reasons.append("ปริมาณซื้อขายสูงกว่าค่าเฉลี่ย 2 เท่า")
+        elif rvol >= 1.3:
+            score += 1
+            reasons.append("ปริมาณซื้อขายเริ่มหนาแน่น")
+    else:
+        risks.append("ข้อมูล Relative Volume ยังไม่พอ")
+    if breakout:
+        score += 2
+        reasons.append("ทะลุจุดสูงสุดระยะสั้น")
+    if spread is not None:
+        if 0 < spread <= 0.25:
+            score += 1
+            reasons.append("ส่วนต่าง Bid/Ask แคบ")
+        elif spread > 0.75:
+            risks.append("Spread กว้าง เสี่ยงต้นทุนเข้าออกสูง")
+    else:
+        risks.append("ไม่มีข้อมูล Bid/Ask สำหรับประเมิน Spread")
+    if daily_volume >= 100000:
+        score += 1
+        reasons.append("มีปริมาณซื้อขายสะสมรองรับ")
+    if change is not None and change >= 12:
+        risks.append("ราคาขึ้นแรง เสี่ยงไล่ราคา")
+    if m1 is not None and m1 < 0:
+        risks.append("โมเมนตัมล่าสุดเริ่มอ่อนตัว")
+
+    # Keep a broader, ranked watchlist. Very wide spreads are excluded;
+    # strict FAST_ENTRY remains a separate, higher bar.
+    if score < 4 or (spread is not None and spread > 1.25):
+        return None
     fast_entry = bool(
         change is not None and change >= 3
         and m1 is not None and m1 > 0 and m5 is not None and m5 > 0
@@ -977,13 +1037,15 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
         and spread is not None and 0 < spread <= 0.5
         and breakout
     )
-    if not fast_entry:
-        return None
+    forecast = forecast_10m_from_bars(bars, price)
+    setup = "STRONG" if score >= 7 else ("WATCH" if score >= 5 else "EARLY")
     return {
         "symbol": symbol, "exchange": "Alpaca IEX/" + exchange,
         "price": price, "changePct": change, "m1": m1, "m5": m5,
         "relativeVolume": rvol, "spreadPct": spread,
-        "barsCount": len(bars), "breakout": breakout, "fastEntry": True,
+        "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
+        "score": round(score, 1), "setup": setup,
+        "reasons": reasons, "riskFlags": risks,
         "forecast10m": forecast, "receivedAt": datetime.now(timezone.utc).isoformat(),
         "dataFeed": "IEX", "dailyVolumeIex": int(daily_volume),
     }
