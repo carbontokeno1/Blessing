@@ -1973,7 +1973,7 @@ def dual_paper_status(request: Request):
                      "weeklyLossLimitEnabled": False,
                      "cumulativeLossLimitEnabled": False,
                      "drawdownStopEnabled": False,
-                     "maxOpenPositions": None},
+                     "maxOpenPositions": 2 if portfolio["market"] == "stocks" else None},
             "positions": positions, "orders": orders,
             "openPositions": positions, "recentOrders": orders,
         }
@@ -2788,7 +2788,10 @@ def dual_paper_status(request: Request):
                 "weeklyLossLimitEnabled":False,"cumulativeLossLimitEnabled":False,
                 "drawdownStopEnabled":False,"maxOpenPositions":None},
             "openPositions":positions,"recentOrders":orders,
-            "tradingRules":({"stopLossPct":25,"takeProfitPct":20,"source":"server_enforced"} if market == "stocks" else {"source":"per_order"}),
+            "tradingRules":({"stopLossPct":25,"takeProfitMinPct":5,"takeProfitMaxPct":15,
+                             "maxOpenPositions":2,"manualBuyOnly":True,
+                             "feePctPerSide":0.10,"slippageBpsPerSide":5,
+                             "source":"server_enforced"} if market == "stocks" else {"source":"per_order"}),
             "liveOrdersEnabled":False
         }
     return {"ok":True,"mode":"paper","liveOrdersEnabled":False,
@@ -2864,7 +2867,8 @@ def _dual_equity_snapshot(experiment: dict, portfolio: dict, positions: list):
 def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict, market: str):
     user_id = str(portfolio["user_id"])
     symbol = str(candidate.get("symbol") or "").upper()
-    if not symbol:
+    if not symbol or market == "stocks":
+        # US equities are always user-initiated; the adaptive worker may not auto-buy them.
         return None
     try:
         market_price = _dual_market_price(market, symbol)
@@ -3009,6 +3013,9 @@ def _dual_paper_worker_cycle():
                     "status":"eq.open","limit":"100"
                 }) or []
                 _dual_equity_snapshot(exp,portfolio,positions)
+                if market == "stocks":
+                    # Keep stock equity reporting, but all stock entries require an explicit BUY from the user.
+                    continue
                 if not fresh or not candidates:
                     continue
                 held={p["symbol"] for p in positions}
@@ -3021,9 +3028,8 @@ def _dual_paper_worker_cycle():
                         "rank":float(decision.get("opportunityScore") or 0),
                     })
 
-        # Rank opportunities across both markets, but cap only the stock board at five
-        # new symbols per user per cycle. Crypto has no symbol-count cap of its own.
-        # Both markets remain subject to the shared 30% portfolio allocation ceiling.
+        # Only crypto may enter automatically. US stocks are never opened by this worker.
+        # Existing stock positions are still monitored and closed by TP/SL above.
         entries_opened = 0
         selected_markets = {}
         experiment_by_user = {str(exp["user_id"]): exp for exp in experiments}
@@ -3246,6 +3252,15 @@ async def dual_paper_order(request: Request):
     portfolio = rows[0]
     if portfolio.get("mode") != "paper" or not portfolio.get("enabled"):
         raise HTTPException(status_code=409, detail="กรุณาเริ่มพอร์ต Paper ก่อนส่งคำสั่งจำลอง")
+    if market == "stocks" and side == "buy":
+        open_stocks = _sb_rest("blessing_dual_positions", {
+            "select":"id,symbol", "portfolio_id":"eq." + str(portfolio["id"]),
+            "user_id":"eq." + str(user["id"]), "status":"eq.open", "limit":"3"
+        }) or []
+        if len(open_stocks) >= 2:
+            raise HTTPException(status_code=409, detail="พอร์ตหุ้นเปิดครบ 2 สถานะแล้ว")
+        if any(str(row.get("symbol") or "").upper() == symbol for row in open_stocks):
+            raise HTTPException(status_code=409, detail="หุ้นนี้มีสถานะเปิดอยู่แล้ว")
     market_price = _dual_market_price(market, symbol)
     # Conservative simulated slippage: buys pay 5 bps more; sells receive 5 bps less.
     fill_price = market_price * (1.0005 if side == "buy" else 0.9995)
@@ -3256,14 +3271,17 @@ async def dual_paper_order(request: Request):
         try:
             notional = float(body.get("notional"))
             if market == "stocks":
-                stop_pct, target_pct = 25.0, 25.0
+                stop_pct = 25.0
+                target_pct = float(body.get("takeProfitPct", 10.0))
             else:
                 stop_pct = float(body.get("stopLossPct", 1.0))
                 target_pct = float(body.get("takeProfitPct", 2.0))
         except (TypeError, ValueError):
             raise HTTPException(status_code=422, detail="กรุณาระบุเงินลงทุนและระดับ Stop/Take Profit")
-        if not all(math.isfinite(x) for x in (notional, stop_pct, target_pct)) or notional <= 0 or not (0.1 <= stop_pct <= (25 if market == "stocks" else 20)) or not (0.1 <= target_pct <= 50):
-            raise HTTPException(status_code=422, detail="ค่าการลงทุนหรือ Stop/Take Profit ไม่อยู่ในช่วงที่อนุญาต")
+        target_valid = (5.0 <= target_pct <= 15.0) if market == "stocks" else (0.1 <= target_pct <= 50.0)
+        if not all(math.isfinite(x) for x in (notional, stop_pct, target_pct)) or notional <= 0 or not (0.1 <= stop_pct <= (25 if market == "stocks" else 20)) or not target_valid:
+            detail = "หุ้นต้องกำหนด Take Profit ระหว่าง 5% ถึง 15% และ Stop Loss คงที่ -25%" if market == "stocks" else "ค่าการลงทุนหรือ Stop/Take Profit ไม่อยู่ในช่วงที่อนุญาต"
+            raise HTTPException(status_code=422, detail=detail)
         quantity = round(notional / fill_price, 10 if market == "crypto" else 6)
         stop_price = fill_price * (1 - stop_pct / 100)
         target_price = fill_price * (1 + target_pct / 100)
@@ -3398,7 +3416,8 @@ def adaptive_paper_preview(request: Request):
             "stockSource": "Alpaca IEX universe scanner",
             "staleOrFallbackData": "block new entries",
             "costModel": "estimated round-trip fees, slippage and quoted spread; verify actual fills in reports",
-            "stockStopLossPct": -25, "stockTakeProfitPct": 25,
+            "stockStopLossPct": -25, "stockTakeProfitMinPct": 5, "stockTakeProfitMaxPct": 15,
+            "stockEntryMode": "manual_buy_only",
             "note": "This endpoint is a signal preview only; it does not execute paper orders."
         },
         "marketData": {
@@ -3444,9 +3463,11 @@ def adaptive_paper_start(request: Request):
                   "weekly_loss_limit_enabled":False,"cumulative_loss_limit_enabled":False,
                   "drawdown_stop_enabled":False,
                   "crypto_stop_loss_pct":1.5,"crypto_take_profit_pct":3.0,
-                  "stocks_stop_loss_pct":25.0,"stocks_take_profit_pct":25.0,
+                  "stocks_stop_loss_pct":25.0,"stocks_take_profit_pct":10.0,
+                  "stocks_take_profit_min_pct":5.0,"stocks_take_profit_max_pct":15.0,
+                  "stocks_manual_entry_only":True,
                   "fee_bps_per_side":10,"slippage_bps_per_side":5,
-                  "entry_cooldown_seconds":300,"max_entries_per_stocks_cycle":5,
+                  "entry_cooldown_seconds":300,"max_entries_per_stocks_cycle":0,
                   "live_orders_enabled":False}
     })
     if not exp:
@@ -3455,8 +3476,9 @@ def adaptive_paper_start(request: Request):
         _sb_rest("blessing_dual_portfolios",{"id":"eq."+str(row["id"]),"user_id":"eq."+uid},
                  "PATCH",{"enabled":True,"updated_at":started.isoformat()})
     return {"ok":True,"mode":"paper","liveOrdersEnabled":False,"automaticEntriesEnabled":True,
-            "experiment":exp[0],"markets":{"crypto":"enabled","stocks":"enabled"},
-            "message":"เริ่ม Adaptive Paper Trading ต่อเนื่องจนกว่าผู้ใช้จะกดหยุด ทั้งสองตลาด ไม่มีคำสั่งเงินจริง"}
+            "automaticCryptoEntriesEnabled":True,"automaticStockEntriesEnabled":False,
+            "experiment":exp[0],"markets":{"crypto":"auto-entry","stocks":"manual-buy-only"},
+            "message":"คริปโตยังใช้ Auto Paper ได้ ส่วนหุ้นสหรัฐฯ ต้องกด BUY เองทุกครั้ง และ Backend ติดตามปิด TP/SL อัตโนมัติ"}
 
 
 @app.post("/ai/adaptive-paper/stop")
@@ -3497,7 +3519,8 @@ def adaptive_paper_report(request: Request):
         report[market]={"markCount":len(marks),"latest":latest,"maxDrawdownPct":max_dd,
                         "equityCurve":marks[-500:]}
     return {"ok":True,"mode":"paper","liveOrdersEnabled":False,
-            "automaticEntriesEnabled":True,"experiment":exp,"markets":report,
+            "automaticEntriesEnabled":True,"automaticCryptoEntriesEnabled":True,
+            "automaticStockEntriesEnabled":False,"experiment":exp,"markets":report,
             "measurement":{"netProfit":"equity minus starting capital and estimated slippage; exchange fees already deducted from cash",
                            "drawdown":"peak-to-trough based on net equity marks","slippageModel":"5 bps per filled order side"}}
 
