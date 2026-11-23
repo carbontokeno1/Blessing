@@ -31,7 +31,9 @@ export const STRATEGIES = Object.freeze({
 });
 
 const nowIso = () => new Date().toISOString();
-const dayKey = (d = new Date()) => d.toISOString().slice(0, 10);
+const TIME_ZONE = process.env.TRADING_TIME_ZONE || "Asia/Bangkok";
+const dayKey = (d = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+const openedDayKey = value => dayKey(new Date(value));
 const round = (n, p = 4) => Number(Number(n).toFixed(p));
 const safeNumber = n => Number.isFinite(Number(n)) ? Number(n) : 0;
 const newId = () => crypto.randomUUID();
@@ -166,7 +168,7 @@ async function persist() {
   await fs.writeFile(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   await fs.rename(tmp, STATE_FILE);
 }
-function dayTrades(market) { const today = dayKey(); return [...state.trades, ...state.positions].filter(t => t.market === market && t.openedAt.slice(0,10) === today); }
+function dayTrades(market) { const today = dayKey(); return [...state.trades, ...state.positions].filter(t => t.market === market && openedDayKey(t.openedAt) === today); }
 function dailyRealizedLoss(market) { return dayTrades(market).filter(t=>t.closedAt).reduce((s,t)=>s+Math.max(0,-safeNumber(t.netTHB)),0); }
 function lossStreak(market) {
   const rows = dayTrades(market).filter(t=>t.closedAt).sort((a,b)=>b.closedAt.localeCompare(a.closedAt));
@@ -283,8 +285,12 @@ async function runScan() {
   if (scanBusy || !state.running) return;
   scanBusy=true;
   try {
-    const [cryptoRows, stockResult]=await Promise.all([scanCrypto(),scanStocks()]);
-    const stockRows=stockResult.rows||[];
+    const [cryptoResult, stockResult]=await Promise.allSettled([scanCrypto(),scanStocks()]);
+    const cryptoRows=cryptoResult.status==="fulfilled"?cryptoResult.value:[];
+    if(cryptoResult.status==="rejected") console.error("BINANCE_SCAN_ERROR",cryptoResult.reason?.message||"unknown");
+    const stocks=stockResult.status==="fulfilled"?stockResult.value:{unavailable:true,reason:"ALPACA_SCAN_FAILED",rows:[]};
+    if(stockResult.status==="rejected") console.error("ALPACA_SCAN_ERROR",stockResult.reason?.message||"unknown");
+    const stockRows=stocks.rows||[];
     if (!state.running) return;
     managePositions(cryptoRows);
     managePositions(stockRows);
@@ -295,12 +301,12 @@ async function runScan() {
     for (const row of cryptoRows.sort((a,b)=>b.quoteVolume-a.quoteVolume)) {
       const e=maybeOpen("crypto",row,cryptoChoice.selected); if(e) events.push(e);
     }
-    if (stockResult.marketOpen) {
+    if (stocks.marketOpen) {
       for (const row of stockRows) { const e=maybeOpen("stocks",row,stockChoice.selected); if(e) events.push(e); }
     }
     const scan={
       at:nowIso(), crypto:{scanned:cryptoRows.length,selected:cryptoChoice.selected,adaptive:cryptoChoice.adaptive},
-      stocks:{scanned:stockRows.length,marketOpen:Boolean(stockResult.marketOpen),selected:stockChoice.selected,adaptive:stockChoice.adaptive,unavailable:Boolean(stockResult.unavailable)},
+      stocks:{scanned:stockRows.length,marketOpen:Boolean(stocks.marketOpen),selected:stockChoice.selected,adaptive:stockChoice.adaptive,unavailable:Boolean(stocks.unavailable),reason:stocks.reason||null},
       events
     };
     state.scans.unshift(scan); state.scans=state.scans.slice(0,100);
