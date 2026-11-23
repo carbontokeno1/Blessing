@@ -1966,12 +1966,14 @@ def dual_paper_status(request: Request):
             "unrealizedPnl": unrealized, "feesPaid": float(portfolio.get("fees_paid") or 0),
             "enabled": bool(portfolio.get("enabled")), "configured": True, "mode": "paper",
             "marketValue": position_value, "totalPnl": float(portfolio.get("realized_pnl") or 0) + unrealized,
-            "riskLimits": {"reserveCashPct": float(portfolio["reserve_cash_pct"]),
-                     "riskPerTradePct": float(portfolio["risk_per_trade_pct"]),
-                     "maxDailyLossPct": float(portfolio["max_daily_loss_pct"]),
-                     "maxWeeklyLossPct": float(portfolio["max_weekly_loss_pct"]),
-                     "maxDrawdownPct": float(portfolio["max_drawdown_pct"]),
-                     "maxOpenPositions": int(portfolio["max_open_positions"])},
+            "riskLimits": {"reserveCashPct": 0,
+                     "maxPositionLossPct": 25,
+                     "maxTotalAllocationPct": 30,
+                     "dailyLossLimitEnabled": False,
+                     "weeklyLossLimitEnabled": False,
+                     "cumulativeLossLimitEnabled": False,
+                     "drawdownStopEnabled": False,
+                     "maxOpenPositions": None},
             "positions": positions, "orders": orders,
             "openPositions": positions, "recentOrders": orders,
         }
@@ -2452,7 +2454,7 @@ def _stock_paper_worker_cycle():
     for setting in settings_rows:
         uid = str(setting["user_id"])
         positions = _sb_rest("stock_paper_positions", {
-            "select":"*", "user_id":"eq." + uid, "status":"eq.open", "limit":"30"
+            "select":"*", "user_id":"eq." + uid, "status":"eq.open", "limit":"1000"
         })
         if not setting.get("enabled") and not positions:
             continue
@@ -2781,12 +2783,10 @@ def dual_paper_status(request: Request):
             "realizedPnl":realized,"unrealizedPnl":unrealized,
             "feesPaid":float(row["fees_paid"]),"totalPnl":realized+unrealized,
             "mode":row["mode"],"enabled":bool(row["enabled"]),
-            "riskLimits":{"riskPerTradePct":float(row["risk_per_trade_pct"]),
-                "maxDailyLossPct":float(row["max_daily_loss_pct"]),
-                "maxWeeklyLossPct":float(row["max_weekly_loss_pct"]),
-                "maxDrawdownPct":float(row["max_drawdown_pct"]),
-                "reserveCashPct":float(row["reserve_cash_pct"]),
-                "maxOpenPositions":int(row["max_open_positions"])},
+            "riskLimits":{"maxPositionLossPct":25,"maxTotalAllocationPct":30,
+                "reserveCashPct":0,"dailyLossLimitEnabled":False,
+                "weeklyLossLimitEnabled":False,"cumulativeLossLimitEnabled":False,
+                "drawdownStopEnabled":False,"maxOpenPositions":None},
             "openPositions":positions,"recentOrders":orders,
             "tradingRules":({"stopLossPct":25,"takeProfitPct":20,"source":"server_enforced"} if market == "stocks" else {"source":"per_order"}),
             "liveOrdersEnabled":False
@@ -2942,18 +2942,8 @@ def _dual_paper_worker_cycle():
         now = datetime.now(timezone.utc)
         experiments = _sb_rest("blessing_dual_experiments",{
             "select":"id,user_id,started_at,ends_at,status,markets,config",
-            "status":"eq.active","ends_at":"gt."+now.isoformat(),"limit":"100"
+            "status":"eq.active","limit":"100"
         }) or []
-        expired = _sb_rest("blessing_dual_experiments",{
-            "select":"id,user_id","status":"eq.active","ends_at":"lte."+now.isoformat(),"limit":"100"
-        }) or []
-        for exp in expired:
-            _sb_rest("blessing_dual_experiments",{"id":"eq."+str(exp["id"])}, "PATCH",{
-                "status":"completed","updated_at":now.isoformat()
-            })
-            _sb_rest("blessing_dual_portfolios",{"user_id":"eq."+str(exp["user_id"])}, "PATCH",{
-                "enabled":False,"updated_at":now.isoformat()
-            })
 
         crypto_candidates = {}
         crypto_stamp=state.get("lastCryptoMessageAt")
@@ -3429,14 +3419,21 @@ def adaptive_paper_start(request: Request):
             raise HTTPException(status_code=409,detail="อนุญาตเฉพาะ Paper Trading")
         portfolios[market]=row
     started=datetime.now(timezone.utc)
-    ends=started+timedelta(days=14)
+    ends=started+timedelta(days=36500)
     exp=_sb_rest("blessing_dual_experiments",{}, "POST",{
         "user_id":uid,"started_at":started.isoformat(),"ends_at":ends.isoformat(),
         "status":"active","markets":["crypto","stocks"],
-        "config":{"strategy":"adaptive_regime","risk_per_trade_pct":0.5,
-                  "crypto_stop_loss_pct":1.0,"crypto_take_profit_pct":2.0,
+        "config":{"strategy":"shared_adaptive_momentum","selection":"independent_per_market",
+                  "risk_per_trade_pct":25,"max_position_loss_pct":25,
+                  "max_total_allocation_pct":30,"max_notional_pct":20,
+                  "reserve_cash_pct":0,"daily_loss_limit_enabled":False,
+                  "weekly_loss_limit_enabled":False,"cumulative_loss_limit_enabled":False,
+                  "drawdown_stop_enabled":False,
+                  "crypto_stop_loss_pct":1.5,"crypto_take_profit_pct":3.0,
                   "stocks_stop_loss_pct":25.0,"stocks_take_profit_pct":20.0,
-                  "fee_bps":10,"slippage_bps_per_side":5}
+                  "fee_bps_per_side":10,"slippage_bps_per_side":5,
+                  "entry_cooldown_seconds":300,"max_entries_per_market_per_cycle":1,
+                  "live_orders_enabled":False}
     })
     if not exp:
         raise HTTPException(status_code=503,detail="เริ่มการทดลองไม่สำเร็จ")
