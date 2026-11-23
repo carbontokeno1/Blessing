@@ -107,7 +107,7 @@ async function refreshStocks(){
    };
   }
   const stale=Number(payload.staleCount||0);
-  stockStatus=(payload.count||0)+'/'+stockSymbols.length+' หุ้น · Yahoo Finance สำรอง'+(stale?' · '+stale+' รายการเป็นข้อมูลเก่า':' · '+new Date().toLocaleTimeString('th-TH'));
+  stockStatus=(payload.count||0)+'/'+stockSymbols.length+' หุ้น · '+(payload.provider||'แหล่งข้อมูลสำรอง')+(stale?' · '+stale+' รายการเป็นข้อมูลเก่า':' · '+new Date().toLocaleTimeString('th-TH'));
   if(payload.errors&&Object.keys(payload.errors).length)stockStatus+=' · ต้นทางบางรายการขัดข้อง';
  }catch(error){
   stockStatus='อัปเดตไม่สำเร็จ · '+(error.name==='AbortError'?'หมดเวลารอข้อมูล':'รอเชื่อมต่อเซิร์ฟเวอร์')+' · คงข้อมูลล่าสุดไว้';
@@ -202,7 +202,8 @@ function stopStockPolling(){
  if(stockQuotePollTimer){clearInterval(stockQuotePollTimer);stockQuotePollTimer=null}
 }
 function stocksView(){
- return '<div class="heading"><div><h1>US STOCK MARKET SCANNER</h1><div class="muted">ค้นหาหุ้น US active/tradable ด้วย Alpaca Basic · IEX</div></div><span class="pill">BASIC IEX · BATCH SCAN</span></div>'+
+ return '<div class="heading"><div><h1>US STOCK MARKET SCANNER</h1><div class="muted">ราคาหุ้นติดตาม 8 ตัว · อัปเดตผ่าน Alpaca Snapshot / แหล่งสำรอง</div></div><span class="pill">US STOCKS · LIVE QUOTES</span></div>'+
+ '<div class="card section"><div class="heading"><div><h3>WATCHLIST · ราคาหุ้นสหรัฐฯ</h3><div id="stockStatus" class="small muted">กำลังโหลดราคาหุ้น...</div></div><button class="secondary" onclick="refreshStocks()">รีเฟรชราคา</button></div><div id="stockCount" class="small muted" style="margin:8px 0">0 / 8 หุ้น</div><div class="tablewrap"><table><thead><tr><th>Symbol</th><th>ราคาล่าสุด USD</th><th>เปลี่ยนแปลงวันนี้</th><th>M1</th><th>M5</th><th>Volume</th><th>Session</th><th>สถานะ</th><th>กราฟ</th></tr></thead><tbody id="stockRows"><tr><td colspan="9">กำลังโหลดราคา...</td></tr></tbody></table></div><div class="small muted">ราคาอาจล่าช้าตามสิทธิ์ข้อมูลของผู้ให้บริการ และไม่ใช่คำแนะนำลงทุน</div></div>'+
  '<div class="card section"><div class="heading"><div><h3>ALL US EQUITY UNIVERSE · SCANNER</h3><div id="universeScanStatus" class="small muted">กำลังเชื่อมต่อเครื่องสแกน...</div></div><button class="secondary" onclick="loadUniverseScanner()">สแกน/รีเฟรช</button></div>'+
  '<div id="universeScanCount" class="small muted" style="margin:8px 0">รอข้อมูล Universe</div><div class="tablewrap"><table><thead><tr><th>หุ้น / ตลาด</th><th>ราคา</th><th>วันนี้</th><th>M1 / M5</th><th>RVOL</th><th>Spread</th><th>Entry*</th><th>Target*</th><th>Stop*</th><th>กราฟ</th></tr></thead><tbody id="universeScanRows"><tr><td colspan="10">กำลังรอผลสแกน...</td></tr></tbody></table></div>'+
  '<div class="notice">* Entry คือราคาล่าสุดที่ใช้เป็นจุดอ้างอิงเท่านั้น ส่วน Target +5% และ Stop -1.5% เป็นแผนจำลองเบื้องต้นของผู้สมัคร ไม่ใช่คำสั่งซื้อขายหรือสัญญาณ ULTRA ที่ยืนยันแล้ว ห้ามใช้เป็นคำแนะนำลงทุนโดยตรง</div>'+
