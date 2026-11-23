@@ -15,7 +15,7 @@ Isolated paper-trading module. Intended URL after a separately approved preview 
 - Markets: US Stocks and Crypto.
 - Prices are manually entered in this initial prototype. No live market feed is connected.
 - Quote currency is USD/USDT; FX conversion to THB is editable (default 34).
-- Entry validation: max THB 50 risk-to-stop, THB 2,000 notional, 3 open positions per portfolio, 8 entries/day per portfolio, THB 200 daily realized loss stop, 3-loss streak stop.
+- Entry validation: max THB 50 risk-to-stop including estimated round-trip fee/slippage, THB 2,000 notional, 3 open positions per portfolio, 8 entries/day per portfolio, THB 200 daily cumulative realized-loss plus open-risk stop, 3-loss streak stop within the same calendar day.
 
 ## Review limitations
 - Original is a comparison ledger; it does not automatically import or reproduce the existing strategy engine.
