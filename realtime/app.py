@@ -2851,25 +2851,44 @@ def _dual_market_price(market: str, symbol: str) -> float:
             return float(price)
         raise HTTPException(status_code=503, detail="ข้อมูล Binance TH WebSocket ไม่มีราคาซื้อขายจริง")
     if market == "stocks":
-        if state.get("provider") not in ("alpaca", "webull"):
-            raise HTTPException(status_code=503, detail="ยังไม่ได้เชื่อมต่อแหล่งราคาหุ้นสด")
         if state.get("provider") == "alpaca" and ALPACA_FEED == "delayed_sip":
             raise HTTPException(status_code=503, detail="ฟีดหุ้นเป็นข้อมูลล่าช้า ไม่อนุญาตให้ใช้กับ Paper Trading")
+        # Prefer the authenticated streaming quote, then use a timestamp-validated
+        # Alpaca IEX snapshot if the websocket briefly disconnects.
         quote = state.get("quotes", {}).get(symbol)
-        if not isinstance(quote, dict):
-            raise HTTPException(status_code=503, detail="ยังไม่มีราคาหุ้นสดสำหรับสัญลักษณ์นี้")
-        received = quote.get("receivedAt")
-        try:
-            stamp = datetime.fromisoformat(str(received).replace("Z", "+00:00"))
-            age = (datetime.now(timezone.utc) - stamp).total_seconds()
-        except Exception:
-            age = 999999
-        if age < 0 or age > 5:
-            raise HTTPException(status_code=503, detail="ราคาหุ้นเกิน 5 วินาทีหรือไม่มีข้อมูลสด จึงปฏิเสธคำสั่ง")
-        price = _dual_price_number(quote.get("raw") or quote)
-        if price and price > 0:
-            return price
-        raise HTTPException(status_code=503, detail="ข้อมูลฟีดหุ้นไม่มีราคาซื้อขายจริง")
+        if isinstance(quote, dict):
+            try:
+                stamp = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - stamp).total_seconds()
+            except Exception:
+                age = 999999
+            price = _dual_price_number(quote.get("raw") or quote)
+            if 0 <= age <= 5 and price and price > 0:
+                return price
+        if ALPACA_KEY and ALPACA_SECRET and ALPACA_FEED in ("iex", "sip"):
+            try:
+                snap = (_alpaca_snapshots([symbol]).get(symbol) or {})
+                trade = snap.get("latestTrade") or {}
+                trade_price = _num(trade.get("p"), 0) or 0
+                trade_time = trade.get("t")
+                if trade_price > 0 and trade_time:
+                    stamp = datetime.fromisoformat(str(trade_time).replace("Z", "+00:00"))
+                    age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                    if 0 <= age <= 5:
+                        return float(trade_price)
+                latest_quote = snap.get("latestQuote") or {}
+                bid, ask = _num(latest_quote.get("bp"), 0), _num(latest_quote.get("ap"), 0)
+                quote_time = latest_quote.get("t")
+                if bid > 0 and ask >= bid and quote_time:
+                    stamp = datetime.fromisoformat(str(quote_time).replace("Z", "+00:00"))
+                    age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                    if 0 <= age <= 5:
+                        return (bid + ask) / 2
+            except Exception as exc:
+                log.info("Alpaca snapshot fallback unavailable for %s (%s)", symbol, type(exc).__name__)
+        if state.get("provider") not in ("alpaca", "webull") and not (ALPACA_KEY and ALPACA_SECRET):
+            raise HTTPException(status_code=503, detail="ยังไม่ได้เชื่อมต่อแหล่งราคาหุ้นสด")
+        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้น IEX/SIP ที่ยืนยันเวลาได้ภายใน 5 วินาที จึงปฏิเสธคำสั่ง")
     raise HTTPException(status_code=422, detail="เลือกตลาด crypto หรือ stocks เท่านั้น")
 
 
