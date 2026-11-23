@@ -383,7 +383,7 @@ async function runScan() {
     });
     const scan={
       at:nowIso(), crypto:{scanned:cryptoRows.length,selected:cryptoChoice.selected,adaptive:cryptoChoice.adaptive},
-      stocks:{scanned:stockRows.length,universeCount:stocks.universeCount||0,activeCount:stocks.activeCount||0,moverCount:stocks.moverCount||0,marketOpen:Boolean(stocks.marketOpen),selected:stockChoice.selected,adaptive:stockChoice.adaptive,unavailable:Boolean(stocks.unavailable),reason:stocks.reason||stocks.screenerWarning||null},
+      stocks:{scanned:stockRows.length,universeCount:stocks.universeCount||0,candidatePoolCount:stocks.candidatePoolCount||0,snapshotCount:stocks.snapshotCount||0,activeCount:stocks.activeCount||0,moverCount:stocks.moverCount||0,marketOpen:Boolean(stocks.marketOpen),selected:stockChoice.selected,adaptive:stockChoice.adaptive,unavailable:Boolean(stocks.unavailable),reason:stocks.reason||stocks.screenerWarning||null},
       events
     };
     state.scans.unshift(scan); state.scans=state.scans.slice(0,100);
