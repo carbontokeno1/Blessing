@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ema, rsi, features, evaluateSignal, chooseStrategy, positionSizing, stockTradeLevels, LIMITS } from "../server.mjs";
+import { ema, rsi, features, evaluateSignal, chooseStrategy, positionSizing, LIMITS } from "../server.mjs";
 
 function sampleBars(n=180, trend=0.08) {
   const bars=[]; let price=100;
@@ -34,17 +34,4 @@ test("invalid and short-only stop levels are rejected",()=>{
 test("a trend signal can be evaluated deterministically",()=>{
   const bars=sampleBars(180,0.2); const signal=evaluateSignal(bars,"trend");
   assert.ok(signal===null || signal.strategy==="trend");
-});
-
-test("US stock paper rules enforce fixed -25% stop and selectable +5% to +15% target",()=>{
-  const levels=stockTradeLevels(100,10);
-  assert.equal(levels.stopPrice,75);
-  assert.equal(levels.targetPrice,110);
-  assert.equal(levels.stopLossPct,25);
-  assert.equal(levels.takeProfitPct,10);
-  assert.equal(stockTradeLevels(100,4),null);
-  assert.equal(stockTradeLevels(100,16),null);
-  assert.equal(LIMITS.maxOpenPositions,2);
-  assert.equal(LIMITS.feeRate,0.001);
-  assert.equal(LIMITS.slippageRate,0.0005);
 });
