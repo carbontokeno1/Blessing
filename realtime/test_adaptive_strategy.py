@@ -51,7 +51,7 @@ class AdaptiveStrategyTests(unittest.TestCase):
             "rvol": 3.0, "spreadPct": .05, "breakout": True,
         }, fee_bps=10, slippage_bps=5)
         stock = adaptive_decision("stocks", {
-            "symbol": "AAPL", "m1": .08, "m5": .15, "rvol": 2.0,
+            "symbol": "AAPL", "m1": .20, "m5": .40, "rvol": 2.0,
             "spreadPct": .08, "breakout": True,
         }, fee_bps=10, slippage_bps=5)
         self.assertEqual(crypto["decision"], "PAPER_CANDIDATE")
