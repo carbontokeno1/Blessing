@@ -2896,6 +2896,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         "select":"portfolio_id,quantity,current_price,entry_price",
         "user_id":"eq."+user_id,"status":"eq.open","limit":"1000"
     }) or []
+    cash_balance = float(portfolio.get("cash_balance") or 0)
     total_cash = sum(float(row.get("cash_balance") or 0) for row in all_portfolios)
     total_exposure = sum(float(p.get("quantity") or 0)*float(p.get("current_price") or p.get("entry_price") or 0)
                          for p in all_positions if str(p.get("portfolio_id")) in portfolio_ids)
