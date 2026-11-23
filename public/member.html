@@ -13,7 +13,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
 @media(max-width:520px){main{padding:16px 12px 40px}.card{padding:15px}h1{font-size:22px}table{font-size:12px}}
 </style></head><body><main>
 <header class="top"><div><div class="brand">BLESSING</div><div class="sub">MEMBER PORTAL · PRIVATE ACCOUNT</div></div><button id="logout" class="secondary hidden">ออกจากระบบ</button></header>
-<section id="login" class="card"><h1>เข้าสู่ระบบสมาชิก</h1><p class="sub">ข้อมูลวงเงินและผลการดำเนินงานจะแสดงเฉพาะบัญชีของคุณ</p><form id="form"><label>อีเมล</label><input id="email" type="email" autocomplete="username" required><label>รหัสผ่าน</label><input id="password" type="password" autocomplete="current-password" required><button type="submit">เข้าสู่ระบบ</button></form><div id="loginMsg" class="status">ใช้บัญชีสมาชิก BLESSING ที่ได้รับอนุมัติแล้ว</div></section>
+<section id="login" class="card"><h1>เข้าสู่ระบบสมาชิก</h1><p class="sub">ข้อมูลวงเงินและผลการดำเนินงานจะแสดงเฉพาะบัญชีของคุณ</p><form id="form"><div id="nameWrap" class="hidden"><label>ชื่อที่แสดง</label><input id="displayName" autocomplete="name" maxlength="80"></div><label>อีเมล</label><input id="email" type="email" autocomplete="username" required><label>รหัสผ่าน</label><input id="password" type="password" autocomplete="current-password" required><button id="submitAuth" type="submit">เข้าสู่ระบบ</button> <button id="toggleSignup" type="button" class="secondary">สมัครสมาชิกใหม่</button></form><div id="loginMsg" class="status">ใช้บัญชีสมาชิก BLESSING ที่ได้รับอนุมัติแล้ว</div></section>
 <section id="dashboard" class="hidden">
 <div class="card"><div class="sub">บัญชีสมาชิก</div><h1 id="memberName">—</h1><span id="memberStatus" class="tag">กำลังตรวจสอบ</span><p class="sub" id="memberEmail"></p></div>
 <div class="card"><h2>วงเงินที่ได้รับจัดสรร</h2><div class="grid" id="allocations"><div class="status">กำลังโหลดข้อมูล...</div></div></div>
@@ -24,7 +24,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
 import {createClient} from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb=createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
 const $=id=>document.getElementById(id),fmt=(v,c)=>Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c;
-function msg(t){$('loginMsg').textContent=t}
+let signupMode=false;function msg(t){$('loginMsg').textContent=t}
 function safe(el,t){el.textContent=t??'—'}
 async function load(session){
  $('login').classList.add('hidden');$('dashboard').classList.remove('hidden');$('logout').classList.remove('hidden');
@@ -48,7 +48,8 @@ async function load(session){
  for(const x of rows||[]){const tr=document.createElement('tr');[new Date(x.created_at).toLocaleString('th-TH'),x.entry_type,x.market||'—',fmt(x.amount,x.currency),x.currency].forEach((v,i)=>{const td=document.createElement('td');td.textContent=v;if(i===3)td.className='right';tr.append(td)});$('ledger').append(tr)}
 }
 async function restore(){const {data,error}=await sb.auth.getSession();if(error)throw error;if(data.session)await load(data.session)}
-$('form').addEventListener('submit',async e=>{e.preventDefault();msg('กำลังเข้าสู่ระบบ...');try{const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error)throw error;await load(data.session)}catch(err){await sb.auth.signOut();$('dashboard').classList.add('hidden');$('login').classList.remove('hidden');$('logout').classList.add('hidden');msg(err.message||'เข้าสู่ระบบไม่สำเร็จ')}});
+$('toggleSignup').addEventListener('click',()=>{signupMode=!signupMode;$('nameWrap').classList.toggle('hidden',!signupMode);$('submitAuth').textContent=signupMode?'สมัครสมาชิก':'เข้าสู่ระบบ';$('toggleSignup').textContent=signupMode?'กลับไปเข้าสู่ระบบ':'สมัครสมาชิกใหม่';$('displayName').required=signupMode;msg(signupMode?'สมัครด้วยอีเมลและรหัสผ่านอย่างน้อย 8 ตัวอักษร บัญชีจะรอผู้ดูแลอนุมัติ':'ใช้บัญชีสมาชิก BLESSING ที่ได้รับอนุมัติแล้ว')});
+$('form').addEventListener('submit',async e=>{e.preventDefault();msg(signupMode?'กำลังสร้างบัญชีสมาชิก...':'กำลังเข้าสู่ระบบ...');try{if(signupMode){const {data,error}=await sb.auth.signUp({email:$('email').value.trim(),password:$('password').value,options:{data:{display_name:$('displayName').value.trim()},emailRedirectTo:location.origin+'/member'}});if(error)throw error;if(data.session)await sb.auth.signOut();msg('สมัครเรียบร้อยแล้ว หากระบบขอให้ยืนยันอีเมล กรุณายืนยันก่อน จากนั้นรอผู้ดูแลอนุมัติ');return}const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error)throw error;await load(data.session)}catch(err){await sb.auth.signOut();$('dashboard').classList.add('hidden');$('login').classList.remove('hidden');$('logout').classList.add('hidden');msg(err.message||'ดำเนินการไม่สำเร็จ')}});
 $('logout').addEventListener('click',async()=>{await sb.auth.signOut();location.reload()});
 sb.auth.onAuthStateChange((_event,session)=>{if(!session){$('dashboard').classList.add('hidden');$('login').classList.remove('hidden');$('logout').classList.add('hidden')}});
 try{await restore()}catch(e){msg(e.message||'ไม่สามารถโหลดข้อมูลได้')}
