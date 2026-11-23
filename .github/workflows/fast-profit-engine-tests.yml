@@ -1,5 +1,11 @@
 name: FAST PROFIT LAB Engine Tests
 on:
+  push:
+    branches:
+      - "fast-profit-lab-smart-paper"
+    paths:
+      - "fast-profit-engine/**"
+      - ".github/workflows/fast-profit-engine-tests.yml"
   pull_request:
     paths:
       - "fast-profit-engine/**"
