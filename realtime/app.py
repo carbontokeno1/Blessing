@@ -980,7 +980,16 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     price = _num(trade.get("p"), _num(minute.get("c")))
     daily_open = _num(daily.get("o"))
     daily_volume = _num(daily.get("v"), 0) or 0
-    if not price or price < 1 or not daily_open or daily_volume < 10000:
+    previous_daily = snap.get("prevDailyBar") or {}
+    previous_volume = _num(previous_daily.get("v"), 0) or 0
+    # Keep prior-session liquid names visible as WATCH/EARLY when IEX has no
+    # current-day prints; FAST ENTRY still requires fresh bars and live Bid/Ask.
+    if not price or price < 1:
+        return None
+    if not daily_open and previous_daily.get("c"):
+        daily_open = _num(previous_daily.get("c"))
+    liquidity_volume = daily_volume if daily_volume > 0 else previous_volume
+    if liquidity_volume < 10000:
         return None
 
     bid, ask = _num(quote.get("bp")), _num(quote.get("ap"))
@@ -996,11 +1005,8 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
                 "volume": _num(b.get("v"), 0) or 0, "time": b.get("t"),
             })
     bars = bars[-15:]
-    if len(bars) < 3:
-        return None
-
     closes = [x["close"] for x in bars]
-    m1 = ((closes[-1] / closes[-2]) - 1) * 100 if closes[-2] else None
+    m1 = ((closes[-1] / closes[-2]) - 1) * 100 if len(closes) >= 2 and closes[-2] else None
     m3 = ((closes[-1] / closes[-4]) - 1) * 100 if len(closes) >= 4 and closes[-4] else None
     m5 = ((closes[-1] / closes[-6]) - 1) * 100 if len(closes) >= 6 and closes[-6] else None
     trade_time = trade.get("t") or minute.get("t")
@@ -1089,7 +1095,7 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     # Keep a broader, ranked watchlist. Very wide spreads are excluded;
     # strict FAST_ENTRY remains a separate, higher bar.
     # Include EARLY setups from score 3/11 upward so the daily scanner can surface developing moves; FAST_ENTRY remains independently strict.
-    if score < 3 or (spread is not None and spread > 1.25):
+    if spread is not None and spread > 1.25:
         return None
     # Intraday stock FAST ENTRY: prioritize the user's 5%+ daily movers,
     # while requiring fresh upward momentum, a volume expansion, a nearby breakout,
@@ -1124,6 +1130,8 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
         "session": session, "volume": int(daily_volume),
         "relativeVolume": rvol, "spreadPct": spread,
         "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
+        "volumeSource": "IEX_CURRENT_SESSION" if daily_volume > 0 else "PREVIOUS_SESSION_REFERENCE",
+        "currentSessionVolume": int(daily_volume),
         "fastEntryReasons": [] if fast_entry else fast_entry_reasons,
         "score": round(score, 1), "setup": setup,
         "reasons": reasons, "riskFlags": risks,
@@ -1145,10 +1153,16 @@ def _universe_scan_cycle():
     symbols = [x["symbol"] for x in assets]
     batches = [symbols[i:i + UNIVERSE_BATCH_SIZE] for i in range(0, len(symbols), UNIVERSE_BATCH_SIZE)]
     # A bounded worker pool keeps the Basic 200-requests/minute quota in view.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    snapshot_errors = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = {pool.submit(_alpaca_snapshots, batch): batch for batch in batches}
         for future in concurrent.futures.as_completed(futures):
-            batch_data = future.result()
+            try:
+                batch_data = future.result()
+            except Exception as exc:
+                snapshot_errors += 1
+                log.warning("Universe snapshot batch failed (%s)", type(exc).__name__)
+                continue
             for symbol, value in batch_data.items():
                 if isinstance(value, dict):
                     snapshots[str(symbol).upper()] = value
@@ -1157,19 +1171,30 @@ def _universe_scan_cycle():
     liquid = []
     for symbol, snap in snapshots.items():
         daily = snap.get("dailyBar") or {}
+        previous_daily = snap.get("prevDailyBar") or {}
         volume = _num(daily.get("v"), 0) or 0
-        price = _num((snap.get("latestTrade") or {}).get("p"), _num((snap.get("minuteBar") or {}).get("c")))
-        if price and price >= 1 and volume >= 10000:
-            liquid.append((volume * price, symbol))
+        previous_volume = _num(previous_daily.get("v"), 0) or 0
+        price = _num((snap.get("latestTrade") or {}).get("p"),
+                     _num((snap.get("minuteBar") or {}).get("c"),
+                          _num(daily.get("c"), _num(previous_daily.get("c")))))
+        liquidity_volume = volume if volume > 0 else previous_volume
+        if price and price >= 1 and liquidity_volume >= 10000:
+            liquid.append((liquidity_volume * price, symbol))
     liquid.sort(reverse=True)
     selected = [symbol for _, symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
 
     bars_by_symbol: dict[str, list] = {}
     bar_batches = [selected[i:i + UNIVERSE_BATCH_SIZE] for i in range(0, len(selected), UNIVERSE_BATCH_SIZE)]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    bars_errors = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = {pool.submit(_alpaca_recent_bars, batch): batch for batch in bar_batches}
         for future in concurrent.futures.as_completed(futures):
-            batch_bars = future.result()
+            try:
+                batch_bars = future.result()
+            except Exception as exc:
+                bars_errors += 1
+                log.warning("Universe minute-bar batch failed (%s)", type(exc).__name__)
+                continue
             for symbol, values in batch_bars.items():
                 bars_by_symbol[str(symbol).upper()] = values if isinstance(values, list) else []
 
@@ -1198,9 +1223,20 @@ def _universe_scan_cycle():
             "candidates": candidates[:UNIVERSE_CANDIDATE_LIMIT],
             "updatedAt": now, "lastError": None, "cycleSeconds": elapsed,
             "batchCount": len(batches) + len(bar_batches),
+            "snapshotBatchErrors": snapshot_errors,
+            "barBatchErrors": bars_errors,
+            "symbolsWithMinuteBars": len(bars_by_symbol),
+            "symbolsWithCurrentIexVolume": sum(1 for x in snapshots.values()
+                                               if (_num(((x.get("dailyBar") or {}).get("v")), 0) or 0) > 0),
+            "symbolsWithLiveBidAsk": sum(1 for x in snapshots.values()
+                                          if _num(((x.get("latestQuote") or {}).get("bp"))) and
+                                             _num(((x.get("latestQuote") or {}).get("ap")))),
             "feed": "iex",
             "coverage": "IEX-only real-time feed; not consolidated all-exchange data",
         })
+    log.info("Universe scan complete: assets=%d snapshots=%d evaluated=%d candidates=%d fast=%d snapshot_errors=%d bar_errors=%d duration=%.1fs",
+             len(assets), len(snapshots), len(selected), len(candidates),
+             UNIVERSE_STATE.get("fastEntryCount", 0), snapshot_errors, bars_errors, elapsed)
 
 
 def _universe_scanner_loop():
