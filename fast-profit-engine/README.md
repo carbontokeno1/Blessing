@@ -10,7 +10,7 @@ A separate, always-on-capable Node.js service for automatic **paper simulation o
 - Binance uses public Spot market-data endpoints only.
 - Binance Futures, leverage, margin, short selling, and live trading are not implemented.
 - The engine starts STOPPED. The owner must press START in the control dashboard.
-- STOP halts the scan loop and all automatic position monitoring; existing simulated positions remain open and will not be auto-exited while stopped. Restart to resume management, or use the emergency close action to close all at simulated market prices.
+- STOP halts new scanning and new entries. If simulated positions remain open, the backend continues its monitoring loop until those positions close; it then stops automatically.
 - The control API requires a strong `FAST_PROFIT_CONTROL_TOKEN` and restricts browser origin.
 - Never put broker API keys in the browser or commit them to Git.
 
@@ -19,7 +19,7 @@ A separate, always-on-capable Node.js service for automatic **paper simulation o
 Independent virtual portfolios: US stocks THB 10,000 and Binance Spot crypto THB 10,000.
 
 - US stocks: scan and rank candidates, but **never auto-buy**. A user must press BUY for each stock position.
-- US stocks: maximum 2 concurrent positions; user selects Take Profit from +5% to +15%; Stop Loss is fixed at -25%.
+- US stocks: screen all active tradable Alpaca US-equity assets, use snapshots to rank a broad liquid universe, then refine the top 300 plus active/mover symbols with 5-minute bars. Maximum 2 concurrent positions; user selects Take Profit from +5% to +15%; Stop Loss is fixed at -25%.
 - US stock exits are monitored by the backend and simulated automatically at TP/SL; no 24-hour time exit is applied to stocks.
 - US stock fee: 0.10% per side; slippage: 0.05% per side.
 - Crypto auto-entry behavior remains separate and unchanged by the US stock rules.
