@@ -1,0 +1,18 @@
+name: FAST PROFIT LAB Engine Tests
+on:
+  pull_request:
+    paths:
+      - "fast-profit-engine/**"
+      - ".github/workflows/fast-profit-engine-tests.yml"
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run engine tests
+        working-directory: fast-profit-engine
+        run: npm test
