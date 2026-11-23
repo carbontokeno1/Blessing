@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from broker_adapters import brokerage_readonly_snapshot
 from ai_decision import build_decision_preview
+from adaptive_strategy import adaptive_decision, experiment_window
 from dual_portfolio import portfolio_overview
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -2796,3 +2797,59 @@ def ai_decision_preview(request: Request, refresh: int = 0):
     result["entryGateOpen"] = False
     result["liveOrdersEnabled"] = False
     return result
+
+
+
+@app.get("/ai/adaptive-paper/preview")
+def adaptive_paper_preview(request: Request):
+    """Admin-only adaptive market-regime preview; deliberately does not place orders."""
+    _paper_auth_user(request)
+    crypto = altcoin_scanner(refresh=0)
+    with UNIVERSE_LOCK:
+        stock_snapshot = dict(UNIVERSE_STATE)
+    crypto_rows = []
+    crypto_fresh = crypto.get("status") == "ok" and crypto.get("exchange") == "Binance"
+    if crypto_fresh:
+        for row in (crypto.get("candidates") or [])[:100]:
+            if row.get("source") != "Binance":
+                continue
+            crypto_rows.append(adaptive_decision("crypto", row))
+    stock_rows = []
+    try:
+        stamp = stock_snapshot.get("updatedAt")
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))).total_seconds() if stamp else 999999
+    except Exception:
+        age = 999999
+    stocks_fresh = stock_snapshot.get("status") == "ok" and age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
+    if stocks_fresh:
+        for row in (stock_snapshot.get("candidates") or [])[:150]:
+            normalized = dict(row)
+            normalized["rvol"] = normalized.get("relativeVolume")
+            stock_rows.append(adaptive_decision("stocks", normalized))
+    crypto_rows.sort(key=lambda row: (row["decision"] == "PAPER_CANDIDATE", row["momentumProxyPct"]), reverse=True)
+    stock_rows.sort(key=lambda row: (row["decision"] == "PAPER_CANDIDATE", row["momentumProxyPct"]), reverse=True)
+    return {
+        "ok": True, "mode": "paper_only", "liveOrdersEnabled": False,
+        "automaticEntryEnabled": False,
+        "experiment": experiment_window(14),
+        "policy": {
+            "adaptiveRegimeSelection": True,
+            "markets": ["crypto", "stocks"],
+            "cryptoSource": "Binance TH scanner/candles; Binance-only candidates",
+            "stockSource": "Alpaca IEX universe scanner",
+            "staleOrFallbackData": "block new entries",
+            "costModel": "estimated round-trip fees, slippage and quoted spread; verify actual fills in reports",
+            "stockStopLossPct": -25, "stockTakeProfitPct": 20,
+            "note": "This endpoint is a signal preview only; it does not execute paper orders."
+        },
+        "marketData": {
+            "crypto": {"fresh": crypto_fresh, "status": crypto.get("status"),
+                       "provider": crypto.get("exchange") or crypto.get("provider"),
+                       "updatedAt": crypto.get("updatedAt"), "candidateCount": len(crypto_rows)},
+            "stocks": {"fresh": stocks_fresh, "status": stock_snapshot.get("status"),
+                       "provider": stock_snapshot.get("provider"), "updatedAt": stock_snapshot.get("updatedAt"),
+                       "candidateCount": len(stock_rows)}
+        },
+        "decisions": {"crypto": crypto_rows[:30], "stocks": stock_rows[:30]},
+        "disclaimer": "ผลลัพธ์เป็นการคัดกรองสัญญาณ ไม่ใช่คำสั่งซื้อขาย และไม่รับประกันกำไร"
+    }
