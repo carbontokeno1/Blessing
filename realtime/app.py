@@ -2510,6 +2510,7 @@ def dual_paper_status(request: Request):
 
 
 DUAL_PAPER_WORKER_INTERVAL = max(15, int(os.getenv("DUAL_PAPER_WORKER_INTERVAL", "20")))
+DUAL_ADAPTIVE_ENTRY_COOLDOWNS = {}  # per-user cooldown shared across crypto and equities
 DUAL_PAPER_WORKER_STATE = {
     "status": "waiting_config" if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY) else "starting",
     "lastCycleAt": None, "lastError": None, "cycles": 0, "positionsChecked": 0, "automaticExits": 0
