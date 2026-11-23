@@ -2887,11 +2887,23 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     stop_pct = min(25.0, max(0.1, stop_pct))
     max_notional_pct = float(strategy_config.get("max_notional_pct") or 6.0)
     max_total_allocation_pct = float(strategy_config.get("max_total_allocation_pct") or 30.0)
-    cash_balance = float(portfolio.get("cash_balance") or 0)
-    current_exposure = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
-    remaining_allocation = max(0.0, equity * max_total_allocation_pct / 100 - current_exposure)
-    # No cash reserve: use available cash, but never exceed the portfolio-wide 30% exposure cap.
-    notional = min(cash_balance, remaining_allocation, equity * min(max_notional_pct, 6.0) / 100)
+    all_portfolios = _sb_rest("blessing_dual_portfolios", {
+        "select":"id,market,cash_balance,initial_capital",
+        "user_id":"eq."+user_id,"mode":"eq.paper","limit":"2"
+    }) or []
+    portfolio_ids = [str(row["id"]) for row in all_portfolios]
+    all_positions = _sb_rest("blessing_dual_positions", {
+        "select":"portfolio_id,quantity,current_price,entry_price",
+        "user_id":"eq."+user_id,"status":"eq.open","limit":"1000"
+    }) or []
+    total_cash = sum(float(row.get("cash_balance") or 0) for row in all_portfolios)
+    total_exposure = sum(float(p.get("quantity") or 0)*float(p.get("current_price") or p.get("entry_price") or 0)
+                         for p in all_positions if str(p.get("portfolio_id")) in portfolio_ids)
+    total_equity = total_cash + total_exposure
+    remaining_allocation = max(0.0, total_equity * max_total_allocation_pct / 100 - total_exposure)
+    # No reserve: each of at most five entries receives a balanced 6% slice
+    # of combined crypto + stock equity, while all entries share one 30% cap.
+    notional = min(cash_balance, remaining_allocation, total_equity * min(max_notional_pct, 6.0) / 100)
     if notional < 1.0:
         return None
     fill_price = market_price * 1.0005
