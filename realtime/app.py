@@ -3404,7 +3404,7 @@ def adaptive_paper_preview(request: Request):
 
 @app.post("/ai/adaptive-paper/start")
 def adaptive_paper_start(request: Request):
-    """Start a 14-day adaptive experiment on both isolated Paper portfolios."""
+    """Start continuous adaptive Paper Trading until the owner manually stops it."""
     user=_paper_auth_user(request)
     uid=str(user["id"])
     active=_sb_rest("blessing_dual_experiments",{
@@ -3442,7 +3442,7 @@ def adaptive_paper_start(request: Request):
                  "PATCH",{"enabled":True,"updated_at":started.isoformat()})
     return {"ok":True,"mode":"paper","liveOrdersEnabled":False,"automaticEntriesEnabled":True,
             "experiment":exp[0],"markets":{"crypto":"enabled","stocks":"enabled"},
-            "message":"เริ่ม Adaptive Paper Trading 14 วัน ทั้งสองตลาดแล้ว ไม่มีคำสั่งเงินจริง"}
+            "message":"เริ่ม Adaptive Paper Trading ต่อเนื่องจนกว่าผู้ใช้จะกดหยุด ทั้งสองตลาด ไม่มีคำสั่งเงินจริง"}
 
 
 @app.post("/ai/adaptive-paper/stop")
