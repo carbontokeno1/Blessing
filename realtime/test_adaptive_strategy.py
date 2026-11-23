@@ -36,7 +36,7 @@ class AdaptiveStrategyTests(unittest.TestCase):
             stamp = now - 3600 + second
             price = 100 * (1 + second * 0.00001)
             # Baseline cumulative volume increases at 1.7 units/second; last minute doubles.
-            volume = 300000 + second * (3.4 if second >= 3540 else 1.7)
+            volume = 300000 + second * 1.7 + max(0, second - 3540) * 1.7
             history.append((stamp, price, volume, price * 0.999, price * 1.001))
         candidates = build_binance_th_candidates({"BTCUSDT": history}, now=now)
         self.assertEqual(len(candidates), 1)
