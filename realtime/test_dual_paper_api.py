@@ -161,7 +161,7 @@ if __name__ == "__main__":
             })
             self.assertEqual(response.status_code, 422)
         rpc.assert_not_called()
-        self.assertEqual(quote.call_count, 2)
+        quote.assert_not_called()
 
     @patch.object(blessing_app, "_dual_market_price", return_value=200.0)
     @patch.object(blessing_app, "_dual_rpc_order")
