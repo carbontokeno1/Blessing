@@ -18,9 +18,13 @@ A separate, always-on-capable Node.js service for automatic **paper simulation o
 
 Independent virtual portfolios: US stocks THB 10,000 and Binance Spot crypto THB 10,000.
 
-- Maximum position notional: THB 2,000.
-- Maximum estimated stop risk including estimated costs: THB 50 per position.
-- Maximum 3 concurrent positions per market portfolio; trade-cycle count is not capped while risk checks remain satisfied.
+- US stocks: scan and rank candidates, but **never auto-buy**. A user must press BUY for each stock position.
+- US stocks: maximum 2 concurrent positions; user selects Take Profit from +5% to +15%; Stop Loss is fixed at -25%.
+- US stock exits are monitored by the backend and simulated automatically at TP/SL; no 24-hour time exit is applied to stocks.
+- US stock fee: 0.10% per side; slippage: 0.05% per side.
+- Crypto auto-entry behavior remains separate and unchanged by the US stock rules.
+- Maximum position notional: THB 2,000, subject to available cash and existing portfolio risk limits.
+- Maximum 3 concurrent positions for the crypto portfolio; trade-cycle count is not capped while risk checks remain satisfied.
 - Daily realized losses plus open stop-risk: THB 200.
 - Stop new entries after 3 consecutive same-day losses.
 - Long-only. Fees and slippage are conservative estimates, not exchange fee quotes.
@@ -48,6 +52,7 @@ All control endpoints except `GET /health` require header `X-Fast-Profit-Token`.
 - `POST /api/control/stop`
 - `POST /api/control/close-all` — simulated emergency close only
 - `POST /api/scan`
+- `POST /api/stocks/buy` with JSON `{"symbol":"NVDA","targetPct":10}` — opens one user-requested US stock paper position only; targetPct must be 5–15.
 
 ## Required environment
 
