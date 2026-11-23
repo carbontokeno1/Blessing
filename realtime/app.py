@@ -3496,3 +3496,5 @@ def adaptive_paper_report(request: Request):
             "automaticEntriesEnabled":True,"experiment":exp,"markets":report,
             "measurement":{"netProfit":"equity minus starting capital and estimated slippage; exchange fees already deducted from cash",
                            "drawdown":"peak-to-trough based on net equity marks","slippageModel":"5 bps per filled order side"}}
+
+# Keep the dual paper monitor and verified Alpaca IEX fallback in the deployed backend.
