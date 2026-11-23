@@ -151,6 +151,7 @@ if __name__ == "__main__":
         sb_rest.side_effect = [
             [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}],
             [],
+            [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}],
             [],
         ]
         for target in (4, 16):
@@ -160,7 +161,7 @@ if __name__ == "__main__":
             })
             self.assertEqual(response.status_code, 422)
         rpc.assert_not_called()
-        quote.assert_not_called()
+        self.assertEqual(quote.call_count, 2)
 
     @patch.object(blessing_app, "_dual_market_price", return_value=200.0)
     @patch.object(blessing_app, "_dual_rpc_order")
