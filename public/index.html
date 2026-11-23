@@ -297,7 +297,7 @@ async function stockPaperClose(positionId,symbol){
  if(!confirm('ยืนยันปิด '+symbol+' ด้วยราคาตลาด '+dualFmt(q.price,4)+' USD?'))return;
  try{const order={market:'stocks',symbol,side:'sell',positionId};order.idempotencyKey=dualOrderKey(order);const result=await dualApi('/ai/dual-paper/order',order);dualOrderSucceeded();alert('ปิดสถานะแล้ว · Realized P/L '+dualFmt(result.result?.realizedPnl,4)+' USD');await stockPaperRefresh(false)}catch(e){alert(e.message)}
 }
-function startStockPaperPolling(){if(stockPaperTimer)return;stockPaperRefresh(true);stockPaperTimer=setInterval(()=>{if(active==='stockpaper')stockPaperRefresh(true)},10000)}
+function startStockPaperPolling(){if(stockPaperTimer)return;stockPaperRefresh(false);stockPaperTimer=setInterval(()=>{if(active==='stockpaper')stockPaperRefresh(false)},15000)}
 function stopStockPaperPolling(){if(stockPaperTimer){clearInterval(stockPaperTimer);stockPaperTimer=null}}
 
 function dualView(){
@@ -413,7 +413,7 @@ async function dualRefresh(markPrices=true){
  catch(e){const m=document.getElementById('dualMessage');if(m)m.textContent=e.message}
  finally{dualBusy=false}
 }
-function startDualPolling(){if(dualTimer)return;dualRefresh(true);dualTimer=setInterval(()=>{if(active==='dual'){dualRefresh(true);dualQuotePrice(true)}},5000)}
+function startDualPolling(){if(dualTimer)return;dualRefresh(false);dualTimer=setInterval(()=>{if(active==='dual'){dualRefresh(false);dualQuotePrice(true)}},15000)}
 function stopDualPolling(){if(dualTimer){clearInterval(dualTimer);dualTimer=null}}
 
 function nav(){let keys=role==='admin'?['overview','stocks','stockpaper','crypto','altcoins','members','paper','dual','reports','live','history','connection','settings']:['overview','stocks','crypto','altcoins','paper','reports','live','history','connection','settings'];$('tabs').innerHTML=keys.map(k=>'<button class="tab '+(active===k?'active':'')+'" onclick="go(\''+k+'\')">'+names[k]+'</button>').join('')}
