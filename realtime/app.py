@@ -33,6 +33,8 @@ APP_SECRET = os.getenv("WEBULL_APP_SECRET", "")
 ALPACA_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET = os.getenv("ALPACA_API_SECRET", "")
 ALPACA_FEED = os.getenv("ALPACA_FEED", "iex").lower()
+# REST-only by default avoids exhausting Alpaca Basic single-stream connection limits.
+ALPACA_STREAM_ENABLED = os.getenv("ALPACA_STREAM_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 REGION = os.getenv("WEBULL_REGION", "us")
 HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.com")
 MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.com")
@@ -420,9 +422,15 @@ async def startup():
     crypto_stream_thread.start()
     if ALPACA_KEY and ALPACA_SECRET:
         state["provider"] = "alpaca"
-        state["connection"] = "connecting"
-        stream_thread = threading.Thread(target=alpaca_stream_main, name="alpaca-websocket", daemon=True)
-        stream_thread.start()
+        if ALPACA_STREAM_ENABLED:
+            state["connection"] = "connecting"
+            stream_thread = threading.Thread(target=alpaca_stream_main, name="alpaca-websocket", daemon=True)
+            stream_thread.start()
+            log.warning("Alpaca WebSocket enabled by ALPACA_STREAM_ENABLED; ensure no other service uses the same account stream.")
+        else:
+            state["connection"] = "rest_only"
+            state["marketDataEntitlement"] = "Alpaca Basic IEX via REST snapshots and minute bars; WebSocket disabled to avoid connection-limit conflicts"
+            log.info("Alpaca WebSocket disabled; running Universe Scanner via REST snapshots/bars only.")
         global UNIVERSE_THREAD
         UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="alpaca-universe-scanner", daemon=True)
         UNIVERSE_THREAD.start()
