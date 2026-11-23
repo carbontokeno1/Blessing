@@ -2696,7 +2696,7 @@ def _dual_paper_ensure_portfolio(user_id: str, config: dict) -> dict:
         "mode":"paper", "enabled":False, "reserve_cash_pct":0,
         "risk_per_trade_pct":1, "max_daily_loss_pct":3,
         "max_weekly_loss_pct":6, "max_drawdown_pct":10,
-        "max_open_positions":2, "peak_equity":config["initial_capital"],
+        "max_open_positions":2147483647, "peak_equity":config["initial_capital"],
         "updated_at":now
     }
     try:
@@ -2857,11 +2857,7 @@ def _dual_equity_snapshot(experiment: dict, portfolio: dict, positions: list):
         "peak_equity":peak,"drawdown_pct":drawdown
     }
     _sb_rest("blessing_dual_equity_marks", {}, "POST", mark)
-    if drawdown >= float(portfolio.get("max_drawdown_pct") or 10):
-        _sb_rest("blessing_dual_portfolios", {
-            "id":"eq."+str(portfolio["id"]), "user_id":"eq."+user_id
-        }, "PATCH", {"enabled":False,"updated_at":datetime.now(timezone.utc).isoformat()})
-        log.warning("Adaptive Paper stopped new entries at max drawdown user=%s market=%s dd=%.3f",user_id,market,drawdown)
+    # Daily, cumulative-loss and drawdown stop limits are disabled by owner policy.
     return mark
 
 
@@ -2884,51 +2880,18 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     equity += market_value
     if any(p.get("symbol")==symbol for p in positions):
         return None
-    now=datetime.now(timezone.utc)
-    day_start=now.replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
-    week_start=(now-timedelta(days=now.weekday())).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
-    today_orders=_sb_rest("blessing_dual_orders",{
-        "select":"realized_pnl","portfolio_id":"eq."+str(portfolio["id"]),
-        "side":"eq.sell","created_at":"gte."+day_start,"status":"eq.filled","limit":"1000"
-    }) or []
-    week_orders=_sb_rest("blessing_dual_orders",{
-        "select":"realized_pnl","portfolio_id":"eq."+str(portfolio["id"]),
-        "side":"eq.sell","created_at":"gte."+week_start,"status":"eq.filled","limit":"1000"
-    }) or []
-    open_unrealized=sum(float(p.get("unrealized_pnl") or 0) for p in positions)
-    daily_pnl=sum(float(x.get("realized_pnl") or 0) for x in today_orders)+open_unrealized
-    weekly_pnl=sum(float(x.get("realized_pnl") or 0) for x in week_orders)+open_unrealized
-    initial=float(portfolio.get("initial_capital") or equity)
-    if daily_pnl <= -(initial*float(portfolio.get("max_daily_loss_pct") or 3)/100):
-        return None
-    if weekly_pnl <= -(initial*float(portfolio.get("max_weekly_loss_pct") or 6)/100):
-        return None
-    if len(positions) >= int(portfolio.get("max_open_positions") or 2):
-        return None
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
     stop_pct = float(strategy_config.get(market + "_stop_loss_pct", 1.5 if market == "crypto" else 25.0))
     target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0 if market == "crypto" else 20.0))
-    risk_pct = float(portfolio.get("risk_per_trade_pct") or 0.5)
-    daily_limit_pct = float(portfolio.get("max_daily_loss_pct") or 2.0)
-    weekly_limit_pct = float(portfolio.get("max_weekly_loss_pct") or 5.0)
-    reserve_pct = float(portfolio.get("reserve_cash_pct") or 20.0)
+    # Hard cap: an individual position may not lose more than 25% of its entry notional.
+    stop_pct = min(25.0, max(0.1, stop_pct))
     max_notional_pct = float(strategy_config.get("max_notional_pct") or 20.0)
-    cumulative_pnl = float(portfolio.get("realized_pnl") or 0) + open_unrealized
-    if cumulative_pnl <= -(initial * 0.05):
-        return None
-    if daily_pnl <= -(initial * daily_limit_pct/100):
-        return None
-    if weekly_pnl <= -(initial * weekly_limit_pct/100):
-        return None
-    peak = float(portfolio.get("peak_equity") or initial)
-    if peak > 0 and (peak - equity) / peak * 100 >= float(portfolio.get("max_drawdown_pct") or 5.0):
-        return None
-    risk_budget = equity * risk_pct / 100
-    notional_by_risk = risk_budget / (stop_pct/100)
+    max_total_allocation_pct = float(strategy_config.get("max_total_allocation_pct") or 30.0)
     cash_balance = float(portfolio.get("cash_balance") or 0)
-    reserve = cash_balance * reserve_pct/100
-    deployable = max(0.0, cash_balance-reserve)
-    notional = min(notional_by_risk, deployable, equity * max_notional_pct/100)
+    current_exposure = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
+    remaining_allocation = max(0.0, equity * max_total_allocation_pct / 100 - current_exposure)
+    # No cash reserve: use available cash, but never exceed the portfolio-wide 30% exposure cap.
+    notional = min(cash_balance, remaining_allocation, equity * max_notional_pct / 100)
     if notional < 1.0:
         return None
     fill_price = market_price * 1.0005
