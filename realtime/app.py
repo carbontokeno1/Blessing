@@ -2250,20 +2250,32 @@ def _paper_worker_cycle():
                 open_pnl += (_num(q.get("price"),0) - _num(p.get("entry_price"),0)) * _num(p.get("quantity"),0)
         total_pnl = float(account.get("realized_pnl") or 0) + open_pnl
         start_balance = float(account.get("starting_balance") or setting.get("starting_balance") or 88.4173298)
-        if total_pnl <= -(start_balance * float(setting.get("daily_loss_limit_pct") or 3) / 100):
+        day_start = datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+        daily_orders = _sb_rest("paper_bot_orders", {
+            "select":"realized_pnl","user_id":"eq." + uid,"side":"eq.sell",
+            "created_at":"gte." + day_start,"status":"eq.filled","limit":"500"
+        })
+        daily_pnl = sum(_num(x.get("realized_pnl"),0) or 0 for x in daily_orders) + open_pnl
+        if daily_pnl <= -(start_balance * 0.02):
+            continue
+        if total_pnl <= -(start_balance * 0.05):
             continue
         held = {p.get("symbol") for p in positions}
-        ranked = [x for x in candidates.values() if x.get("fastEntry") is True and x.get("symbol") not in held
-                  and x.get("exchangeSymbol") == x.get("symbol") and
-                  _num(x.get("price"),0) and _num(x.get("score"),0) >= 60 and
-                  _num(x.get("rvol"),0) >= 2 and _num(x.get("m1"),0) > 0 and _num(x.get("m5"),0) > 0 and
-                  x.get("breakout") is True and 0 < (_num(x.get("spreadPct"),0) or 0) <= 0.5]
-        ranked.sort(key=lambda x:(x.get("score",0),x.get("rvol",0)),reverse=True)
+        ranked = []
+        for candidate in candidates.values():
+            if candidate.get("symbol") in held or candidate.get("exchangeSymbol") != candidate.get("symbol"):
+                continue
+            if not _num(candidate.get("price"),0):
+                continue
+            decision = adaptive_decision("crypto",candidate,fee_bps=10,slippage_bps=5)
+            if decision.get("decision") == "PAPER_CANDIDATE":
+                ranked.append((candidate,decision))
+        ranked.sort(key=lambda pair:pair[1].get("opportunityScore",0),reverse=True)
         allowed = setting.get("allowed_exchanges") or ["Binance"]
         if "Binance" not in allowed:
             continue
-        for candidate in ranked:
-            if len(positions) >= int(setting.get("max_open_positions") or 5):
+        for candidate,decision in ranked:
+            if len(positions) >= int(setting.get("max_open_positions") or 3):
                 break
             cooldown_key = uid + ":" + candidate["symbol"]
             if time.time() - PAPER_ENTRY_COOLDOWNS.get(cooldown_key,0) < 180:
@@ -2271,7 +2283,7 @@ def _paper_worker_cycle():
             try:
                 result = _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":"buy","p_symbol":candidate["symbol"],
                                   "p_exchange":"Binance","p_price":float(candidate["price"]),"p_position_id":None,
-                                  "p_reason":"FAST_ENTRY","p_signal_score":int(candidate.get("score") or 0)})
+                                  "p_reason":"FAST_ENTRY","p_signal_score":int(min(100,decision.get("opportunityScore") or 0))})
                 PAPER_ENTRY_COOLDOWNS[cooldown_key] = time.time()
                 PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":"buy",
                                                        "symbol":candidate["symbol"],"result":result})
