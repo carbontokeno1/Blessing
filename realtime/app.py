@@ -2874,7 +2874,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     positions = _sb_rest("blessing_dual_positions", {
         "select":"id,symbol,quantity,entry_price,current_price,stop_loss_price",
         "portfolio_id":"eq."+str(portfolio["id"]), "user_id":"eq."+user_id,
-        "status":"eq.open", "limit":"30"
+        "status":"eq.open", "limit":"1000"
     }) or []
     market_value = sum(float(p.get("quantity") or 0)*float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
     equity += market_value
@@ -2885,13 +2885,13 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0 if market == "crypto" else 20.0))
     # Hard cap: an individual position may not lose more than 25% of its entry notional.
     stop_pct = min(25.0, max(0.1, stop_pct))
-    max_notional_pct = float(strategy_config.get("max_notional_pct") or 30.0)
+    max_notional_pct = float(strategy_config.get("max_notional_pct") or 6.0)
     max_total_allocation_pct = float(strategy_config.get("max_total_allocation_pct") or 30.0)
     cash_balance = float(portfolio.get("cash_balance") or 0)
     current_exposure = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
     remaining_allocation = max(0.0, equity * max_total_allocation_pct / 100 - current_exposure)
     # No cash reserve: use available cash, but never exceed the portfolio-wide 30% exposure cap.
-    notional = min(cash_balance, remaining_allocation, equity * max_notional_pct / 100)
+    notional = min(cash_balance, remaining_allocation, equity * min(max_notional_pct, 6.0) / 100)
     if notional < 1.0:
         return None
     fill_price = market_price * 1.0005
@@ -3008,34 +3008,31 @@ def _dual_paper_worker_cycle():
                         "rank":float(decision.get("opportunityScore") or 0),
                     })
 
-        # Run the same entry model independently for each market; one entry per market
-        # per cycle, with isolated cooldowns and isolated paper balances.
+        # Rank both markets together and open at most five symbols per user per cycle.
+        # A fixed 6% slice per entry keeps the combined allocation balanced.
         entries_opened = 0
         selected_markets = {}
         experiment_by_user = {str(exp["user_id"]): exp for exp in experiments}
+        ranked_by_user = {}
         for (uid,market), opportunities in ranked_by_user_market.items():
-            cooldown_key = uid + ":" + market
-            if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
-                continue
-            opportunities.sort(key=lambda x: (x["rank"], x["decision"].get("netEdgeProxyPct",0),
-                                               x["decision"].get("momentumProxyPct",0)), reverse=True)
             for item in opportunities:
-                if item["rank"] <= 0:
+                ranked_by_user.setdefault(uid, []).append((market,item))
+        for uid, ranked in ranked_by_user.items():
+            ranked.sort(key=lambda pair: (pair[1]["rank"], pair[1]["decision"].get("netEdgeProxyPct",0), pair[1]["decision"].get("momentumProxyPct",0)), reverse=True)
+            opened_this_cycle = 0
+            for market,item in ranked:
+                if opened_this_cycle >= 5 or item["rank"] <= 0:
                     break
+                cooldown_key = uid + ":" + market + ":" + item["symbol"]
+                if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
+                    continue
                 try:
-                    result=_dual_try_adaptive_entry(
-                        experiment_by_user[uid],item["portfolio"],
-                        {**item["raw"],**item["decision"]},market
-                    )
+                    result=_dual_try_adaptive_entry(experiment_by_user[uid],item["portfolio"],{**item["raw"],**item["decision"]},market)
                     if result:
                         entries_opened += 1
-                        selected_markets.setdefault(uid,{})[market]={
-                            "symbol":item["symbol"],
-                            "opportunityScore":item["rank"],
-                            "netEdgeProxyPct":item["decision"].get("netEdgeProxyPct")
-                        }
+                        opened_this_cycle += 1
+                        selected_markets.setdefault(uid,{}).setdefault(market,[]).append({"symbol":item["symbol"],"opportunityScore":item["rank"],"netEdgeProxyPct":item["decision"].get("netEdgeProxyPct")})
                         DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key]=time.time()
-                        break
                 except Exception as exc:
                     log.info("Adaptive entry skipped %s %s (%s)",market,item["symbol"],type(exc).__name__)
                     continue
@@ -3432,7 +3429,7 @@ def adaptive_paper_start(request: Request):
                   "crypto_stop_loss_pct":1.5,"crypto_take_profit_pct":3.0,
                   "stocks_stop_loss_pct":25.0,"stocks_take_profit_pct":20.0,
                   "fee_bps_per_side":10,"slippage_bps_per_side":5,
-                  "entry_cooldown_seconds":300,"max_entries_per_market_per_cycle":1,
+                  "entry_cooldown_seconds":300,"max_entries_per_market_per_cycle":5,"max_entries_per_user_per_cycle":5,
                   "live_orders_enabled":False}
     })
     if not exp:
