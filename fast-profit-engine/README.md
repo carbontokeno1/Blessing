@@ -20,8 +20,7 @@ Independent virtual portfolios: US stocks THB 10,000 and Binance Spot crypto THB
 
 - Maximum position notional: THB 2,000.
 - Maximum estimated stop risk including estimated costs: THB 50 per position.
-- Maximum 3 concurrent positions per market portfolio.
-- Maximum 8 entries per calendar day per market portfolio.
+- Maximum 3 concurrent positions per market portfolio; trade-cycle count is not capped while risk checks remain satisfied.
 - Daily realized losses plus open stop-risk: THB 200.
 - Stop new entries after 3 consecutive same-day losses.
 - Long-only. Fees and slippage are conservative estimates, not exchange fee quotes.
