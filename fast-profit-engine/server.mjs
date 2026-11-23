@@ -14,8 +14,9 @@ const SCAN_INTERVAL_MS = Math.max(30, Number(process.env.SCAN_INTERVAL_SECONDS |
 const PAPER_ONLY = true;
 
 export const LIMITS = Object.freeze({
-  initialCapitalTHB: 10000, maxPositionTHB: 10000, maxRiskTHB: 50,
-  maxOpenPositions: 7, maxOpenPositionsCrypto: 3, maxDailyLossTHB: 200,
+  initialCapitalTHB: 10000, maxPositionTHB: 2000, maxRiskTHB: 200,
+  maxOpenPositions: 2, maxOpenPositionsCrypto: 3, maxDailyLossTHB: 200,
+  stockStopLossPct: 25, stockTakeProfitMinPct: 5, stockTakeProfitMaxPct: 15,
   maxConsecutiveLosses: 3, feeRate: 0.001, slippageRate: 0.0005,
   stockScreenerTop: 100, stockMoverTop: 50, stockBatchSize: 25,
   minStockPriceUSD: 5, minAvgDollarVolume5mUSD: 250000
@@ -32,6 +33,17 @@ export const STRATEGIES = Object.freeze({
   breakout: { label: "Volume Breakout", stopAtr: 1.6, rewardRisk: 2.2, test: f => f.breakout && f.rsi >= 52 && f.rsi <= 72 && f.relVol >= 1.4 && f.macdHist > 0 }
 });
 
+export function stockTradeLevels(entryPrice, targetPct = 10) {
+  if (!(Number.isFinite(entryPrice) && entryPrice > 0 &&
+        Number.isFinite(targetPct) && targetPct >= LIMITS.stockTakeProfitMinPct &&
+        targetPct <= LIMITS.stockTakeProfitMaxPct)) return null;
+  return {
+    stopPrice: round(entryPrice * (1 - LIMITS.stockStopLossPct / 100), 8),
+    targetPrice: round(entryPrice * (1 + targetPct / 100), 8),
+    stopLossPct: LIMITS.stockStopLossPct,
+    takeProfitPct: targetPct
+  };
+}
 const nowIso = () => new Date().toISOString();
 const TIME_ZONE = process.env.TRADING_TIME_ZONE || "Asia/Bangkok";
 const dayKey = (d = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
@@ -150,7 +162,8 @@ function emptyState() {
       stocks: { initialTHB: LIMITS.initialCapitalTHB, cashTHB: LIMITS.initialCapitalTHB, realizedTHB: 0, peakEquityTHB: LIMITS.initialCapitalTHB, maxDrawdownTHB: 0 },
       crypto: { initialTHB: LIMITS.initialCapitalTHB, cashTHB: LIMITS.initialCapitalTHB, realizedTHB: 0, peakEquityTHB: LIMITS.initialCapitalTHB, maxDrawdownTHB: 0 }
     },
-    positions: [], trades: [], scans: [], strategyByMarket: { stocks: null, crypto: null }, dayStats: {}
+    positions: [], trades: [], scans: [], stockCandidates: [], stockMarketOpen: false,
+    strategyByMarket: { stocks: null, crypto: null }, dayStats: {}
   };
 }
 let state = emptyState();
@@ -276,10 +289,12 @@ function managePositions(marketRows) {
     p.markPrice=row.price;
     if (row.price<=p.stopPrice) closePosition(p,Math.min(row.price,p.stopPrice),"STOP_LOSS");
     else if (row.price>=p.targetPrice) closePosition(p,p.targetPrice,"TAKE_PROFIT");
-    else if (Date.now()-Date.parse(p.openedAt)>24*60*60*1000) closePosition(p,row.price,"TIME_EXIT_24H");
+    else if (p.market !== "stocks" && Date.now()-Date.parse(p.openedAt)>24*60*60*1000) closePosition(p,row.price,"TIME_EXIT_24H");
   }
 }
 function maybeOpen(market, candidate, selectedStrategy) {
+  // US stock entries are manual only; this auto-entry path remains for crypto.
+  if (market === "stocks") return null;
   if (candidate.spread>0.003 || candidate.price<=0) return null;
   const signal=evaluateSignal(candidate.bars,selectedStrategy);
   if (!signal) return null;
@@ -330,15 +345,16 @@ async function runScan() {
     for (const row of cryptoRows.sort((a,b)=>b.quoteVolume-a.quoteVolume)) {
       const e=maybeOpen("crypto",row,cryptoChoice.selected); if(e) events.push(e);
     }
-    if (stocks.marketOpen) {
-      const rankedStocks=stockRows.map(row=>({...row,opportunityScore:stockOpportunityScore(row,stockChoice.selected)}))
-        .filter(row=>Number.isFinite(row.opportunityScore))
-        .sort((a,b)=>b.opportunityScore-a.opportunityScore);
-      for (const row of rankedStocks) {
-        if(state.positions.filter(p=>p.market==="stocks").length>=maxPositionsFor("stocks")) break;
-        const e=maybeOpen("stocks",row,stockChoice.selected); if(e) events.push(e);
-      }
-    }
+    const rankedStocks=stockRows.map(row=>({...row,opportunityScore:stockOpportunityScore(row,stockChoice.selected)}))
+      .filter(row=>Number.isFinite(row.opportunityScore))
+      .sort((a,b)=>b.opportunityScore-a.opportunityScore);
+    state.stockMarketOpen=Boolean(stocks.marketOpen);
+    state.stockCandidates=rankedStocks.slice(0,50).map(row=>{
+      const signal=evaluateSignal(row.bars,stockChoice.selected);
+      return {symbol:row.symbol,price:row.price,score:round(row.opportunityScore,3),
+        rsi:round(signal?.rsi||0,2),relVol:round(signal?.relVol||0,2),
+        strategy:stockChoice.selected,barTime:signal?.barTime||null};
+    });
     const scan={
       at:nowIso(), crypto:{scanned:cryptoRows.length,selected:cryptoChoice.selected,adaptive:cryptoChoice.adaptive},
       stocks:{scanned:stockRows.length,universeCount:stocks.universeCount||0,activeCount:stocks.activeCount||0,moverCount:stocks.moverCount||0,marketOpen:Boolean(stocks.marketOpen),selected:stockChoice.selected,adaptive:stockChoice.adaptive,unavailable:Boolean(stocks.unavailable),reason:stocks.reason||stocks.screenerWarning||null},
@@ -371,9 +387,53 @@ function snapshot() {
     p.maxDrawdownTHB=Math.max(p.maxDrawdownTHB,p.peakEquityTHB-equity);
     portfolios[market]={...p,equityTHB:equity,unrealizedTHB:round(equity-p.cashTHB-open.reduce((s,x)=>s+x.entryCostTHB,0),2),openCount:open.length,openRiskTHB:round(openRisk(market),2),dailyRealizedLossTHB:round(dailyRealizedLoss(market),2),lossStreak:lossStreak(market)};
   }
-  return { mode:"PAPER_ONLY", liveTradingEnabled:false, running:state.running, startedAt:state.startedAt, lastScanAt:state.lastScanAt, lastError:state.lastError, scanCount:state.scanCount, scanIntervalSeconds:SCAN_INTERVAL_MS/1000, fxUsdThb:USD_THB_FX, limits:LIMITS, portfolios, positions:state.positions, trades:state.trades.slice(0,100), scans:state.scans.slice(0,20), strategyByMarket:state.strategyByMarket };
+  return { mode:"PAPER_ONLY", liveTradingEnabled:false, running:state.running, startedAt:state.startedAt, lastScanAt:state.lastScanAt, lastError:state.lastError, scanCount:state.scanCount, scanIntervalSeconds:SCAN_INTERVAL_MS/1000, fxUsdThb:USD_THB_FX, limits:LIMITS, portfolios, positions:state.positions, trades:state.trades.slice(0,100), scans:state.scans.slice(0,20), stockCandidates:state.stockCandidates||[], stockMarketOpen:Boolean(state.stockMarketOpen), strategyByMarket:state.strategyByMarket };
 }
 
+async function readJsonBody(req) {
+  let raw="";
+  for await (const chunk of req) {
+    raw += chunk;
+    if (raw.length > 16384) throw new Error("REQUEST_BODY_TOO_LARGE");
+  }
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch { throw new Error("INVALID_JSON"); }
+}
+async function openStockPaperPosition(symbol, targetPct) {
+  if (!state.running) return {status:409,error:"ENGINE_STOPPED"};
+  if (!state.stockMarketOpen) return {status:409,error:"US_MARKET_CLOSED"};
+  if (!/^[A-Z.]{1,8}$/.test(symbol||"")) return {status:400,error:"INVALID_SYMBOL"};
+  const levelsCheck=stockTradeLevels(1,targetPct);
+  if (!levelsCheck) return {status:400,error:"TAKE_PROFIT_MUST_BE_5_TO_15_PERCENT"};
+  const existing=state.positions.filter(p=>p.market==="stocks");
+  if (existing.length>=LIMITS.maxOpenPositions) return {status:409,error:"MAX_OPEN_STOCK_POSITIONS"};
+  if (existing.some(p=>p.symbol===symbol)) return {status:409,error:"STOCK_ALREADY_OPEN"};
+  const candidate=(state.stockCandidates||[]).find(x=>x.symbol===symbol);
+  if (!candidate || !(candidate.price>0)) return {status:409,error:"STOCK_NOT_IN_LATEST_SCAN"};
+  const fill=round(candidate.price*(1+LIMITS.slippageRate),8);
+  const levels=stockTradeLevels(fill,targetPct);
+  const slots=Math.max(1,LIMITS.maxOpenPositions-existing.length);
+  const cash=state.portfolios.stocks.cashTHB;
+  const riskPct=(LIMITS.stockStopLossPct/100)+2*(LIMITS.feeRate+LIMITS.slippageRate);
+  const notional=Math.min(LIMITS.maxPositionTHB,cash/slots/(1+LIMITS.feeRate),LIMITS.maxRiskTHB/riskPct);
+  if (!(notional>=100)) return {status:409,error:"INSUFFICIENT_PAPER_CASH_OR_RISK_BUDGET"};
+  const qty=notional/(fill*USD_THB_FX);
+  const entryFee=notional*LIMITS.feeRate;
+  const entryCost=notional+entryFee;
+  const risk=round((fill-levels.stopPrice)*qty*USD_THB_FX+notional*(2*LIMITS.feeRate+2*LIMITS.slippageRate),2);
+  const guard=guardEntry("stocks",risk);
+  if (guard) return {status:409,error:guard};
+  if (entryCost>cash) return {status:409,error:"INSUFFICIENT_PAPER_CASH"};
+  const position={id:newId(),market:"stocks",symbol,side:"LONG",strategy:candidate.strategy,
+    entryPrice:fill,markPrice:candidate.price,stopPrice:levels.stopPrice,targetPrice:levels.targetPrice,
+    stopLossPct:levels.stopLossPct,takeProfitPct:levels.takeProfitPct,qty:round(qty,8),
+    notionalTHB:round(notional,2),riskTHB:risk,entryFeeTHB:round(entryFee,2),
+    entryCostTHB:round(entryCost,2),openedAt:nowIso(),entryType:"USER_BUY"};
+  state.portfolios.stocks.cashTHB-=entryCost;
+  state.positions.push(position);
+  await persist();
+  return {status:200,body:{ok:true,mode:"PAPER_ONLY",opened:true,position}};
+}
 function authorized(req) {
   const supplied=req.headers["x-fast-profit-token"]||"";
   if(!CONTROL_TOKEN||!supplied) return false;
@@ -398,6 +458,11 @@ async function route(req,res) {
   res.setHeader("access-control-allow-origin",DASHBOARD_ORIGIN);
   res.setHeader("vary","Origin");
   if(url.pathname==="/api/status"&&req.method==="GET") return send(res,200,snapshot());
+  if(url.pathname==="/api/stocks/buy"&&req.method==="POST") {
+    const body=await readJsonBody(req);
+    const result=await openStockPaperPosition(String(body.symbol||"").trim().toUpperCase(),Number(body.targetPct));
+    return send(res,result.status,result.body||{error:result.error});
+  }
   if(url.pathname==="/api/control/start"&&req.method==="POST") {
     if(!state.running){state.running=true;state.startedAt=nowIso();await persist();startLoop();}
     return send(res,200,{ok:true,running:true,mode:"PAPER_ONLY"});
