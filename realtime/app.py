@@ -2812,6 +2812,15 @@ DUAL_PAPER_WORKER_STATE = {
 }
 DUAL_PAPER_WORKER_THREAD = None
 DUAL_PAPER_WORKER_LOCK = threading.Lock()
+DUAL_STOCK_BUY_LOCKS = {}
+DUAL_STOCK_BUY_LOCKS_GUARD = threading.Lock()
+
+
+def _dual_stock_buy_lock(user_id: str):
+    with DUAL_STOCK_BUY_LOCKS_GUARD:
+        return DUAL_STOCK_BUY_LOCKS.setdefault(str(user_id), threading.Lock())
+
+
 
 
 
@@ -3245,69 +3254,78 @@ async def dual_paper_order(request: Request):
         raise HTTPException(status_code=422, detail="คู่เหรียญต้องเป็น Spot/USDT")
     if market == "stocks" and (not symbol or not symbol[0].isalpha() or any(not (c.isalnum() or c in ".-") for c in symbol)):
         raise HTTPException(status_code=422, detail="สัญลักษณ์หุ้นไม่ถูกต้อง")
-    rows = _sb_rest("blessing_dual_portfolios", {
-        "select": "id,mode,enabled", "user_id": "eq." + str(user["id"]),
-        "market": "eq." + market, "limit": "1"
-    })
-    if not rows:
-        raise HTTPException(status_code=404, detail="ยังไม่ได้สร้างพอร์ตทดลอง")
-    portfolio = rows[0]
-    if portfolio.get("mode") != "paper" or not portfolio.get("enabled"):
-        raise HTTPException(status_code=409, detail="กรุณาเริ่มพอร์ต Paper ก่อนส่งคำสั่งจำลอง")
-    if market == "stocks" and side == "buy":
-        open_stocks = _sb_rest("blessing_dual_positions", {
-            "select":"id,symbol", "portfolio_id":"eq." + str(portfolio["id"]),
-            "user_id":"eq." + str(user["id"]), "status":"eq.open", "limit":"3"
-        }) or []
-        if len(open_stocks) >= 2:
-            raise HTTPException(status_code=409, detail="พอร์ตหุ้นเปิดครบ 2 สถานะแล้ว")
-        if any(str(row.get("symbol") or "").upper() == symbol for row in open_stocks):
-            raise HTTPException(status_code=409, detail="หุ้นนี้มีสถานะเปิดอยู่แล้ว")
-    market_price = _dual_market_price(market, symbol)
-    # Conservative simulated slippage: buys pay 5 bps more; sells receive 5 bps less.
-    fill_price = market_price * (1.0005 if side == "buy" else 0.9995)
-    position_id = None
-    stop_price = None
-    target_price = None
-    if side == "buy":
-        try:
-            notional = float(body.get("notional"))
-            if market == "stocks":
-                stop_pct = 25.0
-                target_pct = float(body.get("takeProfitPct", 10.0))
-            else:
-                stop_pct = float(body.get("stopLossPct", 1.0))
-                target_pct = float(body.get("takeProfitPct", 2.0))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=422, detail="กรุณาระบุเงินลงทุนและระดับ Stop/Take Profit")
-        target_valid = (5.0 <= target_pct <= 15.0) if market == "stocks" else (0.1 <= target_pct <= 50.0)
-        if not all(math.isfinite(x) for x in (notional, stop_pct, target_pct)) or notional <= 0 or not (0.1 <= stop_pct <= (25 if market == "stocks" else 20)) or not target_valid:
-            detail = "หุ้นต้องกำหนด Take Profit ระหว่าง 5% ถึง 15% และ Stop Loss คงที่ -25%" if market == "stocks" else "ค่าการลงทุนหรือ Stop/Take Profit ไม่อยู่ในช่วงที่อนุญาต"
-            raise HTTPException(status_code=422, detail=detail)
-        quantity = round(notional / fill_price, 10 if market == "crypto" else 6)
-        stop_price = fill_price * (1 - stop_pct / 100)
-        target_price = fill_price * (1 + target_pct / 100)
-    else:
-        position_id = str(body.get("positionId") or "")
-        positions = _sb_rest("blessing_dual_positions", {
-            "select": "id,symbol,quantity", "id": "eq." + position_id,
-            "portfolio_id": "eq." + str(portfolio["id"]),
-            "user_id": "eq." + str(user["id"]), "status": "eq.open", "limit": "1"
-        })
-        if not positions:
-            raise HTTPException(status_code=404, detail="ไม่พบสถานะเปิดที่ต้องการปิด")
-        if positions[0]["symbol"] != symbol:
-            raise HTTPException(status_code=422, detail="สัญลักษณ์ไม่ตรงกับสถานะที่เลือก")
-        quantity = float(positions[0]["quantity"])
 
-    result = _dual_rpc_order({
-        "p_user_id": str(user["id"]), "p_market": market, "p_symbol": symbol,
-        "p_side": side, "p_quantity": quantity, "p_price": fill_price,
-        "p_stop_loss_price": stop_price, "p_take_profit_price": target_price,
-        "p_position_id": position_id, "p_idempotency_key": str(body.get("idempotencyKey") or uuid.uuid4())
-    })
-    return {"ok": True, "mode": "paper", "liveOrdersEnabled": False,
-            "marketPrice": market_price, "simulatedFillPrice": fill_price, "result": result}
+    stock_buy_lock = _dual_stock_buy_lock(str(user["id"])) if market == "stocks" and side == "buy" else None
+    if stock_buy_lock and not stock_buy_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="กำลังประมวลผล BUY หุ้นอยู่ กรุณาลองอีกครั้ง")
+    try:
+        rows = _sb_rest("blessing_dual_portfolios", {
+            "select": "id,mode,enabled", "user_id": "eq." + str(user["id"]),
+            "market": "eq." + market, "limit": "1"
+        })
+        if not rows:
+            raise HTTPException(status_code=404, detail="ยังไม่ได้สร้างพอร์ตทดลอง")
+        portfolio = rows[0]
+        if portfolio.get("mode") != "paper" or not portfolio.get("enabled"):
+            raise HTTPException(status_code=409, detail="กรุณาเริ่มพอร์ต Paper ก่อนส่งคำสั่งจำลอง")
+        if market == "stocks" and side == "buy":
+            open_stocks = _sb_rest("blessing_dual_positions", {
+                "select":"id,symbol", "portfolio_id":"eq." + str(portfolio["id"]),
+                "user_id":"eq." + str(user["id"]), "status":"eq.open", "limit":"3"
+            }) or []
+            if len(open_stocks) >= 2:
+                raise HTTPException(status_code=409, detail="พอร์ตหุ้นเปิดครบ 2 สถานะแล้ว")
+            if any(str(row.get("symbol") or "").upper() == symbol for row in open_stocks):
+                raise HTTPException(status_code=409, detail="หุ้นนี้มีสถานะเปิดอยู่แล้ว")
+
+        if side == "buy":
+            try:
+                notional = float(body.get("notional"))
+                if market == "stocks":
+                    stop_pct = 25.0
+                    target_pct = float(body.get("takeProfitPct", 10.0))
+                else:
+                    stop_pct = float(body.get("stopLossPct", 1.0))
+                    target_pct = float(body.get("takeProfitPct", 2.0))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail="กรุณาระบุเงินลงทุนและระดับ Stop/Take Profit")
+            target_valid = (5.0 <= target_pct <= 15.0) if market == "stocks" else (0.1 <= target_pct <= 50.0)
+            if not all(math.isfinite(x) for x in (notional, stop_pct, target_pct)) or notional <= 0 or not (0.1 <= stop_pct <= (25 if market == "stocks" else 20)) or not target_valid:
+                detail = "หุ้นต้องกำหนด Take Profit ระหว่าง 5% ถึง 15% และ Stop Loss คงที่ -25%" if market == "stocks" else "ค่าการลงทุนหรือ Stop/Take Profit ไม่อยู่ในช่วงที่อนุญาต"
+                raise HTTPException(status_code=422, detail=detail)
+        else:
+            position_id = str(body.get("positionId") or "")
+            positions = _sb_rest("blessing_dual_positions", {
+                "select": "id,symbol,quantity", "id": "eq." + position_id,
+                "portfolio_id": "eq." + str(portfolio["id"]),
+                "user_id": "eq." + str(user["id"]), "status": "eq.open", "limit": "1"
+            })
+            if not positions:
+                raise HTTPException(status_code=404, detail="ไม่พบสถานะเปิดที่ต้องการปิด")
+            if positions[0]["symbol"] != symbol:
+                raise HTTPException(status_code=422, detail="สัญลักษณ์ไม่ตรงกับสถานะที่เลือก")
+            quantity = float(positions[0]["quantity"])
+
+        market_price = _dual_market_price(market, symbol)
+        # Simulated slippage is applied on each side: +5 bps on BUY, -5 bps on SELL.
+        fill_price = market_price * (1.0005 if side == "buy" else 0.9995)
+        position_id = None if side == "buy" else position_id
+        stop_price = fill_price * (1 - stop_pct / 100) if side == "buy" else None
+        target_price = fill_price * (1 + target_pct / 100) if side == "buy" else None
+        if side == "buy":
+            quantity = round(notional / fill_price, 10 if market == "crypto" else 6)
+
+        result = _dual_rpc_order({
+            "p_user_id": str(user["id"]), "p_market": market, "p_symbol": symbol,
+            "p_side": side, "p_quantity": quantity, "p_price": fill_price,
+            "p_stop_loss_price": stop_price, "p_take_profit_price": target_price,
+            "p_position_id": position_id, "p_idempotency_key": str(body.get("idempotencyKey") or uuid.uuid4())
+        })
+        return {"ok": True, "mode": "paper", "liveOrdersEnabled": False,
+                "marketPrice": market_price, "simulatedFillPrice": fill_price, "result": result}
+    finally:
+        if stock_buy_lock:
+            stock_buy_lock.release()
 
 
 @app.post("/ai/dual-paper/refresh")
