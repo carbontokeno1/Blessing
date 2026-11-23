@@ -222,7 +222,7 @@ async function scanStocks() {
   if (!process.env.ALPACA_PAPER_KEY || !process.env.ALPACA_PAPER_SECRET) return { unavailable:true, reason:"ALPACA_PAPER_DATA_CREDENTIALS_MISSING", rows:[], universeCount:0 };
   const headers={ "APCA-API-KEY-ID":process.env.ALPACA_PAPER_KEY, "APCA-API-SECRET-KEY":process.env.ALPACA_PAPER_SECRET };
   const [activeResult,moverResult,clock]=await Promise.all([
-    fetchJson("https://data.alpaca.markets/v1beta1/screener/stocks/most-actives?by=volume&top="+LIMITS.stockScreenerTop,headers),
+    fetchJson("https://data.alpaca.markets/v1beta1/screener/stocks/most-actives?by=volume&top="+LIMITS.stockScreenerTop,headers).catch(e=>({most_actives:[],_error:e.message})),
     fetchJson("https://data.alpaca.markets/v1beta1/screener/stocks/movers?top="+LIMITS.stockMoverTop,headers).catch(e=>({gainers:[],losers:[],_error:e.message})),
     fetchJson("https://paper-api.alpaca.markets/v2/clock",headers)
   ]);
@@ -245,7 +245,8 @@ async function scanStocks() {
     const avgDollarVolume=bars.slice(-20).reduce((sum,b)=>sum+b.close*b.volume,0)/Math.max(1,Math.min(20,bars.length));
     return {market:"stocks",symbol,price,spread:0.001,bars,avgDollarVolume,marketOpen:Boolean(clock.is_open)};
   }).filter(x=>x.price>=LIMITS.minStockPriceUSD && x.bars.length>=35 && x.avgDollarVolume>=LIMITS.minAvgDollarVolume5mUSD);
-  return { unavailable:false, marketOpen:Boolean(clock.is_open), rows, universeCount:symbols.length, activeCount:active.length, moverCount:movers.length, moverWarning:moverResult._error||null };
+  const warnings=[activeResult._error,moverResult._error].filter(Boolean);
+  return { unavailable:false, marketOpen:Boolean(clock.is_open), rows, universeCount:symbols.length, activeCount:active.length, moverCount:movers.length, screenerWarning:warnings.join(" | ")||null };
 }
 function stockOpportunityScore(row,strategyName) {
   const signal=evaluateSignal(row.bars,strategyName);
@@ -340,7 +341,7 @@ async function runScan() {
     }
     const scan={
       at:nowIso(), crypto:{scanned:cryptoRows.length,selected:cryptoChoice.selected,adaptive:cryptoChoice.adaptive},
-      stocks:{scanned:stockRows.length,universeCount:stocks.universeCount||0,activeCount:stocks.activeCount||0,moverCount:stocks.moverCount||0,marketOpen:Boolean(stocks.marketOpen),selected:stockChoice.selected,adaptive:stockChoice.adaptive,unavailable:Boolean(stocks.unavailable),reason:stocks.reason||null},
+      stocks:{scanned:stockRows.length,universeCount:stocks.universeCount||0,activeCount:stocks.activeCount||0,moverCount:stocks.moverCount||0,marketOpen:Boolean(stocks.marketOpen),selected:stockChoice.selected,adaptive:stockChoice.adaptive,unavailable:Boolean(stocks.unavailable),reason:stocks.reason||stocks.screenerWarning||null},
       events
     };
     state.scans.unshift(scan); state.scans=state.scans.slice(0,100);
