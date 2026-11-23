@@ -45,6 +45,21 @@ class AdaptiveStrategyTests(unittest.TestCase):
         stale = build_binance_th_candidates({"BTCUSDT": history[:-1]}, now=now + 10)
         self.assertEqual(stale, [])
 
+    def test_cross_market_opportunity_score_rewards_stronger_net_edge(self):
+        crypto = adaptive_decision("crypto", {
+            "symbol": "BTCUSDT", "m1": .25, "m5": .80, "m15": .5, "m60": .4,
+            "rvol": 3.0, "spreadPct": .05, "breakout": True,
+        }, fee_bps=10, slippage_bps=5)
+        stock = adaptive_decision("stocks", {
+            "symbol": "AAPL", "m1": .08, "m5": .15, "rvol": 2.0,
+            "spreadPct": .08, "breakout": True,
+        }, fee_bps=10, slippage_bps=5)
+        self.assertEqual(crypto["decision"], "PAPER_CANDIDATE")
+        self.assertEqual(stock["decision"], "PAPER_CANDIDATE")
+        self.assertGreater(crypto["opportunityScore"], stock["opportunityScore"])
+        self.assertGreater(crypto["netEdgeProxyPct"], 0)
+        self.assertFalse(crypto["entryAllowed"])
+
     def test_experiment_window_is_fourteen_days(self):
         now = datetime(2026, 11, 23, tzinfo=timezone.utc)
         window = experiment_window(14, now)
