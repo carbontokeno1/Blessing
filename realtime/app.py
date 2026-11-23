@@ -2678,6 +2678,10 @@ async def dual_paper_order(request: Request):
     symbol = str(body.get("symbol") or "").strip().upper()
     if market not in DUAL_PAPER_PORTFOLIOS or side not in {"buy", "sell"}:
         raise HTTPException(status_code=422, detail="ข้อมูลตลาดหรือด้านคำสั่งไม่ถูกต้อง")
+    if market == "crypto" and (not symbol.endswith("USDT") or not symbol[:-4].isalnum() or len(symbol[:-4]) < 2):
+        raise HTTPException(status_code=422, detail="คู่เหรียญต้องเป็น Spot/USDT")
+    if market == "stocks" and (not symbol or not symbol[0].isalpha() or any(not (c.isalnum() or c in ".-") for c in symbol)):
+        raise HTTPException(status_code=422, detail="สัญลักษณ์หุ้นไม่ถูกต้อง")
     rows = _sb_rest("blessing_dual_portfolios", {
         "select": "id,mode,enabled", "user_id": "eq." + str(user["id"]),
         "market": "eq." + market, "limit": "1"
