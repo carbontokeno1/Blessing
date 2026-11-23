@@ -337,7 +337,10 @@ def binance_th_stream_main():
                                 "source": "Binance TH WebSocket live ticker",
                             }
                             state["crypto_quotes"][symbol] = quote_row
-                            if quote_volume and quote_volume > 0:
+                            base_asset = symbol[:-4] if symbol.endswith("USDT") else ""
+                            if (quote_volume and quote_volume >= 250000 and base_asset
+                                    and base_asset not in {"USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD","BFUSD"}
+                                    and not base_asset.endswith(("UP","DOWN","BULL","BEAR","3L","3S","5L","5S"))):
                                 with CRYPTO_TICKER_HISTORY_LOCK:
                                     history = CRYPTO_TICKER_HISTORY.setdefault(symbol, [])
                                     history.append((time.time(), float(price), float(quote_volume), float(bid or 0), float(ask or 0)))
