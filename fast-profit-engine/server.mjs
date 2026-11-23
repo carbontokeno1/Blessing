@@ -126,7 +126,8 @@ export function chooseStrategy(barSets) {
 export function positionSizing({ price, stop, fx = USD_THB_FX, cashTHB = LIMITS.initialCapitalTHB }) {
   if (!(price > 0 && stop > 0 && stop < price && fx > 0)) return null;
   const riskPct = (price-stop)/price;
-  const notionalTHB = Math.min(LIMITS.maxPositionTHB, LIMITS.maxRiskTHB/riskPct, cashTHB/(1+LIMITS.feeRate));
+  const allInRiskPct = riskPct + 2*(LIMITS.feeRate+LIMITS.slippageRate);
+  const notionalTHB = Math.min(LIMITS.maxPositionTHB, LIMITS.maxRiskTHB/allInRiskPct, cashTHB/(1+LIMITS.feeRate));
   if (!(notionalTHB >= 100)) return null;
   const qty = notionalTHB/(price*fx);
   const riskTHB = (price-stop)*qty*fx + notionalTHB*(LIMITS.feeRate*2+LIMITS.slippageRate*2);
@@ -162,7 +163,7 @@ async function persist() {
   await fs.writeFile(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   await fs.rename(tmp, STATE_FILE);
 }
-function dayTrades(market) { const today = dayKey(); return state.trades.filter(t => t.market === market && t.openedAt.slice(0,10) === today); }
+function dayTrades(market) { const today = dayKey(); return [...state.trades, ...state.positions].filter(t => t.market === market && t.openedAt.slice(0,10) === today); }
 function dailyRealizedLoss(market) { return dayTrades(market).reduce((s,t)=>s+Math.max(0,-t.netTHB),0); }
 function lossStreak(market) {
   const rows = dayTrades(market).filter(t=>t.closedAt).sort((a,b)=>b.closedAt.localeCompare(a.closedAt));
@@ -195,7 +196,8 @@ function normalizeBinanceBars(rows) {
 async function scanCrypto() {
   const tickers = await fetchJson("https://api.binance.com/api/v3/ticker/24hr");
   const exclude = new Set(["USDC","FDUSD","TUSD","USDP","DAI","BUSD","USDE","USTC"]);
-  const rows = tickers.filter(t=>t.symbol.endsWith("USDT") && !exclude.has(t.symbol.replace(/USDT$/,"")) && Number(t.quoteVolume)>5000000 && Number(t.lastPrice)>0)
+  const leveraged = ["UP","DOWN","BULL","BEAR","3L","3S","5L","5S"];
+  const rows = tickers.filter(t=>{const base=t.symbol.replace(/USDT$/,"");return t.symbol.endsWith("USDT") && !exclude.has(base) && !leveraged.some(s=>base.endsWith(s)) && Number(t.quoteVolume)>5000000 && Number(t.lastPrice)>0;})
     .sort((a,b)=>Number(b.quoteVolume)-Number(a.quoteVolume)).slice(0,18);
   const bars = await Promise.all(rows.map(async t=>{
     const [klines, book] = await Promise.all([
@@ -250,12 +252,12 @@ function maybeOpen(market, candidate, selectedStrategy) {
   const signal=evaluateSignal(candidate.bars,selectedStrategy);
   if (!signal) return null;
   if (state.positions.some(p=>p.market===market && p.symbol===candidate.symbol)) return null;
-  const strategy=STRATEGIES[selectedStrategy], stop=candidate.price-signal.atr*strategy.stopAtr;
-  const size=positionSizing({price:candidate.price,stop,fx:USD_THB_FX,cashTHB:state.portfolios[market].cashTHB});
+  const strategy=STRATEGIES[selectedStrategy], fillEstimate=candidate.price*(1+LIMITS.slippageRate), stop=candidate.price-signal.atr*strategy.stopAtr;
+  const size=positionSizing({price:fillEstimate,stop,fx:USD_THB_FX,cashTHB:state.portfolios[market].cashTHB});
   if (!size) return null;
   const reason=guardEntry(market,size.riskTHB);
   if (reason) return { skipped:true, reason, market, symbol:candidate.symbol, score:signal.rsi };
-  const fill=candidate.price*(1+LIMITS.slippageRate);
+  const fill=fillEstimate;
   const notional=size.qty*fill*USD_THB_FX, fee=notional*LIMITS.feeRate;
   if (notional+fee>state.portfolios[market].cashTHB) return null;
   const risk=round((fill-stop)*size.qty*USD_THB_FX+notional*(LIMITS.feeRate*2+LIMITS.slippageRate*2),2);
@@ -278,6 +280,7 @@ async function runScan() {
   try {
     const [cryptoRows, stockResult]=await Promise.all([scanCrypto(),scanStocks()]);
     const stockRows=stockResult.rows||[];
+    if (!state.running) return;
     managePositions(cryptoRows);
     managePositions(stockRows);
     const cryptoChoice=chooseStrategy(cryptoRows.map(x=>x.bars));
