@@ -1300,9 +1300,24 @@ connectMarketBridge();
   <div class="authhint">บัญชีต้องได้รับการอนุมัติและเปิดใช้งานโดยผู้ดูแลระบบก่อนเข้าใช้งาน หากยังไม่มีบัญชี โปรดติดต่อผู้ดูแลระบบ</div>
  </form>
 </section>
+<script>
+/* BLESSING X login boot diagnostic: keep the login form responsive if the auth module fails to load. */
+window.__BLESSING_AUTH_READY = false;
+document.addEventListener('DOMContentLoaded', function () {
+  const form = document.getElementById('authForm');
+  if (!form) return;
+  form.addEventListener('submit', function (event) {
+    if (window.__BLESSING_AUTH_READY) return;
+    event.preventDefault();
+    const message = document.getElementById('authMessage');
+    if (message) message.textContent = 'ระบบเข้าสู่ระบบยังโหลดไม่สำเร็จ กรุณารีเฟรชหน้าเว็บ หากยังไม่หายให้แจ้งผู้ดูแลระบบ';
+  });
+});
+</script>
 <script type="module">
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb = createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
+window.__BLESSING_AUTH_READY = true;
 const gate=document.getElementById('authGate'), form=document.getElementById('authForm'), msg=document.getElementById('authMessage'), submit=document.getElementById('authSubmit');
 function say(t){const m=document.getElementById('authMessage');if(m)m.textContent=t}
 let enteringUserId=null,enteringPromise=null,activeUserId=null,forcedPasswordMode=false;
