@@ -2711,8 +2711,10 @@ def _dual_paper_worker_cycle():
                     decision=adaptive_decision("stocks",normalized,fee_bps=10,slippage_bps=5)
                     if decision["decision"]=="PAPER_CANDIDATE":
                         stock_candidates[row["symbol"]]=(row,decision)
+        ranked_by_user = {}
         for exp in experiments:
             uid=str(exp["user_id"])
+            ranked_by_user.setdefault(uid, [])
             for market, candidates, fresh in (
                 ("crypto",crypto_candidates,crypto_fresh),
                 ("stocks",stock_candidates,stock_fresh)
@@ -2737,32 +2739,51 @@ def _dual_paper_worker_cycle():
                 if not fresh or not candidates:
                     continue
                 held={p["symbol"] for p in positions}
-                ranked=[]
                 for symbol,(raw,decision) in candidates.items():
                     if symbol in held:
                         continue
-                    ranked.append((decision.get("momentumProxyPct",0),symbol,raw,decision))
-                ranked.sort(reverse=True)
-                for _,symbol,raw,decision in ranked:
-                    try:
-                        result=_dual_try_adaptive_entry(exp,portfolio,{**raw,**decision},market)
-                        if result:
-                            # Refresh cash/positions after each successful simulated fill.
-                            rows=_sb_rest("blessing_dual_portfolios",{
-                                "select":"id,user_id,market,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity",
-                                "id":"eq."+str(portfolio["id"]),"limit":"1"
-                            }) or []
-                            if rows: portfolio=rows[0]
-                            held.add(symbol)
-                    except Exception as exc:
-                        log.info("Adaptive paper entry skipped %s %s (%s)",market,symbol,type(exc).__name__)
-                        continue
+                    ranked_by_user[uid].append({
+                        "market":market,"symbol":symbol,"raw":raw,"decision":decision,
+                        "portfolio":portfolio,
+                        "rank":float(decision.get("opportunityScore") or 0),
+                    })
+
+        # One cross-market winner per user per cycle. This avoids splitting attention
+        # or firing many low-quality entries just because both scanners are active.
+        entries_opened = 0
+        selected_markets = {}
+        for uid, opportunities in ranked_by_user.items():
+            if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(uid, 0) < 300:
+                continue
+            opportunities.sort(key=lambda x: (x["rank"], x["decision"].get("netEdgeProxyPct",0),
+                                               x["decision"].get("momentumProxyPct",0)), reverse=True)
+            for item in opportunities:
+                if item["rank"] <= 0:
+                    break
+                market=item["market"]
+                portfolio=item["portfolio"]
+                try:
+                    result=_dual_try_adaptive_entry(
+                        next(exp for exp in experiments if str(exp["user_id"])==uid),
+                        portfolio,{**item["raw"],**item["decision"]},market
+                    )
+                    if result:
+                        entries_opened += 1
+                        selected_markets[uid]={"market":market,"symbol":item["symbol"],
+                                               "opportunityScore":item["rank"],
+                                               "netEdgeProxyPct":item["decision"].get("netEdgeProxyPct")}
+                        DUAL_ADAPTIVE_ENTRY_COOLDOWNS[uid]=time.time()
+                        break
+                except Exception as exc:
+                    log.info("Adaptive cross-market entry skipped %s %s (%s)",market,item["symbol"],type(exc).__name__)
+                    continue
         DUAL_PAPER_WORKER_STATE.update({
             "status":"running","lastCycleAt":now.isoformat(),"lastError":None,
             "cycles":DUAL_PAPER_WORKER_STATE.get("cycles",0)+1,
             "positionsChecked":checked,"automaticExits":exits,
             "activeExperiments":len(experiments),
-            "cryptoCandidates":len(crypto_candidates),"stocksCandidates":len(stock_candidates)
+            "cryptoCandidates":len(crypto_candidates),"stocksCandidates":len(stock_candidates),
+            "entriesOpened":entries_opened,"selectedMarkets":selected_markets
         })
     except Exception as exc:
         DUAL_PAPER_WORKER_STATE.update({"status":"error","lastError":type(exc).__name__})
