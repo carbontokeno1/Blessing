@@ -57,6 +57,10 @@ state = {
     "sessionOpen": {},
     "sessionDate": {},
 }
+CRYPTO_TICKER_HISTORY: dict[str, list] = {}
+CRYPTO_TICKER_HISTORY_LOCK = threading.Lock()
+CRYPTO_TICKER_HISTORY_MAX = 5000
+
 clients: set[WebSocket] = set()
 loop: asyncio.AbstractEventLoop | None = None
 stream_thread: threading.Thread | None = None
@@ -318,16 +322,27 @@ def binance_th_stream_main():
                             price = _num(item.get("c"), 0)
                             if not symbol or price <= 0:
                                 continue
+                            bid = _num(item.get("b"), 0)
+                            ask = _num(item.get("a"), 0)
+                            quote_volume = _num(item.get("q"), 0)
                             quote_row = {
                                 "symbol": symbol,
                                 "price": float(price),
-                                "bid": _num(item.get("b"), 0),
-                                "ask": _num(item.get("a"), 0),
+                                "bid": bid,
+                                "ask": ask,
+                                "quoteVolume24h": quote_volume,
+                                "change24hPct": _num(item.get("P"), 0),
                                 "eventTime": item.get("E"),
                                 "receivedAt": now,
                                 "source": "Binance TH WebSocket live ticker",
                             }
                             state["crypto_quotes"][symbol] = quote_row
+                            if quote_volume and quote_volume > 0:
+                                with CRYPTO_TICKER_HISTORY_LOCK:
+                                    history = CRYPTO_TICKER_HISTORY.setdefault(symbol, [])
+                                    history.append((time.time(), float(price), float(quote_volume), float(bid or 0), float(ask or 0)))
+                                    if len(history) > CRYPTO_TICKER_HISTORY_MAX:
+                                        del history[:-CRYPTO_TICKER_HISTORY_MAX]
                             changed_quotes[symbol] = quote_row
                             changed = True
                         if changed:
@@ -2493,6 +2508,59 @@ DUAL_PAPER_WORKER_THREAD = None
 DUAL_PAPER_WORKER_LOCK = threading.Lock()
 
 
+
+def _binance_th_adaptive_candidates():
+    """Build intraday momentum/volume signals only from the official Binance TH live ticker stream."""
+    now=time.time()
+    output=[]
+    with CRYPTO_TICKER_HISTORY_LOCK:
+        snapshot={symbol:list(rows) for symbol,rows in CRYPTO_TICKER_HISTORY.items()}
+    excluded={"USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD","BFUSD"}
+    leveraged=("UP","DOWN","BULL","BEAR","3L","3S","5L","5S")
+    def at_or_before(rows, target):
+        return next((row for row in reversed(rows) if row[0] <= target), None)
+    for symbol,rows in snapshot.items():
+        if not symbol.endswith("USDT"):
+            continue
+        base=symbol[:-4]
+        if not base or base in excluded or base.endswith(leveraged) or len(rows)<30:
+            continue
+        current=rows[-1]
+        if now-current[0] > 5 or current[1] <= 0:
+            continue
+        points={seconds:at_or_before(rows,now-seconds) for seconds in (60,300,900,3600,1200,360)}
+        if any(points[s] is None for s in (60,300,900,3600,1200,360)):
+            continue
+        price=current[1]
+        m1=(price/points[60][1]-1)*100 if points[60][1] else 0
+        m5=(price/points[300][1]-1)*100 if points[300][1] else 0
+        m15=(price/points[900][1]-1)*100 if points[900][1] else 0
+        m60=(price/points[3600][1]-1)*100 if points[3600][1] else 0
+        latest_volume=max(0,current[2]-points[60][2])
+        previous=[]
+        for end_seconds in (120,180,240,300,360):
+            newer=at_or_before(rows,now-(end_seconds-60))
+            older=at_or_before(rows,now-end_seconds)
+            if newer and older and newer[2]>=older[2]:
+                previous.append(newer[2]-older[2])
+        avg_volume=sum(previous)/len(previous) if previous else 0
+        rvol=latest_volume/avg_volume if avg_volume>0 else 0
+        lookback=[row[1] for row in rows if now-1200 <= row[0] < now-60]
+        breakout=bool(lookback and price>max(lookback))
+        bid,ask=current[3],current[4]
+        spread=((ask-bid)/price*100) if bid>0 and ask>=bid else None
+        quote_volume_24h=current[2]
+        if quote_volume_24h < 250000 or spread is None:
+            continue
+        output.append({
+            "symbol":symbol,"source":"Binance TH","price":price,
+            "m1":m1,"m5":m5,"m15":m15,"m60":m60,
+            "rvol":rvol,"relativeVolume":rvol,"breakout":breakout,
+            "spreadPct":spread,"quoteVolume24h":quote_volume_24h,
+            "momentumProxyPct":max(0,m1)+max(0,m5)
+        })
+    return output
+
 def _dual_equity_snapshot(experiment: dict, portfolio: dict, positions: list):
     """Persist a net-of-fees-and-estimated-slippage equity point for the 14-day run."""
     market = portfolio["market"]
@@ -2632,11 +2700,18 @@ def _dual_paper_worker_cycle():
                 "enabled":False,"updated_at":now.isoformat()
             })
 
-        crypto_scan = None
+        crypto_candidates = {}
+        crypto_stamp=state.get("lastCryptoMessageAt")
         try:
-            crypto_scan = altcoin_scanner(refresh=0)
-        except Exception as exc:
-            log.warning("Adaptive crypto scan unavailable (%s)",type(exc).__name__)
+            crypto_age=(now-datetime.fromisoformat(str(crypto_stamp).replace("Z","+00:00"))).total_seconds() if crypto_stamp else 999999
+        except Exception:
+            crypto_age=999999
+        crypto_fresh=state.get("cryptoConnection")=="streaming" and 0 <= crypto_age <= 5
+        if crypto_fresh:
+            for row in _binance_th_adaptive_candidates():
+                decision=adaptive_decision("crypto",row,fee_bps=10,slippage_bps=5)
+                if decision["decision"]=="PAPER_CANDIDATE":
+                    crypto_candidates[row["symbol"]]=(row,decision)
         with UNIVERSE_LOCK:
             stock_scan = dict(UNIVERSE_STATE)
         try:
@@ -2652,17 +2727,6 @@ def _dual_paper_worker_cycle():
                     decision=adaptive_decision("stocks",normalized,fee_bps=10,slippage_bps=5)
                     if decision["decision"]=="PAPER_CANDIDATE":
                         stock_candidates[row["symbol"]]=(row,decision)
-        crypto_candidates = {}
-        crypto_fresh = bool(crypto_scan and crypto_scan.get("status")=="ok"
-                            and crypto_scan.get("exchange")=="Binance")
-        if crypto_fresh:
-            for row in (crypto_scan.get("candidates") or []):
-                if row.get("source")!="Binance" or not row.get("symbol","").endswith("USDT"):
-                    continue
-                decision=adaptive_decision("crypto",row,fee_bps=10,slippage_bps=5)
-                if decision["decision"]=="PAPER_CANDIDATE":
-                    crypto_candidates[row["symbol"]]=(row,decision)
-
         for exp in experiments:
             uid=str(exp["user_id"])
             for market, candidates, fresh in (
