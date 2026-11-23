@@ -150,6 +150,8 @@ if __name__ == "__main__":
     def test_stock_order_rejects_take_profit_outside_five_to_fifteen_percent(self, auth, sb_rest, rpc, quote):
         sb_rest.side_effect = [
             [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}],
+            [],
+            [],
         ]
         for target in (4, 16):
             response = self.client_context.post("/ai/dual-paper/order", json={
