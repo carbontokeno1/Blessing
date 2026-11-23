@@ -216,7 +216,7 @@ function stocksView(){
 
 
 
-let dualTimer=null,dualBusy=false,dualSnapshot=null,dualAdaptiveReport=null;
+let dualTimer=null,dualBusy=false,dualSnapshot=null,dualAdaptiveReport=null,dualAdaptiveFetchedAt=0;
 function dualView(){
  return '<div class="heading"><div><h1>BLESSING · DUAL PAPER PORTFOLIOS</h1><div class="muted">พอร์ตทดลองแยกอิสระ · Binance TH Spot 100 USDT · Webull US Equities 100 USD</div></div><span class="pill">PAPER ONLY · LIVE ORDERS LOCKED</span></div>'+
  '<div class="card section"><div class="heading"><div><h3>เริ่มต้นระบบทดลอง</h3><div class="small muted">สร้างพอร์ตใหม่โดยไม่แก้ไขบัญชี Paper เดิม</div></div><div class="toolbar"><button class="primary" onclick="dualInitialize()">สร้างพอร์ตทดลอง 2 บัญชี</button><button class="secondary" onclick="dualRefresh(true)">รีเฟรชพอร์ต</button></div></div><div class="notice">ค่าธรรมเนียมจำลอง 0.10% · เงินสำรอง 20% · ขาดทุนรายวันไม่เกิน 3% · สูงสุด 2 สถานะต่อพอร์ต<br>หุ้นสหรัฐฯ ล็อก Stop Loss -25% / Take Profit +20% และติดตามปิดสถานะอัตโนมัติ · ราคาหุ้นสดจาก Alpaca IEX; Webull เป็นชื่อพอร์ต · หากไม่มี feed สด ระบบหยุดรับคำสั่ง</div><div id="dualMessage" class="small muted" style="margin-top:10px">กำลังตรวจสอบพอร์ต...</div></div>'+
@@ -273,7 +273,7 @@ async function adaptivePaperStop(){
  if(!confirm('หยุดการทดลองและหยุดเปิดสถานะใหม่ใช่หรือไม่? ระบบยังติดตาม TP/SL ของสถานะที่เปิดอยู่'))return;
  try{await dualApi('/ai/adaptive-paper/stop',{});await dualRefresh(false)}catch(e){alert(e.message)}
 }
-async function adaptivePaperRefresh(){await dualRefresh(false)}
+async function adaptivePaperRefresh(){dualAdaptiveFetchedAt=0;await dualRefresh(false)}
 async function dualInitialize(){const m=document.getElementById('dualMessage');if(m)m.textContent='กำลังสร้างพอร์ตทดลอง...';try{const r=await dualApi('/ai/dual-paper/initialize',{});if(m)m.textContent=r.message||'สร้างพอร์ตทดลองแล้ว';await dualRefresh(false)}catch(e){if(m)m.textContent=e.message}}
 async function dualStart(market){try{await dualApi('/ai/dual-paper/start',{market});await dualRefresh(false)}catch(e){alert(e.message)}}
 async function dualStop(market){try{await dualApi('/ai/dual-paper/stop',{market});await dualRefresh(false)}catch(e){alert(e.message)}}
@@ -326,7 +326,7 @@ function dualRender(snapshot){
 }
 async function dualRefresh(markPrices=true){
  if(dualBusy||role!=='admin')return;dualBusy=true;
- try{if(markPrices)await dualApi('/ai/dual-paper/refresh',{});dualSnapshot=await dualApi('/ai/dual-paper/status');try{dualAdaptiveReport=await dualApi('/ai/adaptive-paper/report')}catch(e){dualAdaptiveReport=null}dualRender(dualSnapshot)}
+ try{if(markPrices)await dualApi('/ai/dual-paper/refresh',{});dualSnapshot=await dualApi('/ai/dual-paper/status');if(Date.now()-dualAdaptiveFetchedAt>60000){try{dualAdaptiveReport=await dualApi('/ai/adaptive-paper/report');dualAdaptiveFetchedAt=Date.now()}catch(e){dualAdaptiveReport=null}}dualRender(dualSnapshot)}
  catch(e){const m=document.getElementById('dualMessage');if(m)m.textContent=e.message}
  finally{dualBusy=false}
 }
