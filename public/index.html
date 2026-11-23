@@ -1317,7 +1317,6 @@ document.addEventListener('DOMContentLoaded', function () {
 <script type="module">
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb = createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
-window.__BLESSING_AUTH_READY = true;
 const gate=document.getElementById('authGate'), form=document.getElementById('authForm'), msg=document.getElementById('authMessage'), submit=document.getElementById('authSubmit');
 function say(t){const m=document.getElementById('authMessage');if(m)m.textContent=t}
 let enteringUserId=null,enteringPromise=null,activeUserId=null,forcedPasswordMode=false;
@@ -1381,6 +1380,7 @@ function showRecoveryForm(){
   say('ตั้งรหัสผ่านใหม่สำเร็จ กำลังเข้าสู่ระบบ...');history.replaceState(null,'',location.pathname);recoveryMode=false;const {data}=await sb.auth.getSession();await enter(data.session);
  };
 }
+window.__BLESSING_AUTH_READY = true;
 form.addEventListener('submit',async e=>{
  if(recoveryMode||forcedPasswordMode)return;
  e.preventDefault();
