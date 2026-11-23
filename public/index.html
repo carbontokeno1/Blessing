@@ -181,7 +181,15 @@ function renderUniverseScanner(){
  const targetRows=document.getElementById('universeTargetRows');
  if(targetRows){
   const targets=all.slice(0,20);
-  const fmtPrice=v=>v==null||!Number.isFinite(Number(v))?'—':'
+  const fmtPrice=v=>v==null||!Number.isFinite(Number(v))?'—':Number(v).toFixed(2);
+  targetRows.innerHTML=targets.length?targets.map((q,i)=>{
+   const p=Number(q.price)||0,entry=Number(q.entryReference)||p;
+   const tp=entry>0?entry*1.20:null,sl=entry>0?entry*0.75:null;
+   const status=q.fastEntry?'FAST ENTRY':(q.setup||'WATCH');
+   const href='https://www.tradingview.com/chart/?symbol='+encodeURIComponent(q.symbol||'');
+   return '<tr><td><b>'+(i+1)+'. '+esc(q.symbol||'—')+'</b></td><td>'+fmtPrice(p)+'</td><td>'+(q.changePct==null?'—':Number(q.changePct).toFixed(2))+'%</td><td><b>'+status+'</b></td><td>'+fmtPrice(entry)+'</td><td class="positive">'+fmtPrice(tp)+'</td><td class="negative">'+fmtPrice(sl)+'</td><td><a target="_blank" rel="noopener" href="'+href+'">กราฟ</a></td></tr>';
+  }).join(''):'<tr><td colspan="8">ยังไม่มีหุ้นที่ผ่านเกณฑ์ WATCH/EARLY จากข้อมูล IEX รอบนี้</td></tr>';
+ }
  if(status)status.textContent=stateLabel+' · '+(d.provider||'Alpaca IEX')+' · '+(d.updatedAt?new Date(d.updatedAt).toLocaleString('th-TH'):'ยังไม่มี');
  const items=all.filter(q=>universeScanFilter==='ALL'||(universeScanFilter==='FAST'&&!!q.fastEntry)||(universeScanFilter==='STRONG'&&q.setup==='STRONG')||(universeScanFilter==='WATCH'&&(q.setup==='WATCH'||q.setup==='EARLY')));
  if(count)count.textContent='ประเมินเชิงลึก '+Number(d.evaluated||0).toLocaleString('en-US')+' หุ้น · ผ่าน '+all.length+' · FAST ENTRY '+Number(d.fastEntryCount||all.filter(q=>q.fastEntry).length)+' · แสดง '+items.length;
