@@ -1427,8 +1427,62 @@ async def status():
 
 
 @app.get("/quotes")
-async def quotes():
-    return {"status": public_status(), "quotes": state["quotes"]}
+async def quotes(symbols: str = ""):
+    """Return normalized stock quotes for the dashboard; retain stale marks with timestamps."""
+    requested = {item.strip().upper() for item in symbols.split(",") if item.strip()}
+    rows = []
+    stale_count = 0
+    now = datetime.now(timezone.utc)
+    for symbol, item in state["quotes"].items():
+        if requested and symbol not in requested:
+            continue
+        raw = item.get("raw") or {}
+        price = _num(raw.get("price"), _num(raw.get("last_price"), None))
+        bid = _num(raw.get("bid"), None)
+        ask = _num(raw.get("ask"), None)
+        if (price is None or price <= 0) and bid and ask and ask >= bid:
+            price = (bid + ask) / 2
+        if price is None or price <= 0:
+            continue
+        daily_open = _num(raw.get("daily_open"), None)
+        change_pct = ((price / daily_open) - 1) * 100 if daily_open and daily_open > 0 else None
+        history = state.get("barHistory", {}).get(symbol, [])
+        closes = [_num(bar.get("close"), None) for bar in history]
+        closes = [value for value in closes if value and value > 0]
+        m1 = ((closes[-1] / closes[-2]) - 1) * 100 if len(closes) >= 2 else None
+        m5 = ((closes[-1] / closes[-6]) - 1) * 100 if len(closes) >= 6 else None
+        received_at = item.get("receivedAt")
+        age = 999999
+        try:
+            received = datetime.fromisoformat(str(received_at).replace("Z", "+00:00"))
+            age = max(0, (now - received).total_seconds())
+        except Exception:
+            pass
+        stale = age > 60
+        stale_count += int(stale)
+        price_time = None
+        stamp = raw.get("timestamp") or raw.get("quote_timestamp")
+        if stamp:
+            try:
+                price_time = int(datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp() * 1000)
+            except Exception:
+                try:
+                    price_time = int(float(stamp))
+                except Exception:
+                    pass
+        rows.append({
+            "symbol": symbol, "price": float(price),
+            "changePct": change_pct,
+            "volume": int(_num(raw.get("daily_volume"), _num(raw.get("volume"), 0)) or 0),
+            "m1": m1, "m5": m5, "receivedAt": received_at,
+            "session": raw.get("session") or "UNKNOWN",
+            "priceTime": price_time, "stale": stale,
+            "staleSeconds": int(age), "source": item.get("source") or "Alpaca IEX",
+        })
+    return {
+        "status": public_status(), "quotes": rows, "count": len(rows),
+        "staleCount": stale_count, "errors": {},
+    }
 
 
 @app.websocket("/stream")
