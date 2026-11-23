@@ -19,6 +19,7 @@ export const LIMITS = Object.freeze({
   stockStopLossPct: 25, stockTakeProfitMinPct: 5, stockTakeProfitMaxPct: 15,
   maxConsecutiveLosses: 3, feeRate: 0.001, slippageRate: 0.0005,
   stockScreenerTop: 100, stockMoverTop: 50, stockBatchSize: 25,
+  stockSnapshotBatchSize: 500, stockIntradayRefineTop: 300,
   minStockPriceUSD: 5, minAvgDollarVolume5mUSD: 250000
 });
 
@@ -234,16 +235,36 @@ async function scanCrypto() {
 async function scanStocks() {
   if (!process.env.ALPACA_PAPER_KEY || !process.env.ALPACA_PAPER_SECRET) return { unavailable:true, reason:"ALPACA_PAPER_DATA_CREDENTIALS_MISSING", rows:[], universeCount:0 };
   const headers={ "APCA-API-KEY-ID":process.env.ALPACA_PAPER_KEY, "APCA-API-SECRET-KEY":process.env.ALPACA_PAPER_SECRET };
-  const [activeResult,moverResult,clock]=await Promise.all([
+  const [activeResult,moverResult,clock,assetResult]=await Promise.all([
     fetchJson("https://data.alpaca.markets/v1beta1/screener/stocks/most-actives?by=volume&top="+LIMITS.stockScreenerTop,headers).catch(e=>({most_actives:[],_error:e.message})),
     fetchJson("https://data.alpaca.markets/v1beta1/screener/stocks/movers?top="+LIMITS.stockMoverTop,headers).catch(e=>({gainers:[],losers:[],_error:e.message})),
-    fetchJson("https://paper-api.alpaca.markets/v2/clock",headers)
+    fetchJson("https://paper-api.alpaca.markets/v2/clock",headers),
+    fetchJson("https://paper-api.alpaca.markets/v2/assets?status=active&asset_class=us_equity",headers).catch(e=>({_error:e.message,assets:[]}))
   ]);
   const active=(activeResult.most_actives||[]).map(x=>x.symbol);
   const movers=[...(moverResult.gainers||[]),...(moverResult.losers||[])].map(x=>x.symbol);
-  const symbols=[...new Set([...active,...movers,...UNIVERSE.stocks])]
-    .filter(x=>typeof x==="string" && /^[A-Z.]{1,8}$/.test(x))
-    .slice(0,LIMITS.stockScreenerTop+LIMITS.stockMoverTop*2+UNIVERSE.stocks.length);
+  const assets=Array.isArray(assetResult)?assetResult.filter(x=>x.status==="active"&&x.tradable===true&&x.class==="us_equity"&&typeof x.symbol==="string"&&/^[A-Z.]{1,8}$/.test(x.symbol)):[];
+  const assetSymbols=assets.map(x=>x.symbol);
+  const snapshotBatches=[];
+  for(let i=0;i<assetSymbols.length;i+=LIMITS.stockSnapshotBatchSize) snapshotBatches.push(assetSymbols.slice(i,i+LIMITS.stockSnapshotBatchSize));
+  const snapshots=await Promise.all(snapshotBatches.map(async batch=>{
+    const url="https://data.alpaca.markets/v2/stocks/snapshots?symbols="+encodeURIComponent(batch.join(","))+"&feed="+encodeURIComponent(process.env.ALPACA_DATA_FEED||"iex");
+    return fetchJson(url,headers).catch(e=>{console.warn("ALPACA_SNAPSHOT_BATCH_SKIP",e.message);return {};});
+  }));
+  const turnover=[];
+  for(const payload of snapshots){
+    const map=payload.snapshots||payload;
+    for(const [symbol,snap] of Object.entries(map||{})){
+      if(!assetSymbols.includes(symbol)) continue;
+      const price=Number(snap.latestTrade?.p||snap.minuteBar?.c||snap.dailyBar?.c||0);
+      const dailyDollarVolume=Number(snap.dailyBar?.c||price)*Number(snap.dailyBar?.v||0);
+      if(price>=LIMITS.minStockPriceUSD&&dailyDollarVolume>0)turnover.push({symbol,price,dailyDollarVolume});
+    }
+  }
+  turnover.sort((a,b)=>b.dailyDollarVolume-a.dailyDollarVolume);
+  const liquidUniverse=turnover.slice(0,LIMITS.stockIntradayRefineTop).map(x=>x.symbol);
+  const symbols=[...new Set([...liquidUniverse,...active,...movers,...UNIVERSE.stocks])]
+    .filter(x=>typeof x==="string" && /^[A-Z.]{1,8}$/.test(x));
   const batches=[];
   for(let i=0;i<symbols.length;i+=LIMITS.stockBatchSize) batches.push(symbols.slice(i,i+LIMITS.stockBatchSize));
   const payloads=await Promise.all(batches.map(batch=>{
@@ -258,8 +279,10 @@ async function scanStocks() {
     const avgDollarVolume=bars.slice(-20).reduce((sum,b)=>sum+b.close*b.volume,0)/Math.max(1,Math.min(20,bars.length));
     return {market:"stocks",symbol,price,spread:0.001,bars,avgDollarVolume,marketOpen:Boolean(clock.is_open)};
   }).filter(x=>x.price>=LIMITS.minStockPriceUSD && x.bars.length>=35 && x.avgDollarVolume>=LIMITS.minAvgDollarVolume5mUSD);
-  const warnings=[activeResult._error,moverResult._error].filter(Boolean);
-  return { unavailable:false, marketOpen:Boolean(clock.is_open), rows, universeCount:symbols.length, activeCount:active.length, moverCount:movers.length, screenerWarning:warnings.join(" | ")||null };
+  const warnings=[activeResult._error,moverResult._error,assetResult?._error].filter(Boolean);
+  return { unavailable:false, marketOpen:Boolean(clock.is_open), rows, universeCount:assets.length||symbols.length,
+    candidatePoolCount:symbols.length, snapshotCount:turnover.length, activeCount:active.length, moverCount:movers.length,
+    screenerWarning:warnings.join(" | ")||null };
 }
 function stockOpportunityScore(row,strategyName) {
   const signal=evaluateSignal(row.bars,strategyName);
