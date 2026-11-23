@@ -26,27 +26,22 @@ def classify_regime(market: str, metrics: dict) -> dict:
     rvol = _n(metrics.get("rvol"), _n(metrics.get("relativeVolume")))
     spread = _n(metrics.get("spreadPct"), 999.0)
     breakout = bool(metrics.get("breakout"))
-    volatility_limit = 1.5 if market == "crypto" else 1.0
-
-    if spread <= 0 or spread > (0.5 if market == "crypto" else 0.5):
+    # Identical entry filters for crypto and equities; only exit targets differ.
+    volatility_limit = 1.5
+    if spread <= 0 or spread > 0.5:
         return {"regime": "illiquid", "strategy": "capital_protection", "allowEntry": False,
                 "reason": "spread_out_of_range"}
     if abs(m1) >= volatility_limit or abs(m5) >= volatility_limit * 2.5:
         return {"regime": "high_volatility", "strategy": "capital_protection", "allowEntry": False,
                 "reason": "volatility_filter"}
-    aligned = (m1 > 0 and m5 > 0 and (m15 > 0 if market == "crypto" else True)
-               and (m60 > 0 if market == "crypto" else True))
-    down = (m1 < 0 and m5 < 0 and (m15 < 0 if market == "crypto" else True)
-            and (m60 < 0 if market == "crypto" else True))
+    aligned = m1 > 0 and m5 > 0
+    down = m1 < 0 and m5 < 0
     if down:
         return {"regime": "downtrend", "strategy": "capital_protection", "allowEntry": False,
                 "reason": "trend_not_positive"}
-    if aligned and rvol >= 1.5 and breakout:
+    if aligned and rvol >= 2.0 and breakout:
         return {"regime": "uptrend_breakout", "strategy": "trend_momentum", "allowEntry": True,
                 "reason": "aligned_momentum_volume_breakout"}
-    if aligned and rvol >= 1.5:
-        return {"regime": "uptrend", "strategy": "trend_following", "allowEntry": True,
-                "reason": "aligned_momentum_and_volume"}
     return {"regime": "range_or_unclear", "strategy": "wait_for_confirmation", "allowEntry": False,
             "reason": "insufficient_alignment"}
 
