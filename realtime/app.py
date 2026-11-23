@@ -1649,7 +1649,7 @@ def dual_paper_initialize(request: Request):
             "user_id": uid, "market": market, "broker": config["broker"],
             "currency": config["currency"], "initial_capital": config["capital"],
             "cash_balance": config["capital"], "mode": "paper", "enabled": False,
-            "reserve_cash_pct": 20, "risk_per_trade_pct": 1,
+            "reserve_cash_pct": 0, "risk_per_trade_pct": 1,
             "max_daily_loss_pct": 3, "max_weekly_loss_pct": 6,
             "max_drawdown_pct": 10, "max_open_positions": 2,
             "peak_equity": config["capital"],
@@ -2403,7 +2403,7 @@ def _dual_paper_ensure_portfolio(user_id: str, config: dict) -> dict:
         "user_id":user_id, "market":config["market"], "broker":config["broker"],
         "currency":config["currency"], "initial_capital":config["initial_capital"],
         "cash_balance":config["initial_capital"], "realized_pnl":0, "fees_paid":0,
-        "mode":"paper", "enabled":False, "reserve_cash_pct":20,
+        "mode":"paper", "enabled":False, "reserve_cash_pct":0,
         "risk_per_trade_pct":1, "max_daily_loss_pct":3,
         "max_weekly_loss_pct":6, "max_drawdown_pct":10,
         "max_open_positions":2, "peak_equity":config["initial_capital"],
@@ -2616,12 +2616,12 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     if len(positions) >= int(portfolio.get("max_open_positions") or 2):
         return None
     stop_pct, target_pct = ((1.0,2.0) if market=="crypto" else (25.0,20.0))
-    # Risk 0.5% of equity per entry, with a 20% equity notional cap and reserve cash.
+    # Risk 0.5% of equity per entry; no cash reserve or fixed portfolio notional cap.
     risk_budget = equity * 0.005
     notional_by_risk = risk_budget / (stop_pct/100)
-    reserve = float(portfolio.get("cash_balance") or 0) * float(portfolio.get("reserve_cash_pct") or 20)/100
+    reserve = float(portfolio.get("cash_balance") or 0) * float(portfolio.get("reserve_cash_pct") or 0)/100
     deployable = max(0.0,float(portfolio.get("cash_balance") or 0)-reserve)
-    notional = min(notional_by_risk, equity*0.20, deployable)
+    notional = min(notional_by_risk, deployable)
     if notional < 1.0:
         return None
     fill_price = market_price * 1.0005
