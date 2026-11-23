@@ -2495,6 +2495,8 @@ def _stock_paper_worker_cycle():
                     "symbol":pos["symbol"],"reason":reason,"result":result
                 })
                 STOCK_PAPER_WORKER_STATE["actions"] = STOCK_PAPER_WORKER_STATE["actions"][-20:]
+        # Stock Paper is manual-BUY only. This legacy worker remains close/mark-only.
+        continue
         if not setting.get("enabled") or not fresh:
             continue
         positions = _sb_rest("stock_paper_positions", {
@@ -2786,7 +2788,7 @@ def dual_paper_status(request: Request):
             "riskLimits":{"maxPositionLossPct":25,"maxTotalAllocationPct":30,
                 "reserveCashPct":0,"dailyLossLimitEnabled":False,
                 "weeklyLossLimitEnabled":False,"cumulativeLossLimitEnabled":False,
-                "drawdownStopEnabled":False,"maxOpenPositions":None},
+                "drawdownStopEnabled":False,"maxOpenPositions":2 if market == "stocks" else None},
             "openPositions":positions,"recentOrders":orders,
             "tradingRules":({"stopLossPct":25,"takeProfitMinPct":5,"takeProfitMaxPct":15,
                              "maxOpenPositions":2,"manualBuyOnly":True,
