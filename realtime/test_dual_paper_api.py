@@ -18,139 +18,87 @@ class DualPaperApiTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.client_context.__exit__(None, None, None)
 
-    @patch.object(blessing_app, "_sb_rpc")
-    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
-    def test_buy_uses_authenticated_user_and_simulated_price_only(self, auth, rpc):
-        rpc.return_value = {"ok": True, "orderId": "paper-order", "price": 60000.0}
-        response = self.client_context.post("/ai/dual-paper/order", json={
-            "user_id": "99999999-9999-4999-8999-999999999999",
-            "market": "crypto", "symbol": "BTCUSDT", "side": "buy",
-            "quantity": 0.001, "price": 60000,
-            "stop_loss_pct": 1, "take_profit_pct": 2,
-            "price_source": "manual_simulation",
-            "idempotency_key": "test-order-key-00001",
-        })
-        self.assertEqual(response.status_code, 200)
-        payload = rpc.call_args.args[1]
-        self.assertEqual(payload["p_user_id"], "11111111-1111-4111-8111-111111111111")
-        self.assertEqual(payload["p_market"], "crypto")
-        self.assertEqual(payload["p_idempotency_key"], "crypto:test-order-key-00001")
-        self.assertEqual(payload["p_price"], 60000.0)
-        self.assertEqual(payload["p_stop_loss_price"], 59400.0)
-        self.assertEqual(payload["p_take_profit_price"], 61200.0)
-        self.assertEqual(response.json()["priceSource"], "manual_simulation")
-
-
-
-    @patch.object(blessing_app, "_binance_th_public_price", return_value=61000.0)
+    @patch.object(blessing_app, "_dual_market_price", return_value=200.0)
+    @patch.object(blessing_app, "_dual_rpc_order")
     @patch.object(blessing_app, "_sb_rest")
-    @patch.object(blessing_app, "_dual_paper_portfolio_rows", return_value=[{
-        "id": "22222222-2222-4222-8222-222222222222",
-        "market": "crypto", "cash_balance": 39.94,
-        "initial_capital": 100, "peak_equity": 100,
-    }])
     @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
-    def test_refresh_marks_to_market_and_updates_peak_equity(self, auth, portfolios, sb_rest, quote):
-        sb_rest.side_effect = [
-            [{"id": "33333333-3333-4333-8333-333333333333", "symbol": "BTCUSDT",
-              "quantity": 0.001, "entry_price": 60000, "entry_fee": 0.06}],
-            [],
-            [{"quantity": 0.001, "current_price": 61000, "entry_price": 60000}],
-            [],
-        ]
-        response = self.client_context.post("/ai/dual-paper/refresh", json={})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["updatedCount"], 1)
-        self.assertFalse(response.json()["automaticTakeProfitStopLoss"])
-        position_patch = sb_rest.call_args_list[1].args[1]
-        position_body = sb_rest.call_args_list[1].args[3]
-        self.assertEqual(position_body["current_price"], 61000.0)
-        self.assertAlmostEqual(position_body["unrealized_pnl"], 0.94, places=8)
-        portfolio_body = sb_rest.call_args_list[3].args[3]
-        self.assertAlmostEqual(portfolio_body["peak_equity"], 100.94, places=8)
-
-    @patch.object(blessing_app, "_binance_th_public_price", return_value=61000.0)
-    @patch.object(blessing_app, "_sb_rpc")
-    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
-    def test_market_price_is_fetched_again_by_server_for_order(self, auth, rpc, quote):
-        rpc.return_value = {"ok": True, "orderId": "paper-order"}
-        response = self.client_context.post("/ai/dual-paper/order", json={
-            "market": "crypto", "symbol": "BTCUSDT", "side": "buy",
-            "quantity": 0.001, "price": 1,
-            "stop_loss_pct": 1, "take_profit_pct": 2,
-            "price_source": "binance_th_public",
-            "idempotency_key": "test-order-key-00005",
-        })
-        self.assertEqual(response.status_code, 200)
-        quote.assert_called_once_with("BTCUSDT")
-        self.assertEqual(rpc.call_args.args[1]["p_price"], 61000.0)
-        self.assertEqual(rpc.call_args.args[1]["p_stop_loss_price"], 60390.0)
-        self.assertEqual(rpc.call_args.args[1]["p_take_profit_price"], 62220.0)
-        self.assertEqual(response.json()["priceSource"], "binance_th_public")
-
-
-    @patch.object(blessing_app, "_dual_stock_market_price", return_value=(200.0, "webull_stream"))
-    @patch.object(blessing_app, "_sb_rpc")
-    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
-    def test_stock_order_uses_fresh_webull_stream_price(self, auth, rpc, quote):
+    def test_stock_order_enforces_fixed_25_percent_stop_and_20_percent_target(self, auth, sb_rest, rpc, quote):
+        sb_rest.return_value = [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}]
         rpc.return_value = {"ok": True, "orderId": "paper-stock-order"}
         response = self.client_context.post("/ai/dual-paper/order", json={
-            "market": "stocks", "symbol": "AAPL", "side": "buy",
-            "quantity": 0.1, "price": 1,
-            "stop_loss_pct": 1, "take_profit_pct": 2,
-            "price_source": "webull_stream",
-            "idempotency_key": "test-order-key-00006",
+            "market": "stocks", "symbol": "AAPL", "side": "buy", "notional": 20,
+            "stopLossPct": 1, "takeProfitPct": 2, "idempotencyKey": "test-stock-risk-25-20-001"
         })
         self.assertEqual(response.status_code, 200)
-        quote.assert_called_once_with("AAPL")
-        payload = rpc.call_args.args[1]
-        self.assertEqual(payload["p_price"], 200.0)
-        self.assertEqual(payload["p_stop_loss_price"], 198.0)
-        self.assertEqual(payload["p_take_profit_price"], 204.0)
+        payload = rpc.call_args.args[0]
+        self.assertEqual(payload["p_user_id"], "11111111-1111-4111-8111-111111111111")
+        self.assertAlmostEqual(payload["p_price"], 200.1)
+        self.assertAlmostEqual(payload["p_stop_loss_price"], 150.075)
+        self.assertAlmostEqual(payload["p_take_profit_price"], 240.12)
+        quote.assert_called_once_with("stocks", "AAPL")
 
-    @patch.object(blessing_app, "_sb_rpc")
+    @patch.object(blessing_app, "_dual_market_price", return_value=60000.0)
+    @patch.object(blessing_app, "_dual_rpc_order")
+    @patch.object(blessing_app, "_sb_rest")
     @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
-    def test_unlabeled_or_live_price_is_rejected(self, auth, rpc):
+    def test_crypto_keeps_per_order_risk_values(self, auth, sb_rest, rpc, quote):
+        sb_rest.return_value = [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}]
+        rpc.return_value = {"ok": True}
         response = self.client_context.post("/ai/dual-paper/order", json={
-            "market": "crypto", "symbol": "BTCUSDT", "side": "buy",
-            "quantity": 0.001, "price": 60000,
-            "stop_loss_price": 59400, "take_profit_price": 61200,
-            "idempotency_key": "test-order-key-00002",
+            "market": "crypto", "symbol": "BTCUSDT", "side": "buy", "notional": 20,
+            "stopLossPct": 1, "takeProfitPct": 2, "idempotencyKey": "test-crypto-risk-unchanged-01"
         })
-        self.assertEqual(response.status_code, 422)
-        rpc.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        payload = rpc.call_args.args[0]
+        self.assertAlmostEqual(payload["p_price"], 60030.0)
+        self.assertAlmostEqual(payload["p_stop_loss_price"], 59429.7)
+        self.assertAlmostEqual(payload["p_take_profit_price"], 61230.6)
+        quote.assert_called_once_with("crypto", "BTCUSDT")
 
-    @patch.object(blessing_app, "_sb_rpc")
+    @patch.object(blessing_app, "_dual_market_price", return_value=100.0)
+    @patch.object(blessing_app, "_dual_rpc_order")
+    @patch.object(blessing_app, "_sb_rest")
     @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
-    def test_wrong_symbol_for_market_is_rejected_before_rpc(self, auth, rpc):
-        response = self.client_context.post("/ai/dual-paper/order", json={
-            "market": "crypto", "symbol": "AAPL", "side": "buy",
-            "quantity": 1, "price": 100,
-            "stop_loss_pct": 1, "take_profit_pct": 2,
-            "price_source": "manual_simulation",
-            "idempotency_key": "test-order-key-00003",
-        })
-        self.assertEqual(response.status_code, 422)
-        rpc.assert_not_called()
-
-    @patch.object(blessing_app, "_sb_rpc")
-    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
-    def test_sell_requires_position_and_uses_position_id(self, auth, rpc):
+    def test_sell_uses_owned_open_position_and_live_price(self, auth, sb_rest, rpc, quote):
+        sb_rest.side_effect = [
+            [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}],
+            [{"id": "33333333-3333-4333-8333-333333333333", "symbol": "AAPL", "quantity": 0.5}]
+        ]
         rpc.return_value = {"ok": True, "realizedPnl": 1.25}
         response = self.client_context.post("/ai/dual-paper/order", json={
             "market": "stocks", "symbol": "AAPL", "side": "sell",
-            "quantity": 0.5, "price": 101,
-            "position_id": "33333333-3333-4333-8333-333333333333",
-            "price_source": "manual_simulation",
-            "idempotency_key": "test-order-key-00004",
+            "positionId": "33333333-3333-4333-8333-333333333333",
+            "idempotencyKey": "test-stock-sell-position-0001"
         })
         self.assertEqual(response.status_code, 200)
-        payload = rpc.call_args.args[1]
-        self.assertEqual(payload["p_side"], "sell")
+        payload = rpc.call_args.args[0]
         self.assertEqual(payload["p_position_id"], "33333333-3333-4333-8333-333333333333")
-        self.assertIsNone(payload["p_stop_loss_price"])
-        self.assertIsNone(payload["p_take_profit_price"])
+        self.assertEqual(payload["p_quantity"], 0.5)
+        self.assertAlmostEqual(payload["p_price"], 99.95)
+        quote.assert_called_once_with("stocks", "AAPL")
 
+    @patch.object(blessing_app, "_sb_rest")
+    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
+    def test_wrong_symbol_is_rejected_before_database_access(self, auth, sb_rest):
+        response = self.client_context.post("/ai/dual-paper/order", json={
+            "market": "crypto", "symbol": "AAPL", "side": "buy", "notional": 20,
+            "idempotencyKey": "test-wrong-symbol-market-001"
+        })
+        self.assertEqual(response.status_code, 422)
+        sb_rest.assert_not_called()
+
+    @patch.object(blessing_app, "_dual_market_price", side_effect=blessing_app.HTTPException(status_code=503, detail="NO_FRESH_LIVE_PRICE"))
+    @patch.object(blessing_app, "_dual_rpc_order")
+    @patch.object(blessing_app, "_sb_rest")
+    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
+    def test_missing_live_price_blocks_order(self, auth, sb_rest, rpc, quote):
+        sb_rest.return_value = [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}]
+        response = self.client_context.post("/ai/dual-paper/order", json={
+            "market": "stocks", "symbol": "AAPL", "side": "buy", "notional": 20,
+            "idempotencyKey": "test-no-live-price-blocks-001"
+        })
+        self.assertEqual(response.status_code, 503)
+        rpc.assert_not_called()
 
 
 class BinanceTHReadOnlyAdapterTests(unittest.TestCase):
