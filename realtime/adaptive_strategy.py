@@ -124,6 +124,14 @@ def adaptive_decision(market: str, candidate: dict, fee_bps: float = 10.0,
     # A modest hurdle: expected short-term movement proxy must exceed estimated friction.
     cost_ok = momentum > round_trip_cost_pct * 1.5
     allowed = bool(regime["allowEntry"] and cost_ok)
+    rvol = max(0.0, _n(candidate.get("rvol"), _n(candidate.get("relativeVolume"))))
+    # A relative cross-market ranking proxy, not a forecast or promise of returns.
+    edge_ratio = momentum / max(round_trip_cost_pct, 0.01)
+    trend_points = min(40.0, edge_ratio * 8.0)
+    volume_points = min(25.0, rvol / 4.0 * 25.0)
+    breakout_points = 20.0 if bool(candidate.get("breakout")) else 0.0
+    alignment_points = 15.0 if regime["allowEntry"] else 0.0
+    opportunity_score = round(trend_points + volume_points + breakout_points + alignment_points, 2)
     return {
         **regime,
         "market": market,
@@ -131,9 +139,11 @@ def adaptive_decision(market: str, candidate: dict, fee_bps: float = 10.0,
         "decision": "PAPER_WATCH" if not allowed else "PAPER_CANDIDATE",
         "estimatedRoundTripCostPct": round(round_trip_cost_pct, 4),
         "momentumProxyPct": round(momentum, 4),
+        "netEdgeProxyPct": round(momentum - round_trip_cost_pct, 4),
+        "opportunityScore": opportunity_score if allowed else 0.0,
         "costFilterPassed": cost_ok,
         "entryAllowed": False,
-        "note": "เป็นเพียงสัญญาณคัดกรอง ยังไม่ใช่คำสั่งซื้อขายอัตโนมัติ",
+        "note": "คะแนนใช้จัดอันดับสัญญาณข้ามตลาด ไม่ใช่การคาดการณ์หรือรับประกันผลตอบแทน",
     }
 
 
