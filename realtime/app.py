@@ -2886,7 +2886,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     # Hard cap: an individual position may not lose more than 25% of its entry notional.
     stop_pct = min(25.0, max(0.1, stop_pct))
     max_notional_pct = float(strategy_config.get("max_notional_pct") or 6.0)
-    max_total_allocation_pct = float(strategy_config.get("max_total_allocation_pct") or 30.0)
+    max_total_allocation_pct = float(strategy_config.get("max_total_allocation_pct") or 100.0)
     all_portfolios = _sb_rest("blessing_dual_portfolios", {
         "select":"id,market,cash_balance,initial_capital",
         "user_id":"eq."+user_id,"mode":"eq.paper","limit":"2"
@@ -3439,7 +3439,7 @@ def adaptive_paper_start(request: Request):
         "status":"active","markets":["crypto","stocks"],
         "config":{"strategy":"shared_adaptive_momentum","selection":"independent_per_market",
                   "risk_per_trade_pct":25,"max_position_loss_pct":25,
-                  "max_total_allocation_pct":30,"max_notional_pct":30,
+                  "max_total_allocation_pct":100,"max_notional_pct":30,
                   "reserve_cash_pct":0,"daily_loss_limit_enabled":False,
                   "weekly_loss_limit_enabled":False,"cumulative_loss_limit_enabled":False,
                   "drawdown_stop_enabled":False,
