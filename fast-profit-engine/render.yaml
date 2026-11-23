@@ -12,7 +12,6 @@ services:
     startCommand: npm start
     autoDeployTrigger: off
     healthCheckPath: /health
-    maxShutdownDelaySeconds: 30
     numInstances: 1
     envVars:
       - key: FAST_PROFIT_CONTROL_TOKEN
