@@ -15,7 +15,7 @@ const PAPER_ONLY = true;
 
 export const LIMITS = Object.freeze({
   initialCapitalTHB: 10000, maxPositionTHB: 2000, maxRiskTHB: 50,
-  maxOpenPositions: 3, maxEntriesPerDay: 8, maxDailyLossTHB: 200,
+  maxOpenPositions: 3, maxDailyLossTHB: 200,
   maxConsecutiveLosses: 3, feeRate: 0.001, slippageRate: 0.0005
 });
 
@@ -183,7 +183,6 @@ function portfolioEquity(market) {
 function guardEntry(market, risk) {
   const open=state.positions.filter(p=>p.market===market).length;
   if (open >= LIMITS.maxOpenPositions) return "MAX_OPEN_POSITIONS";
-  if (dayTrades(market).length >= LIMITS.maxEntriesPerDay) return "MAX_DAILY_ENTRIES";
   if (dailyRealizedLoss(market)+openRisk(market)+risk > LIMITS.maxDailyLossTHB) return "DAILY_RISK_LIMIT";
   if (lossStreak(market) >= LIMITS.maxConsecutiveLosses) return "LOSS_STREAK_LIMIT";
   if (state.portfolios[market].cashTHB < 100) return "INSUFFICIENT_PAPER_CASH";
