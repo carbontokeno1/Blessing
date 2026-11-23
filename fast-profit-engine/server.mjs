@@ -415,7 +415,8 @@ async function openStockPaperPosition(symbol, targetPct) {
   const slots=Math.max(1,LIMITS.maxOpenPositions-existing.length);
   const cash=state.portfolios.stocks.cashTHB;
   const riskPct=(LIMITS.stockStopLossPct/100)+2*(LIMITS.feeRate+LIMITS.slippageRate);
-  const notional=Math.min(LIMITS.maxPositionTHB,cash/slots/(1+LIMITS.feeRate),LIMITS.maxRiskTHB/riskPct);
+  const perSlotRiskBudget=LIMITS.maxDailyLossTHB/LIMITS.maxOpenPositions;
+  const notional=Math.min(LIMITS.maxPositionTHB,cash/slots/(1+LIMITS.feeRate),perSlotRiskBudget/riskPct);
   if (!(notional>=100)) return {status:409,error:"INSUFFICIENT_PAPER_CASH_OR_RISK_BUDGET"};
   const qty=notional/(fill*USD_THB_FX);
   const entryFee=notional*LIMITS.feeRate;
