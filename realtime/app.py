@@ -1024,6 +1024,14 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     rvol = bars[-1]["volume"] / average_volume if average_volume > 0 else None
     prior_highs = [x["high"] for x in bars[-6:-1] if x["high"]]
     breakout = bool(prior_highs and price > max(prior_highs))
+    breakout_level = max(prior_highs) if prior_highs else None
+    recent_lows = [x["low"] for x in bars[-5:] if x.get("low") and x["low"] > 0]
+    recent_swing_low = min(recent_lows) if recent_lows else None
+    # A transparent reference plan: current quote as reference, recent 5-bar low as
+    # invalidation, and a 2R objective. This is informational, not an order signal.
+    risk_stop = recent_swing_low * 0.998 if recent_swing_low and recent_swing_low < price else None
+    risk_per_share = price - risk_stop if risk_stop else None
+    risk_target_2r = price + (2 * risk_per_share) if risk_per_share else None
 
     score = 0.0
     reasons = []
@@ -1099,6 +1107,12 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
         "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
         "score": round(score, 1), "setup": setup,
         "reasons": reasons, "riskFlags": risks,
+        "breakoutLevel": breakout_level,
+        "recentSwingLow": recent_swing_low,
+        "entryReference": price,
+        "riskStop": risk_stop,
+        "riskTarget2R": risk_target_2r,
+        "riskRewardRatio": 2.0 if risk_stop and risk_target_2r else None,
         "forecast10m": forecast, "receivedAt": datetime.now(timezone.utc).isoformat(),
         "dataFeed": "IEX", "dailyVolumeIex": int(daily_volume),
     }
