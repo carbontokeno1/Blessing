@@ -216,11 +216,12 @@ function stocksView(){
 
 
 
-let dualTimer=null,dualBusy=false,dualSnapshot=null;
+let dualTimer=null,dualBusy=false,dualSnapshot=null,dualAdaptiveReport=null,dualAdaptiveFetchedAt=0;
 function dualView(){
  return '<div class="heading"><div><h1>BLESSING · DUAL PAPER PORTFOLIOS</h1><div class="muted">พอร์ตทดลองแยกอิสระ · Binance TH Spot 100 USDT · Webull US Equities 100 USD</div></div><span class="pill">PAPER ONLY · LIVE ORDERS LOCKED</span></div>'+
  '<div class="card section"><div class="heading"><div><h3>เริ่มต้นระบบทดลอง</h3><div class="small muted">สร้างพอร์ตใหม่โดยไม่แก้ไขบัญชี Paper เดิม</div></div><div class="toolbar"><button class="primary" onclick="dualInitialize()">สร้างพอร์ตทดลอง 2 บัญชี</button><button class="secondary" onclick="dualRefresh(true)">รีเฟรชพอร์ต</button></div></div><div class="notice">ค่าธรรมเนียมจำลอง 0.10% · เงินสำรอง 20% · ขาดทุนรายวันไม่เกิน 3% · สูงสุด 2 สถานะต่อพอร์ต<br>หุ้นสหรัฐฯ ล็อก Stop Loss -25% / Take Profit +20% และติดตามปิดสถานะอัตโนมัติ · ราคาหุ้นสดจาก Alpaca IEX; Webull เป็นชื่อพอร์ต · หากไม่มี feed สด ระบบหยุดรับคำสั่ง</div><div id="dualMessage" class="small muted" style="margin-top:10px">กำลังตรวจสอบพอร์ต...</div></div>'+
  '<div id="dualPortfolioCards" class="grid"><div class="card">กำลังโหลดพอร์ต...</div></div>'+
+ '<div class="card section"><div class="heading"><div><h3>Adaptive Paper · ทดลอง 14 วัน</h3><div class="small muted">เลือกกลยุทธ์ตามสภาพตลาดอัตโนมัติ · Crypto และหุ้นสหรัฐฯ · วัดกำไรสุทธิหลัง Fee/Slippage และ Maximum Drawdown</div></div><div class="toolbar"><button class="primary" onclick="adaptivePaperStart()">เริ่มทดลอง 14 วัน</button><button class="secondary" onclick="adaptivePaperStop()">หยุดทดลอง</button><button class="secondary" onclick="adaptivePaperRefresh()">รีเฟรชผล</button></div></div><div id="adaptivePaperReport" class="small muted">ยังไม่มีการทดลอง 14 วัน</div></div>'+
  '<div class="card section"><h3>ส่งคำสั่ง Paper ด้วยราคาตลาดจริง</h3><div class="small muted">ดึงราคาสดจากแหล่งตลาดโดยตรงทุกครั้งก่อนส่งคำสั่ง · ไม่อนุญาตให้กรอกราคาเองหรือใช้ราคาสำรอง</div><div class="grid" style="margin-top:12px">'+
  '<div><label class="small">ตลาด</label><select id="dualMarket" class="input" onchange="dualMarketChanged()"><option value="crypto">Crypto · Binance TH Spot · USDT</option><option value="stocks">US Stocks · Webull · USD</option></select></div>'+
  '<div><label class="small">สัญลักษณ์</label><input id="dualSymbol" class="input" value="BTCUSDT" maxlength="20" autocapitalize="characters"></div>'+
@@ -264,6 +265,15 @@ window.updateDualLiveStocks=function(rows){
  if(el)el.value=dualFmt(price,8)+' USD';
  if(info)info.textContent='LIVE STREAM · '+(q.source||'Stock market feed')+' · '+new Date(q.receivedAt).toLocaleTimeString('th-TH');
 };
+async function adaptivePaperStart(){
+ if(!confirm('เริ่ม Adaptive Paper Trading 14 วันทั้ง Crypto และหุ้นสหรัฐฯ ใช่หรือไม่? ระบบจะส่งเฉพาะคำสั่งจำลอง ไม่มีคำสั่งเงินจริง'))return;
+ try{const r=await dualApi('/ai/adaptive-paper/start',{});alert(r.message||'เริ่มการทดลองแล้ว');await dualRefresh(false)}catch(e){alert(e.message)}
+}
+async function adaptivePaperStop(){
+ if(!confirm('หยุดการทดลองและหยุดเปิดสถานะใหม่ใช่หรือไม่? ระบบยังติดตาม TP/SL ของสถานะที่เปิดอยู่'))return;
+ try{await dualApi('/ai/adaptive-paper/stop',{});await dualRefresh(false)}catch(e){alert(e.message)}
+}
+async function adaptivePaperRefresh(){dualAdaptiveFetchedAt=0;await dualRefresh(false)}
 async function dualInitialize(){const m=document.getElementById('dualMessage');if(m)m.textContent='กำลังสร้างพอร์ตทดลอง...';try{const r=await dualApi('/ai/dual-paper/initialize',{});if(m)m.textContent=r.message||'สร้างพอร์ตทดลองแล้ว';await dualRefresh(false)}catch(e){if(m)m.textContent=e.message}}
 async function dualStart(market){try{await dualApi('/ai/dual-paper/start',{market});await dualRefresh(false)}catch(e){alert(e.message)}}
 async function dualStop(market){try{await dualApi('/ai/dual-paper/stop',{market});await dualRefresh(false)}catch(e){alert(e.message)}}
@@ -299,12 +309,24 @@ function dualRender(snapshot){
  allOrders.sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
  if(positions){positions.innerHTML=allPos.length?allPos.map(x=>'<tr><td>'+x.marketKey+'</td><td><b>'+esc(x.symbol)+'</b></td><td>'+dualFmt(x.quantity,6)+'</td><td>'+dualFmt(x.entry_price,6)+'</td><td>'+dualFmt(x.current_price,6)+'</td><td class="'+(Number(x.unrealized_pnl)>=0?'positive':'negative')+'">'+dualFmt(x.unrealized_pnl,4)+' '+x.currency+'</td><td>'+dualFmt(x.stop_loss_price,6)+' / '+dualFmt(x.take_profit_price,6)+'</td><td><button class="secondary" onclick="dualClosePosition(\''+x.marketKey+'\',\''+x.id+'\',\''+esc(x.symbol)+'\')">ปิดสถานะ</button></td></tr>').join(''):'<tr><td colspan="8">ยังไม่มีสถานะเปิด</td></tr>'}
  if(orders){orders.innerHTML=allOrders.length?allOrders.slice(0,30).map(x=>'<tr><td>'+new Date(x.created_at).toLocaleString('th-TH')+'</td><td>'+x.marketKey+'</td><td>'+esc(x.symbol)+'</td><td>'+String(x.side).toUpperCase()+'</td><td>'+dualFmt(x.quantity,6)+'</td><td>'+dualFmt(x.price,6)+'</td><td>'+dualFmt(x.fee,4)+'</td><td>'+ (x.realized_pnl==null?'—':dualFmt(x.realized_pnl,4)+' '+x.currency)+'</td></tr>').join(''):'<tr><td colspan="8">ยังไม่มีประวัติคำสั่ง</td></tr>'}
+ const adaptiveEl=document.getElementById('adaptivePaperReport');
+ if(adaptiveEl){
+  const exp=dualAdaptiveReport?.experiment, markets=dualAdaptiveReport?.markets||{};
+  if(!exp)adaptiveEl.innerHTML='ยังไม่มีการทดลอง 14 วัน · กด “เริ่มทดลอง 14 วัน” เพื่อเริ่มนับเวลา';
+  else{
+   const status=exp.status==='active'?'กำลังทดลอง':exp.status==='completed'?'ครบกำหนดแล้ว':exp.status==='stopped'?'หยุดแล้ว':exp.status;
+   const dt=x=>x?new Date(x).toLocaleString('th-TH'):'—';
+   adaptiveEl.innerHTML='<div style="margin:8px 0"><b>'+status+'</b> · เริ่ม '+dt(exp.started_at)+' · สิ้นสุด '+dt(exp.ends_at)+'</div>'+
+    ['crypto','stocks'].map(k=>{const m=markets[k]||{},p=m.latest||{},cur=k==='crypto'?'USDT':'USD';return '<div class="notice" style="margin:8px 0"><b>'+(k==='crypto'?'Crypto · Binance TH':'หุ้นสหรัฐฯ · Alpaca IEX')+'</b><br>กำไรสุทธิหลังต้นทุน: <b class="'+(Number(p.net_pnl_after_costs)>=0?'positive':'negative')+'">'+(p.net_pnl_after_costs==null?'รอข้อมูล':dualMoney(p.net_pnl_after_costs,cur))+'</b> · ผลตอบแทน '+(p.net_return_pct==null?'—':dualFmt(p.net_return_pct,3)+'%')+'<br>Maximum Drawdown: '+dualFmt(m.maxDrawdownPct||0,3)+'% · จำนวนจุดวัดผล '+(m.markCount||0)+'</div>'}).join('')+
+    '<div class="small muted">ค่า Net P/L หักค่าธรรมเนียมจริงจากพอร์ตและ Slippage โดยประมาณ 5 bps ต่อด้าน · หากข้อมูลตลาดสดไม่พร้อม ระบบจะไม่เปิดสถานะใหม่</div>';
+  }
+ }
  const count=document.getElementById('dualOpenCount');if(count)count.textContent=String(allPos.length);
  if(msg){const w=snapshot?.worker||{};msg.textContent=(snapshot?.liveOrdersEnabled===false?'เชื่อมต่อแล้ว · Paper only':'สถานะระบบไม่พร้อม')+' · Monitor: '+(w.status||'unknown')+' · รอบตรวจ '+(w.cycles||0)+' · ปิดอัตโนมัติ '+(w.automaticExits||0);}
 }
 async function dualRefresh(markPrices=true){
  if(dualBusy||role!=='admin')return;dualBusy=true;
- try{if(markPrices)await dualApi('/ai/dual-paper/refresh',{});dualSnapshot=await dualApi('/ai/dual-paper/status');dualRender(dualSnapshot)}
+ try{if(markPrices)await dualApi('/ai/dual-paper/refresh',{});dualSnapshot=await dualApi('/ai/dual-paper/status');if(Date.now()-dualAdaptiveFetchedAt>60000){try{dualAdaptiveReport=await dualApi('/ai/adaptive-paper/report');dualAdaptiveFetchedAt=Date.now()}catch(e){dualAdaptiveReport=null}}dualRender(dualSnapshot)}
  catch(e){const m=document.getElementById('dualMessage');if(m)m.textContent=e.message}
  finally{dualBusy=false}
 }

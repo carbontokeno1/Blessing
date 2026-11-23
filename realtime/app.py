@@ -19,7 +19,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from broker_adapters import brokerage_readonly_snapshot
 from ai_decision import build_decision_preview
-from adaptive_strategy import adaptive_decision, experiment_window
+from adaptive_strategy import adaptive_decision, build_binance_th_candidates, experiment_window
 from dual_portfolio import portfolio_overview
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -57,6 +57,11 @@ state = {
     "sessionOpen": {},
     "sessionDate": {},
 }
+CRYPTO_TICKER_HISTORY: dict[str, list] = {}
+CRYPTO_TICKER_HISTORY_LOCK = threading.Lock()
+CRYPTO_TICKER_HISTORY_MAX = 3700
+CRYPTO_TICKER_HISTORY_SYMBOL_LIMIT = 150
+
 clients: set[WebSocket] = set()
 loop: asyncio.AbstractEventLoop | None = None
 stream_thread: threading.Thread | None = None
@@ -318,16 +323,36 @@ def binance_th_stream_main():
                             price = _num(item.get("c"), 0)
                             if not symbol or price <= 0:
                                 continue
+                            bid = _num(item.get("b"), 0)
+                            ask = _num(item.get("a"), 0)
+                            quote_volume = _num(item.get("q"), 0)
                             quote_row = {
                                 "symbol": symbol,
                                 "price": float(price),
-                                "bid": _num(item.get("b"), 0),
-                                "ask": _num(item.get("a"), 0),
+                                "bid": bid,
+                                "ask": ask,
+                                "quoteVolume24h": quote_volume,
+                                "change24hPct": _num(item.get("P"), 0),
                                 "eventTime": item.get("E"),
                                 "receivedAt": now,
                                 "source": "Binance TH WebSocket live ticker",
                             }
                             state["crypto_quotes"][symbol] = quote_row
+                            base_asset = symbol[:-4] if symbol.endswith("USDT") else ""
+                            if (quote_volume and quote_volume >= 250000 and base_asset
+                                    and base_asset not in {"USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD","BFUSD"}
+                                    and not base_asset.endswith(("UP","DOWN","BULL","BEAR","3L","3S","5L","5S"))):
+                                with CRYPTO_TICKER_HISTORY_LOCK:
+                                    if symbol not in CRYPTO_TICKER_HISTORY and len(CRYPTO_TICKER_HISTORY) >= CRYPTO_TICKER_HISTORY_SYMBOL_LIMIT:
+                                        weakest = min(CRYPTO_TICKER_HISTORY, key=lambda key: CRYPTO_TICKER_HISTORY[key][-1][2] if CRYPTO_TICKER_HISTORY[key] else 0)
+                                        weakest_volume = CRYPTO_TICKER_HISTORY[weakest][-1][2] if CRYPTO_TICKER_HISTORY[weakest] else 0
+                                        if quote_volume > weakest_volume:
+                                            CRYPTO_TICKER_HISTORY.pop(weakest, None)
+                                    if symbol in CRYPTO_TICKER_HISTORY or len(CRYPTO_TICKER_HISTORY) < CRYPTO_TICKER_HISTORY_SYMBOL_LIMIT:
+                                        history = CRYPTO_TICKER_HISTORY.setdefault(symbol, [])
+                                        history.append((time.time(), float(price), float(quote_volume), float(bid or 0), float(ask or 0)))
+                                        if len(history) > CRYPTO_TICKER_HISTORY_MAX:
+                                            del history[:-CRYPTO_TICKER_HISTORY_MAX]
                             changed_quotes[symbol] = quote_row
                             changed = True
                         if changed:
@@ -2493,6 +2518,14 @@ DUAL_PAPER_WORKER_THREAD = None
 DUAL_PAPER_WORKER_LOCK = threading.Lock()
 
 
+
+def _binance_th_adaptive_candidates():
+    """Snapshot the rolling history collected from Binance TH's live all-market stream."""
+    with CRYPTO_TICKER_HISTORY_LOCK:
+        snapshot = {symbol: list(rows) for symbol, rows in CRYPTO_TICKER_HISTORY.items()}
+    return build_binance_th_candidates(snapshot)
+
+
 def _dual_equity_snapshot(experiment: dict, portfolio: dict, positions: list):
     """Persist a net-of-fees-and-estimated-slippage equity point for the 14-day run."""
     market = portfolio["market"]
@@ -2559,6 +2592,25 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     market_value = sum(float(p.get("quantity") or 0)*float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
     equity += market_value
     if any(p.get("symbol")==symbol for p in positions):
+        return None
+    now=datetime.now(timezone.utc)
+    day_start=now.replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+    week_start=(now-timedelta(days=now.weekday())).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+    today_orders=_sb_rest("blessing_dual_orders",{
+        "select":"realized_pnl","portfolio_id":"eq."+str(portfolio["id"]),
+        "side":"eq.sell","created_at":"gte."+day_start,"status":"eq.filled","limit":"1000"
+    }) or []
+    week_orders=_sb_rest("blessing_dual_orders",{
+        "select":"realized_pnl","portfolio_id":"eq."+str(portfolio["id"]),
+        "side":"eq.sell","created_at":"gte."+week_start,"status":"eq.filled","limit":"1000"
+    }) or []
+    open_unrealized=sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+    daily_pnl=sum(float(x.get("realized_pnl") or 0) for x in today_orders)+open_unrealized
+    weekly_pnl=sum(float(x.get("realized_pnl") or 0) for x in week_orders)+open_unrealized
+    initial=float(portfolio.get("initial_capital") or equity)
+    if daily_pnl <= -(initial*float(portfolio.get("max_daily_loss_pct") or 3)/100):
+        return None
+    if weekly_pnl <= -(initial*float(portfolio.get("max_weekly_loss_pct") or 6)/100):
         return None
     if len(positions) >= int(portfolio.get("max_open_positions") or 2):
         return None
@@ -2632,11 +2684,18 @@ def _dual_paper_worker_cycle():
                 "enabled":False,"updated_at":now.isoformat()
             })
 
-        crypto_scan = None
+        crypto_candidates = {}
+        crypto_stamp=state.get("lastCryptoMessageAt")
         try:
-            crypto_scan = altcoin_scanner(refresh=0)
-        except Exception as exc:
-            log.warning("Adaptive crypto scan unavailable (%s)",type(exc).__name__)
+            crypto_age=(now-datetime.fromisoformat(str(crypto_stamp).replace("Z","+00:00"))).total_seconds() if crypto_stamp else 999999
+        except Exception:
+            crypto_age=999999
+        crypto_fresh=state.get("cryptoConnection")=="streaming" and 0 <= crypto_age <= 5
+        if crypto_fresh:
+            for row in _binance_th_adaptive_candidates():
+                decision=adaptive_decision("crypto",row,fee_bps=10,slippage_bps=5)
+                if decision["decision"]=="PAPER_CANDIDATE":
+                    crypto_candidates[row["symbol"]]=(row,decision)
         with UNIVERSE_LOCK:
             stock_scan = dict(UNIVERSE_STATE)
         try:
@@ -2652,17 +2711,6 @@ def _dual_paper_worker_cycle():
                     decision=adaptive_decision("stocks",normalized,fee_bps=10,slippage_bps=5)
                     if decision["decision"]=="PAPER_CANDIDATE":
                         stock_candidates[row["symbol"]]=(row,decision)
-        crypto_candidates = {}
-        crypto_fresh = bool(crypto_scan and crypto_scan.get("status")=="ok"
-                            and crypto_scan.get("exchange")=="Binance")
-        if crypto_fresh:
-            for row in (crypto_scan.get("candidates") or []):
-                if row.get("source")!="Binance" or not row.get("symbol","").endswith("USDT"):
-                    continue
-                decision=adaptive_decision("crypto",row,fee_bps=10,slippage_bps=5)
-                if decision["decision"]=="PAPER_CANDIDATE":
-                    crypto_candidates[row["symbol"]]=(row,decision)
-
         for exp in experiments:
             uid=str(exp["user_id"])
             for market, candidates, fresh in (
@@ -2787,25 +2835,44 @@ def _dual_market_price(market: str, symbol: str) -> float:
             return float(price)
         raise HTTPException(status_code=503, detail="ข้อมูล Binance TH WebSocket ไม่มีราคาซื้อขายจริง")
     if market == "stocks":
-        if state.get("provider") not in ("alpaca", "webull"):
-            raise HTTPException(status_code=503, detail="ยังไม่ได้เชื่อมต่อแหล่งราคาหุ้นสด")
         if state.get("provider") == "alpaca" and ALPACA_FEED == "delayed_sip":
             raise HTTPException(status_code=503, detail="ฟีดหุ้นเป็นข้อมูลล่าช้า ไม่อนุญาตให้ใช้กับ Paper Trading")
+        # Prefer the authenticated streaming quote, then use a timestamp-validated
+        # Alpaca IEX snapshot if the websocket briefly disconnects.
         quote = state.get("quotes", {}).get(symbol)
-        if not isinstance(quote, dict):
-            raise HTTPException(status_code=503, detail="ยังไม่มีราคาหุ้นสดสำหรับสัญลักษณ์นี้")
-        received = quote.get("receivedAt")
-        try:
-            stamp = datetime.fromisoformat(str(received).replace("Z", "+00:00"))
-            age = (datetime.now(timezone.utc) - stamp).total_seconds()
-        except Exception:
-            age = 999999
-        if age < 0 or age > 5:
-            raise HTTPException(status_code=503, detail="ราคาหุ้นเกิน 5 วินาทีหรือไม่มีข้อมูลสด จึงปฏิเสธคำสั่ง")
-        price = _dual_price_number(quote.get("raw") or quote)
-        if price and price > 0:
-            return price
-        raise HTTPException(status_code=503, detail="ข้อมูลฟีดหุ้นไม่มีราคาซื้อขายจริง")
+        if isinstance(quote, dict):
+            try:
+                stamp = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - stamp).total_seconds()
+            except Exception:
+                age = 999999
+            price = _dual_price_number(quote.get("raw") or quote)
+            if 0 <= age <= 5 and price and price > 0:
+                return price
+        if ALPACA_KEY and ALPACA_SECRET and ALPACA_FEED in ("iex", "sip"):
+            try:
+                snap = (_alpaca_snapshots([symbol]).get(symbol) or {})
+                trade = snap.get("latestTrade") or {}
+                trade_price = _num(trade.get("p"), 0) or 0
+                trade_time = trade.get("t")
+                if trade_price > 0 and trade_time:
+                    stamp = datetime.fromisoformat(str(trade_time).replace("Z", "+00:00"))
+                    age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                    if 0 <= age <= 5:
+                        return float(trade_price)
+                latest_quote = snap.get("latestQuote") or {}
+                bid, ask = _num(latest_quote.get("bp"), 0), _num(latest_quote.get("ap"), 0)
+                quote_time = latest_quote.get("t")
+                if bid > 0 and ask >= bid and quote_time:
+                    stamp = datetime.fromisoformat(str(quote_time).replace("Z", "+00:00"))
+                    age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                    if 0 <= age <= 5:
+                        return (bid + ask) / 2
+            except Exception as exc:
+                log.info("Alpaca snapshot fallback unavailable for %s (%s)", symbol, type(exc).__name__)
+        if state.get("provider") not in ("alpaca", "webull") and not (ALPACA_KEY and ALPACA_SECRET):
+            raise HTTPException(status_code=503, detail="ยังไม่ได้เชื่อมต่อแหล่งราคาหุ้นสด")
+        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้น IEX/SIP ที่ยืนยันเวลาได้ภายใน 5 วินาที จึงปฏิเสธคำสั่ง")
     raise HTTPException(status_code=422, detail="เลือกตลาด crypto หรือ stocks เท่านั้น")
 
 

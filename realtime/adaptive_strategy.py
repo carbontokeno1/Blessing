@@ -51,6 +51,67 @@ def classify_regime(market: str, metrics: dict) -> dict:
             "reason": "insufficient_alignment"}
 
 
+
+def build_binance_th_candidates(history_by_symbol: dict, now: float | None = None) -> list[dict]:
+    """Derive multi-horizon momentum, relative volume and breakout from Binance TH ticker history.
+
+    Each history row is (unix_time, price, cumulative_quote_volume, bid, ask).
+    At least 60 minutes of recent live observations are required; incomplete data fails closed.
+    """
+    import time
+    now = time.time() if now is None else float(now)
+    output = []
+    excluded = {"USDC", "FDUSD", "TUSD", "USDP", "DAI", "EUR", "USDE", "USTC", "BUSD", "BFUSD"}
+    leveraged = ("UP", "DOWN", "BULL", "BEAR", "3L", "3S", "5L", "5S")
+
+    def at_or_before(rows, target):
+        return next((row for row in reversed(rows) if row[0] <= target), None)
+
+    for symbol, rows in (history_by_symbol or {}).items():
+        symbol = str(symbol).upper()
+        if not symbol.endswith("USDT"):
+            continue
+        base = symbol[:-4]
+        if not base or base in excluded or base.endswith(leveraged) or len(rows) < 30:
+            continue
+        current = rows[-1]
+        if now - current[0] > 5 or current[1] <= 0:
+            continue
+        points = {seconds: at_or_before(rows, now - seconds)
+                  for seconds in (60, 300, 900, 3600, 1200, 360)}
+        if any(points[seconds] is None for seconds in (60, 300, 900, 3600, 1200, 360)):
+            continue
+        price = current[1]
+        m1 = (price / points[60][1] - 1) * 100 if points[60][1] else 0
+        m5 = (price / points[300][1] - 1) * 100 if points[300][1] else 0
+        m15 = (price / points[900][1] - 1) * 100 if points[900][1] else 0
+        m60 = (price / points[3600][1] - 1) * 100 if points[3600][1] else 0
+        latest_volume = max(0, current[2] - points[60][2])
+        previous = []
+        for end_seconds in (120, 180, 240, 300, 360):
+            newer = at_or_before(rows, now - (end_seconds - 60))
+            older = at_or_before(rows, now - end_seconds)
+            if newer and older and newer[2] >= older[2]:
+                previous.append(newer[2] - older[2])
+        average_volume = sum(previous) / len(previous) if previous else 0
+        rvol = latest_volume / average_volume if average_volume > 0 else 0
+        lookback = [row[1] for row in rows if now - 1200 <= row[0] < now - 60]
+        breakout = bool(lookback and price > max(lookback))
+        bid, ask = current[3], current[4]
+        spread = ((ask - bid) / price * 100) if bid > 0 and ask >= bid else None
+        quote_volume_24h = current[2]
+        if quote_volume_24h < 250000 or spread is None:
+            continue
+        output.append({
+            "symbol": symbol, "source": "Binance TH", "price": price,
+            "m1": m1, "m5": m5, "m15": m15, "m60": m60,
+            "rvol": rvol, "relativeVolume": rvol, "breakout": breakout,
+            "spreadPct": spread, "quoteVolume24h": quote_volume_24h,
+            "momentumProxyPct": max(0, m1) + max(0, m5),
+        })
+    return output
+
+
 def adaptive_decision(market: str, candidate: dict, fee_bps: float = 10.0,
                       slippage_bps: float = 10.0) -> dict:
     """Return an entry/watch decision after estimated round-trip cost checks."""

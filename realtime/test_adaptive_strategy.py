@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from adaptive_strategy import adaptive_decision, classify_regime, experiment_window, performance_summary
+from adaptive_strategy import adaptive_decision, build_binance_th_candidates, classify_regime, experiment_window, performance_summary
 
 
 class AdaptiveStrategyTests(unittest.TestCase):
@@ -27,6 +27,23 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertFalse(result["costFilterPassed"])
         self.assertEqual(result["decision"], "PAPER_WATCH")
         self.assertFalse(result["entryAllowed"])
+
+
+    def test_binance_th_history_requires_live_horizons_and_calculates_rvol(self):
+        now = 2_000_000.0
+        history = []
+        for second in range(3601):
+            stamp = now - 3600 + second
+            price = 100 * (1 + second * 0.00001)
+            # Baseline cumulative volume increases at 1.7 units/second; last minute doubles.
+            volume = 300000 + second * 1.7 + max(0, second - 3540) * 1.7
+            history.append((stamp, price, volume, price * 0.999, price * 1.001))
+        candidates = build_binance_th_candidates({"BTCUSDT": history}, now=now)
+        self.assertEqual(len(candidates), 1)
+        self.assertGreater(candidates[0]["rvol"], 1.5)
+        self.assertTrue(candidates[0]["breakout"])
+        stale = build_binance_th_candidates({"BTCUSDT": history[:-1]}, now=now + 10)
+        self.assertEqual(stale, [])
 
     def test_experiment_window_is_fourteen_days(self):
         now = datetime(2026, 11, 23, tzinfo=timezone.utc)
