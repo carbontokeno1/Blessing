@@ -14,9 +14,10 @@ const SCAN_INTERVAL_MS = Math.max(30, Number(process.env.SCAN_INTERVAL_SECONDS |
 const PAPER_ONLY = true;
 
 export const LIMITS = Object.freeze({
-  initialCapitalTHB: 10000, maxPositionTHB: 2000, maxRiskTHB: 200,
+  initialCapitalTHB: 10000, maxPositionTHB: 10000, maxRiskTHB: 50,
   maxOpenPositions: 2, maxOpenPositionsCrypto: 3, maxDailyLossTHB: 200,
-  stockStopLossPct: 25, stockTakeProfitMinPct: 5, stockTakeProfitMaxPct: 15,
+  stockMaxPositionTHB: 2000, stockStopLossPct: 25,
+  stockTakeProfitMinPct: 5, stockTakeProfitMaxPct: 15,
   maxConsecutiveLosses: 3, feeRate: 0.001, slippageRate: 0.0005,
   stockScreenerTop: 100, stockMoverTop: 50, stockBatchSize: 25,
   stockSnapshotBatchSize: 500, stockIntradayRefineTop: 300,
@@ -439,7 +440,7 @@ async function openStockPaperPosition(symbol, targetPct) {
   const cash=state.portfolios.stocks.cashTHB;
   const riskPct=(LIMITS.stockStopLossPct/100)+2*(LIMITS.feeRate+LIMITS.slippageRate);
   const perSlotRiskBudget=LIMITS.maxDailyLossTHB/LIMITS.maxOpenPositions;
-  const notional=Math.min(LIMITS.maxPositionTHB,cash/slots/(1+LIMITS.feeRate),perSlotRiskBudget/riskPct);
+  const notional=Math.min(LIMITS.stockMaxPositionTHB,cash/slots/(1+LIMITS.feeRate),perSlotRiskBudget/riskPct);
   if (!(notional>=100)) return {status:409,error:"INSUFFICIENT_PAPER_CASH_OR_RISK_BUDGET"};
   const qty=notional/(fill*USD_THB_FX);
   const entryFee=notional*LIMITS.feeRate;
