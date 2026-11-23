@@ -14,9 +14,11 @@ const SCAN_INTERVAL_MS = Math.max(30, Number(process.env.SCAN_INTERVAL_SECONDS |
 const PAPER_ONLY = true;
 
 export const LIMITS = Object.freeze({
-  initialCapitalTHB: 10000, maxPositionTHB: 2000, maxRiskTHB: 50,
-  maxOpenPositions: 3, maxDailyLossTHB: 200,
-  maxConsecutiveLosses: 3, feeRate: 0.001, slippageRate: 0.0005
+  initialCapitalTHB: 10000, maxPositionTHB: 10000, maxRiskTHB: 50,
+  maxOpenPositions: 7, maxOpenPositionsCrypto: 3, maxDailyLossTHB: 200,
+  maxConsecutiveLosses: 3, feeRate: 0.001, slippageRate: 0.0005,
+  stockScreenerTop: 100, stockMoverTop: 50, stockBatchSize: 25,
+  minStockPriceUSD: 5, minAvgDollarVolume5mUSD: 250000
 });
 
 export const UNIVERSE = Object.freeze({
@@ -128,11 +130,11 @@ export function chooseStrategy(barSets) {
   const selected = Number.isFinite(results[0]?.score) ? results[0].name : "trend";
   return { selected, adaptive: Number.isFinite(results[0]?.score), reason: Number.isFinite(results[0]?.score) ? "เลือกจากผลทดสอบย้อนหลังแบบ rolling window; ต้องมีอย่างน้อย 8 สัญญาณปิด" : "ข้อมูลย้อนหลังยังไม่พอ ใช้ Trend Follow แบบอนุรักษ์นิยม", candidates: results };
 }
-export function positionSizing({ price, stop, fx = USD_THB_FX, cashTHB = LIMITS.initialCapitalTHB }) {
-  if (!(price > 0 && stop > 0 && stop < price && fx > 0)) return null;
+export function positionSizing({ price, stop, fx = USD_THB_FX, cashTHB = LIMITS.initialCapitalTHB, maxNotionalTHB = LIMITS.maxPositionTHB }) {
+  if (!(price > 0 && stop > 0 && stop < price && fx > 0 && maxNotionalTHB > 0)) return null;
   const riskPct = (price-stop)/price;
   const allInRiskPct = riskPct + 2*(LIMITS.feeRate+LIMITS.slippageRate);
-  const notionalTHB = Math.min(LIMITS.maxPositionTHB, LIMITS.maxRiskTHB/allInRiskPct, cashTHB/(1+LIMITS.feeRate));
+  const notionalTHB = Math.min(maxNotionalTHB, LIMITS.maxPositionTHB, LIMITS.maxRiskTHB/allInRiskPct, cashTHB/(1+LIMITS.feeRate));
   if (!(notionalTHB >= 100)) return null;
   const qty = notionalTHB/(price*fx);
   const riskTHB = (price-stop)*qty*fx + notionalTHB*(LIMITS.feeRate*2+LIMITS.slippageRate*2);
@@ -180,9 +182,10 @@ function portfolioEquity(market) {
   const value=state.positions.filter(x=>x.market===market).reduce((s,x)=>s+x.qty*x.markPrice*USD_THB_FX,0);
   return round(p.cashTHB+value,2);
 }
+function maxPositionsFor(market) { return market === "stocks" ? LIMITS.maxOpenPositions : LIMITS.maxOpenPositionsCrypto; }
 function guardEntry(market, risk) {
   const open=state.positions.filter(p=>p.market===market).length;
-  if (open >= LIMITS.maxOpenPositions) return "MAX_OPEN_POSITIONS";
+  if (open >= maxPositionsFor(market)) return "MAX_OPEN_POSITIONS";
   if (dailyRealizedLoss(market)+openRisk(market)+risk > LIMITS.maxDailyLossTHB) return "DAILY_RISK_LIMIT";
   if (lossStreak(market) >= LIMITS.maxConsecutiveLosses) return "LOSS_STREAK_LIMIT";
   if (state.portfolios[market].cashTHB < 100) return "INSUFFICIENT_PAPER_CASH";
@@ -216,17 +219,39 @@ async function scanCrypto() {
   return bars;
 }
 async function scanStocks() {
-  if (!process.env.ALPACA_PAPER_KEY || !process.env.ALPACA_PAPER_SECRET) return { unavailable:true, reason:"ALPACA_PAPER_DATA_CREDENTIALS_MISSING", rows:[] };
-  const symbols=UNIVERSE.stocks.join(",");
-  const url="https://data.alpaca.markets/v2/stocks/bars?symbols="+encodeURIComponent(symbols)+"&timeframe=5Min&limit=160&feed="+encodeURIComponent(process.env.ALPACA_DATA_FEED||"iex");
-  const payload=await fetchJson(url, { "APCA-API-KEY-ID":process.env.ALPACA_PAPER_KEY, "APCA-API-SECRET-KEY":process.env.ALPACA_PAPER_SECRET });
-  const clock=await fetchJson("https://paper-api.alpaca.markets/v2/clock", { "APCA-API-KEY-ID":process.env.ALPACA_PAPER_KEY, "APCA-API-SECRET-KEY":process.env.ALPACA_PAPER_SECRET });
-  const rows=Object.entries(payload.bars||{}).map(([symbol,arr])=>({
-    market:"stocks",symbol,price:Number(arr.at(-1)?.c||0),spread:0.001,
-    bars:arr.map(x=>({time:Date.parse(x.t),open:Number(x.o),high:Number(x.h),low:Number(x.l),close:Number(x.c),volume:Number(x.v)})),
-    marketOpen:Boolean(clock.is_open)
-  })).filter(x=>x.price>0);
-  return { unavailable:false, marketOpen:Boolean(clock.is_open), rows };
+  if (!process.env.ALPACA_PAPER_KEY || !process.env.ALPACA_PAPER_SECRET) return { unavailable:true, reason:"ALPACA_PAPER_DATA_CREDENTIALS_MISSING", rows:[], universeCount:0 };
+  const headers={ "APCA-API-KEY-ID":process.env.ALPACA_PAPER_KEY, "APCA-API-SECRET-KEY":process.env.ALPACA_PAPER_SECRET };
+  const [activeResult,moverResult,clock]=await Promise.all([
+    fetchJson("https://data.alpaca.markets/v1beta1/screener/stocks/most-actives?by=volume&top="+LIMITS.stockScreenerTop,headers),
+    fetchJson("https://data.alpaca.markets/v1beta1/screener/stocks/movers?top="+LIMITS.stockMoverTop,headers).catch(e=>({gainers:[],losers:[],_error:e.message})),
+    fetchJson("https://paper-api.alpaca.markets/v2/clock",headers)
+  ]);
+  const active=(activeResult.most_actives||[]).map(x=>x.symbol);
+  const movers=[...(moverResult.gainers||[]),...(moverResult.losers||[])].map(x=>x.symbol);
+  const symbols=[...new Set([...active,...movers,...UNIVERSE.stocks])]
+    .filter(x=>typeof x==="string" && /^[A-Z.]{1,8}$/.test(x))
+    .slice(0,LIMITS.stockScreenerTop+LIMITS.stockMoverTop*2+UNIVERSE.stocks.length);
+  const batches=[];
+  for(let i=0;i<symbols.length;i+=LIMITS.stockBatchSize) batches.push(symbols.slice(i,i+LIMITS.stockBatchSize));
+  const payloads=await Promise.all(batches.map(batch=>{
+    const url="https://data.alpaca.markets/v2/stocks/bars?symbols="+encodeURIComponent(batch.join(","))+"&timeframe=5Min&limit=160&feed="+encodeURIComponent(process.env.ALPACA_DATA_FEED||"iex");
+    return fetchJson(url,headers);
+  }));
+  const bySymbol=new Map();
+  for(const payload of payloads) for(const [symbol,arr] of Object.entries(payload.bars||{})) bySymbol.set(symbol,arr);
+  const rows=[...bySymbol.entries()].map(([symbol,arr])=>{
+    const bars=arr.map(x=>({time:Date.parse(x.t),open:Number(x.o),high:Number(x.h),low:Number(x.l),close:Number(x.c),volume:Number(x.v)}));
+    const price=Number(bars.at(-1)?.close||0);
+    const avgDollarVolume=bars.slice(-20).reduce((sum,b)=>sum+b.close*b.volume,0)/Math.max(1,Math.min(20,bars.length));
+    return {market:"stocks",symbol,price,spread:0.001,bars,avgDollarVolume,marketOpen:Boolean(clock.is_open)};
+  }).filter(x=>x.price>=LIMITS.minStockPriceUSD && x.bars.length>=35 && x.avgDollarVolume>=LIMITS.minAvgDollarVolume5mUSD);
+  return { unavailable:false, marketOpen:Boolean(clock.is_open), rows, universeCount:symbols.length, activeCount:active.length, moverCount:movers.length, moverWarning:moverResult._error||null };
+}
+function stockOpportunityScore(row,strategyName) {
+  const signal=evaluateSignal(row.bars,strategyName);
+  if(!signal) return -Infinity;
+  const trendStrength=Math.max(0,(signal.close/signal.ema21-1)*100);
+  return signal.relVol*2 + Math.min(trendStrength,5) + Math.max(0,(signal.rsi-50)/10) + (signal.breakout?1:0);
 }
 
 function closePosition(position, rawPrice, reason) {
@@ -259,7 +284,11 @@ function maybeOpen(market, candidate, selectedStrategy) {
   if (!signal) return null;
   if (state.positions.some(p=>p.market===market && p.symbol===candidate.symbol)) return null;
   const strategy=STRATEGIES[selectedStrategy], fillEstimate=candidate.price*(1+LIMITS.slippageRate), stop=candidate.price-signal.atr*strategy.stopAtr;
-  const size=positionSizing({price:fillEstimate,stop,fx:USD_THB_FX,cashTHB:state.portfolios[market].cashTHB});
+  const openCount=state.positions.filter(p=>p.market===market).length;
+  const slotsRemaining=Math.max(1,maxPositionsFor(market)-openCount);
+  const availableCash=state.portfolios[market].cashTHB;
+  const allocationCap=availableCash/slotsRemaining;
+  const size=positionSizing({price:fillEstimate,stop,fx:USD_THB_FX,cashTHB:availableCash,maxNotionalTHB:allocationCap});
   if (!size) return null;
   const reason=guardEntry(market,size.riskTHB);
   if (reason) return { skipped:true, reason, market, symbol:candidate.symbol, score:signal.rsi };
@@ -301,11 +330,17 @@ async function runScan() {
       const e=maybeOpen("crypto",row,cryptoChoice.selected); if(e) events.push(e);
     }
     if (stocks.marketOpen) {
-      for (const row of stockRows) { const e=maybeOpen("stocks",row,stockChoice.selected); if(e) events.push(e); }
+      const rankedStocks=stockRows.map(row=>({...row,opportunityScore:stockOpportunityScore(row,stockChoice.selected)}))
+        .filter(row=>Number.isFinite(row.opportunityScore))
+        .sort((a,b)=>b.opportunityScore-a.opportunityScore);
+      for (const row of rankedStocks) {
+        if(state.positions.filter(p=>p.market==="stocks").length>=maxPositionsFor("stocks")) break;
+        const e=maybeOpen("stocks",row,stockChoice.selected); if(e) events.push(e);
+      }
     }
     const scan={
       at:nowIso(), crypto:{scanned:cryptoRows.length,selected:cryptoChoice.selected,adaptive:cryptoChoice.adaptive},
-      stocks:{scanned:stockRows.length,marketOpen:Boolean(stocks.marketOpen),selected:stockChoice.selected,adaptive:stockChoice.adaptive,unavailable:Boolean(stocks.unavailable),reason:stocks.reason||null},
+      stocks:{scanned:stockRows.length,universeCount:stocks.universeCount||0,activeCount:stocks.activeCount||0,moverCount:stocks.moverCount||0,marketOpen:Boolean(stocks.marketOpen),selected:stockChoice.selected,adaptive:stockChoice.adaptive,unavailable:Boolean(stocks.unavailable),reason:stocks.reason||null},
       events
     };
     state.scans.unshift(scan); state.scans=state.scans.slice(0,100);
