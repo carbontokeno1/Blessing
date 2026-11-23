@@ -3106,6 +3106,11 @@ def adaptive_paper_preview(request: Request):
             stock_rows.append(adaptive_decision("stocks", normalized))
     crypto_rows.sort(key=lambda row: (row["decision"] == "PAPER_CANDIDATE", row["momentumProxyPct"]), reverse=True)
     stock_rows.sort(key=lambda row: (row["decision"] == "PAPER_CANDIDATE", row["momentumProxyPct"]), reverse=True)
+    ranked_opportunities = sorted(
+        [row for row in crypto_rows + stock_rows if row.get("decision") == "PAPER_CANDIDATE"],
+        key=lambda row: (row.get("opportunityScore", 0), row.get("netEdgeProxyPct", 0)),
+        reverse=True
+    )
     return {
         "ok": True, "mode": "paper_only", "liveOrdersEnabled": False,
         "automaticEntryEnabled": False,
@@ -3129,6 +3134,8 @@ def adaptive_paper_preview(request: Request):
                        "candidateCount": len(stock_rows)}
         },
         "decisions": {"crypto": crypto_rows[:30], "stocks": stock_rows[:30]},
+        "crossMarketRanking": ranked_opportunities[:20],
+        "bestCurrentMarket": ranked_opportunities[0]["market"] if ranked_opportunities else None,
         "disclaimer": "ผลลัพธ์เป็นการคัดกรองสัญญาณ ไม่ใช่คำสั่งซื้อขาย และไม่รับประกันกำไร"
     }
 
