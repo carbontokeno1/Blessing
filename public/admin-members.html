@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1020"><title>BLESSING · Admin Members</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1020;--panel:#121a2d;--line:#26334d;--muted:#94a3b8;--gold:#f4b942;--green:#36c98f;--red:#fb7185}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,#18284b 0,transparent 40%),var(--bg);color:#edf3ff;font:15px system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1100px;margin:auto;padding:22px 14px 60px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.brand{font-weight:900;letter-spacing:.15em;color:var(--gold)}.muted,small{color:var(--muted)}.card{background:linear-gradient(145deg,#151f35,#101729);border:1px solid var(--line);border-radius:16px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}input,select,button{font:inherit;border-radius:10px;padding:11px 12px;border:1px solid var(--line)}input,select{width:100%;background:#0b1324;color:white;margin:5px 0 10px}button{background:var(--gold);color:#171717;font-weight:800;cursor:pointer;border:0}button.secondary{background:#26344c;color:#fff}button.danger{background:#7f1d1d;color:#fff}button:disabled{opacity:.5;cursor:not-allowed}label{font-size:12px;color:var(--muted)}.hidden{display:none!important}.status{padding:12px;border-radius:10px;background:#0b1324;color:var(--muted);white-space:pre-wrap;margin-top:10px}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:760px;font-size:13px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:middle}th{color:var(--muted)}.tag{padding:4px 8px;border-radius:20px;background:#183a35;color:#77e5ba;font-size:11px}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions button{font-size:12px;padding:8px 10px}.member{border:1px solid var(--line);border-radius:13px;padding:14px;margin:10px 0;background:#0d1628}.memberHead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.allocs{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:12px}.alloc{background:#101a2c;border:1px solid var(--line);padding:12px;border-radius:12px}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}@media(max-width:560px){main{padding:14px 10px}.card{padding:13px}.row{grid-template-columns:1fr}}
+</style></head><body><main>
+<header class="top"><div><div class="brand">BLESSING · CONTROL CENTER</div><div class="muted">อนุมัติสมาชิกและจัดสรรวงเงินรายบุคคล · PAPER ONLY</div></div><button id="logout" class="secondary hidden">ออกจากระบบ</button></header>
+<section id="login" class="card"><h1>ผู้ดูแลระบบ</h1><p class="muted">เข้าสู่ระบบด้วยบัญชี Admin / Super Admin ของ BLESSING</p><form id="loginForm"><label>อีเมล</label><input id="email" type="email" required autocomplete="username"><label>รหัสผ่าน</label><input id="password" type="password" required autocomplete="current-password"><button>เข้าสู่ระบบ</button></form><div id="loginMsg" class="status">ระบบจะตรวจสอบสิทธิ์จากฐานข้อมูล ไม่ใช้การซ่อนปุ่มเป็นมาตรการรักษาความปลอดภัย</div></section>
+<section id="app" class="hidden">
+<div class="card"><div class="memberHead"><div><h1>สมาชิกและวงเงิน</h1><div class="muted">ทุนต้นทางอยู่ในบัญชีหลักของเจ้าของระบบ · แยกยอดภายในรายสมาชิก</div></div><span class="tag">ADMIN ONLY</span></div><div class="status">วงเงินที่จัดสรรในระยะนี้เป็น Paper Allocation เพื่อทดสอบบัญชีแยก ยังไม่ส่งคำสั่งซื้อขายเงินจริงและไม่ใช่ยอดเงินฝากที่ถอนได้</div></div>
+<div class="card"><h2>รายชื่อสมาชิก</h2><div id="members"><div class="status">กำลังโหลด...</div></div></div>
+</section></main>
+<script type="module">
+import {createClient} from 'https://esm.sh/@supabase/supabase-js@2.95.0';
+const sb=createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
+const $=id=>document.getElementById(id);let current=null;
+const fmt=(n,c)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c;
+function msg(t){$('loginMsg').textContent=t}
+async function start(session){
+ if(!session?.user)throw Error('กรุณาเข้าสู่ระบบ');
+ const {data:p,error}=await sb.from('profiles').select('email,display_name,role,status').eq('user_id',session.user.id).maybeSingle();
+ if(error)throw error;
+ if(!p||p.status!=='active'||!['admin','super_admin'].includes(p.role))throw Error('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ');
+ current=session.user;$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');
+ await loadMembers();
+}
+async function loadMembers(){
+ const box=$('members');box.textContent='กำลังโหลด...';
+ const [{data:profiles,error:pe},{data:members,error:me},{data:allocs,error:ae}] = await Promise.all([
+  sb.from('profiles').select('user_id,email,display_name,role,status,created_at').eq('role','member').order('created_at',{ascending:false}).limit(500),
+  sb.from('blessing_members').select('user_id,status,terms_version,terms_accepted_at,approved_at'),
+  sb.from('blessing_member_allocations').select('id,user_id,market,broker,currency,allocated_capital,reserved_capital,realized_pnl,fees_paid,mode,enabled')
+ ]);
+ if(pe||me||ae){box.textContent='โหลดข้อมูลไม่สำเร็จ: '+(pe||me||ae).message;return}
+ const mMap=new Map((members||[]).map(x=>[x.user_id,x])),aMap=new Map();
+ for(const a of allocs||[]){if(!aMap.has(a.user_id))aMap.set(a.user_id,[]);aMap.get(a.user_id).push(a)}
+ box.replaceChildren();
+ if(!profiles?.length){box.textContent='ยังไม่มีผู้สมัครสมาชิก';return}
+ for(const p of profiles){
+  const m=mMap.get(p.user_id)||{},wrap=document.createElement('article');wrap.className='member';
+  const head=document.createElement('div');head.className='memberHead';
+  const info=document.createElement('div');const title=document.createElement('b');title.textContent=p.display_name||p.email||'สมาชิก';const sub=document.createElement('div');sub.className='muted';sub.textContent=(p.email||'')+' · '+p.status+' · '+(m.status||'no member record');info.append(title,sub);
+  const actions=document.createElement('div');actions.className='actions';
+  const approve=document.createElement('button');approve.textContent='อนุมัติสมาชิก';approve.onclick=()=>changeStatus(p.user_id,'active');
+  const suspend=document.createElement('button');suspend.className='danger';suspend.textContent='ระงับ';suspend.onclick=()=>changeStatus(p.user_id,'suspended');
+  actions.append(approve,suspend);head.append(info,actions);wrap.append(head);
+  const allocsWrap=document.createElement('div');allocsWrap.className='allocs';
+  for(const market of ['crypto','stocks']){
+   const a=(aMap.get(p.user_id)||[]).find(x=>x.market===market),c=market==='crypto'?'USDT':'USD';
+   const panel=document.createElement('div');panel.className='alloc';
+   const h=document.createElement('b');h.textContent=market==='crypto'?'BINANCE · CRYPTO':'WEBULL · US STOCKS';
+   const existing=document.createElement('div');existing.className='muted';existing.textContent=a?'วงเงิน '+fmt(a.allocated_capital,c)+' · P/L '+fmt(a.realized_pnl,c)+' · '+(a.enabled?'เปิด Paper':'ปิด'):'ยังไม่จัดสรรวงเงิน';
+   const label=document.createElement('label');label.textContent='วงเงินใหม่ ('+c+')';
+   const input=document.createElement('input');input.type='number';input.min='0';input.step='0.01';input.value=a?String(a.allocated_capital):'0';
+   const button=document.createElement('button');button.textContent='บันทึกวงเงิน';button.onclick=()=>saveAllocation(p.user_id,market,input.value,false);
+   panel.append(h,existing,label,input,button);allocsWrap.append(panel);
+  }
+  wrap.append(allocsWrap);box.append(wrap);
+ }
+}
+async function changeStatus(id,status){
+ try{const {data,error}=await sb.rpc('blessing_admin_set_member_status',{p_user_id:id,p_status:status});if(error)throw error;await loadMembers()}catch(e){alert('บันทึกสถานะไม่สำเร็จ: '+e.message)}
+}
+async function saveAllocation(id,market,amount,enabled){
+ const n=Number(amount);if(!Number.isFinite(n)||n<0){alert('กรุณากรอกวงเงินที่ถูกต้อง');return}
+ try{const {data,error}=await sb.rpc('blessing_admin_set_allocation',{p_user_id:id,p_market:market,p_amount:n,p_enabled:enabled});if(error)throw error;await loadMembers();alert('บันทึกวงเงิน '+market+' เรียบร้อย (Paper only)')}catch(e){alert('จัดสรรวงเงินไม่สำเร็จ: '+e.message)}
+}
+$('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error)throw error;await start(data.session)}catch(err){await sb.auth.signOut();msg(err.message||'เข้าสู่ระบบไม่สำเร็จ')}});
+$('logout').onclick=async()=>{await sb.auth.signOut();location.reload()};
+try{const {data,error}=await sb.auth.getSession();if(error)throw error;if(data.session)await start(data.session)}catch(e){msg(e.message||'ไม่สามารถตรวจสอบบัญชีได้')}
+</script></body></html>
