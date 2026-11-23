@@ -2882,7 +2882,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         return None
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
     stop_pct = float(strategy_config.get(market + "_stop_loss_pct", 1.5 if market == "crypto" else 25.0))
-    target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0 if market == "crypto" else 20.0))
+    target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0 if market == "crypto" else 25.0))
     # Hard cap: an individual position may not lose more than 25% of its entry notional.
     stop_pct = min(25.0, max(0.1, stop_pct))
     max_notional_pct = float(strategy_config.get("max_notional_pct") or 6.0)
@@ -3256,7 +3256,7 @@ async def dual_paper_order(request: Request):
         try:
             notional = float(body.get("notional"))
             if market == "stocks":
-                stop_pct, target_pct = 25.0, 20.0
+                stop_pct, target_pct = 25.0, 25.0
             else:
                 stop_pct = float(body.get("stopLossPct", 1.0))
                 target_pct = float(body.get("takeProfitPct", 2.0))
@@ -3398,7 +3398,7 @@ def adaptive_paper_preview(request: Request):
             "stockSource": "Alpaca IEX universe scanner",
             "staleOrFallbackData": "block new entries",
             "costModel": "estimated round-trip fees, slippage and quoted spread; verify actual fills in reports",
-            "stockStopLossPct": -25, "stockTakeProfitPct": 20,
+            "stockStopLossPct": -25, "stockTakeProfitPct": 25,
             "note": "This endpoint is a signal preview only; it does not execute paper orders."
         },
         "marketData": {
@@ -3444,7 +3444,7 @@ def adaptive_paper_start(request: Request):
                   "weekly_loss_limit_enabled":False,"cumulative_loss_limit_enabled":False,
                   "drawdown_stop_enabled":False,
                   "crypto_stop_loss_pct":1.5,"crypto_take_profit_pct":3.0,
-                  "stocks_stop_loss_pct":25.0,"stocks_take_profit_pct":20.0,
+                  "stocks_stop_loss_pct":25.0,"stocks_take_profit_pct":25.0,
                   "fee_bps_per_side":10,"slippage_bps_per_side":5,
                   "entry_cooldown_seconds":300,"max_entries_per_stocks_cycle":5,
                   "live_orders_enabled":False}
