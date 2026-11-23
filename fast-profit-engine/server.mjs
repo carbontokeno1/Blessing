@@ -117,8 +117,11 @@ export function chooseStrategy(barSets) {
     const count = usable.reduce((s,m)=>s+m.count,0);
     const netR = usable.reduce((s,m)=>s+m.netR,0);
     const wins = usable.reduce((s,m)=>s+m.winRate*m.count,0);
-    const gross = usable.reduce((s,m)=>s+m.score,0);
-    return { name, label: STRATEGIES[name].label, sampleTrades: count, netR: round(netR,2), winRate: count ? round(wins/count,3) : 0, score: usable.length && count >= 8 ? gross : -Infinity };
+    const avgPf = count ? usable.reduce((s,m)=>s+m.profitFactor*m.count,0)/count : 0;
+    const maxDd = usable.reduce((s,m)=>Math.max(s,m.maxDrawdownR),0);
+    const winRate = count ? wins/count : 0;
+    const score = count >= 8 ? netR + Math.min(avgPf,4)*2 + winRate*2 - maxDd*0.5 : -Infinity;
+    return { name, label: STRATEGIES[name].label, sampleTrades: count, netR: round(netR,2), winRate: round(winRate,3), profitFactor: round(avgPf,2), maxDrawdownR: round(maxDd,2), score };
   }).sort((a,b)=>b.score-a.score);
   const selected = Number.isFinite(results[0]?.score) ? results[0].name : "trend";
   return { selected, adaptive: Number.isFinite(results[0]?.score), reason: Number.isFinite(results[0]?.score) ? "เลือกจากผลทดสอบย้อนหลังแบบ rolling window; ต้องมีอย่างน้อย 8 สัญญาณปิด" : "ข้อมูลย้อนหลังยังไม่พอ ใช้ Trend Follow แบบอนุรักษ์นิยม", candidates: results };
@@ -164,7 +167,7 @@ async function persist() {
   await fs.rename(tmp, STATE_FILE);
 }
 function dayTrades(market) { const today = dayKey(); return [...state.trades, ...state.positions].filter(t => t.market === market && t.openedAt.slice(0,10) === today); }
-function dailyRealizedLoss(market) { return dayTrades(market).reduce((s,t)=>s+Math.max(0,-t.netTHB),0); }
+function dailyRealizedLoss(market) { return dayTrades(market).filter(t=>t.closedAt).reduce((s,t)=>s+Math.max(0,-safeNumber(t.netTHB)),0); }
 function lossStreak(market) {
   const rows = dayTrades(market).filter(t=>t.closedAt).sort((a,b)=>b.closedAt.localeCompare(a.closedAt));
   let n=0; for (const t of rows) { if (t.netTHB < 0) n++; else break; } return n;
@@ -200,13 +203,15 @@ async function scanCrypto() {
   const rows = tickers.filter(t=>{const base=t.symbol.replace(/USDT$/,"");return t.symbol.endsWith("USDT") && !exclude.has(base) && !leveraged.some(s=>base.endsWith(s)) && Number(t.quoteVolume)>5000000 && Number(t.lastPrice)>0;})
     .sort((a,b)=>Number(b.quoteVolume)-Number(a.quoteVolume)).slice(0,18);
   const bars = await Promise.all(rows.map(async t=>{
-    const [klines, book] = await Promise.all([
-      fetchJson("https://api.binance.com/api/v3/klines?symbol="+encodeURIComponent(t.symbol)+"&interval=5m&limit=160"),
-      fetchJson("https://api.binance.com/api/v3/ticker/bookTicker?symbol="+encodeURIComponent(t.symbol))
-    ]);
-    const b=normalizeBinanceBars(klines), spread=(Number(book.askPrice)-Number(book.bidPrice))/Number(t.lastPrice);
-    return { market:"crypto", symbol:t.symbol, price:Number(t.lastPrice), spread, bars:b, change24h:Number(t.priceChangePercent), quoteVolume:Number(t.quoteVolume) };
-  }));
+    try {
+      const [klines, book] = await Promise.all([
+        fetchJson("https://api.binance.com/api/v3/klines?symbol="+encodeURIComponent(t.symbol)+"&interval=5m&limit=160"),
+        fetchJson("https://api.binance.com/api/v3/ticker/bookTicker?symbol="+encodeURIComponent(t.symbol))
+      ]);
+      const b=normalizeBinanceBars(klines), spread=(Number(book.askPrice)-Number(book.bidPrice))/Number(t.lastPrice);
+      return { market:"crypto", symbol:t.symbol, price:Number(t.lastPrice), spread, bars:b, change24h:Number(t.priceChangePercent), quoteVolume:Number(t.quoteVolume) };
+    } catch (e) { console.warn("BINANCE_SYMBOL_SKIP",t.symbol,e.message); return null; }
+  })).then(rows=>rows.filter(Boolean));
   return bars;
 }
 async function scanStocks() {
@@ -242,7 +247,7 @@ function managePositions(marketRows) {
     const row=byKey.get(p.symbol);
     if (!row || !(row.price>0)) continue;
     p.markPrice=row.price;
-    if (row.price<=p.stopPrice) closePosition(p,p.stopPrice,"STOP_LOSS");
+    if (row.price<=p.stopPrice) closePosition(p,Math.min(row.price,p.stopPrice),"STOP_LOSS");
     else if (row.price>=p.targetPrice) closePosition(p,p.targetPrice,"TAKE_PROFIT");
     else if (Date.now()-Date.parse(p.openedAt)>24*60*60*1000) closePosition(p,row.price,"TIME_EXIT_24H");
   }
@@ -360,8 +365,9 @@ async function route(req,res) {
     state.running=false;stopLoop();await persist();return send(res,200,{ok:true,running:false,openPositionsRemain:true,mode:"PAPER_ONLY"});
   }
   if(url.pathname==="/api/control/close-all"&&req.method==="POST") {
+    state.running=false;stopLoop();
     for(const p of [...state.positions]) closePosition(p,p.markPrice,"MANUAL_EMERGENCY_CLOSE");
-    await persist();return send(res,200,{ok:true,closed:true,openPositions:0});
+    await persist();return send(res,200,{ok:true,running:false,closed:true,openPositions:0});
   }
   if(url.pathname==="/api/scan"&&req.method==="POST") { if(!state.running)return send(res,409,{error:"ENGINE_STOPPED"});await runScan();return send(res,200,{ok:true,lastScanAt:state.lastScanAt}); }
   return send(res,404,{error:"NOT_FOUND"});
