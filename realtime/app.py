@@ -2472,6 +2472,7 @@ def dual_paper_status(request: Request):
                 "reserveCashPct":float(row["reserve_cash_pct"]),
                 "maxOpenPositions":int(row["max_open_positions"])},
             "openPositions":positions,"recentOrders":orders,
+            "tradingRules":({"stopLossPct":25,"takeProfitPct":20,"source":"server_enforced"} if market == "stocks" else {"source":"per_order"}),
             "liveOrdersEnabled":False
         }
     return {"ok":True,"mode":"paper","liveOrdersEnabled":False,
@@ -2695,8 +2696,11 @@ async def dual_paper_order(request: Request):
     if side == "buy":
         try:
             notional = float(body.get("notional"))
-            stop_pct = float(body.get("stopLossPct", 1.0))
-            target_pct = float(body.get("takeProfitPct", 2.0))
+            if market == "stocks":
+                stop_pct, target_pct = 25.0, 20.0
+            else:
+                stop_pct = float(body.get("stopLossPct", 1.0))
+                target_pct = float(body.get("takeProfitPct", 2.0))
         except (TypeError, ValueError):
             raise HTTPException(status_code=422, detail="กรุณาระบุเงินลงทุนและระดับ Stop/Take Profit")
         if not all(math.isfinite(x) for x in (notional, stop_pct, target_pct)) or notional <= 0 or not (0.1 <= stop_pct <= (25 if market == "stocks" else 20)) or not (0.1 <= target_pct <= 50):
