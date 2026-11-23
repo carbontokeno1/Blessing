@@ -2902,8 +2902,8 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
                          for p in all_positions if str(p.get("portfolio_id")) in portfolio_ids)
     total_equity = total_cash + total_exposure
     remaining_allocation = max(0.0, total_equity * max_total_allocation_pct / 100 - total_exposure)
-    # No reserve: each of at most five entries receives a balanced 6% slice
-    # of combined crypto + stock equity, while all entries share one 30% cap.
+    # No reserve: each entry targets a 6% slice of combined crypto + stock equity.
+    # Crypto has no per-cycle symbol-count cap; all entries still share one 30% allocation cap.
     notional = min(cash_balance, remaining_allocation, total_equity * min(max_notional_pct, 6.0) / 100)
     if notional < 1.0:
         return None
@@ -3021,8 +3021,9 @@ def _dual_paper_worker_cycle():
                         "rank":float(decision.get("opportunityScore") or 0),
                     })
 
-        # Rank both markets together and open at most five symbols per user per cycle.
-        # A fixed 6% slice per entry keeps the combined allocation balanced.
+        # Rank opportunities across both markets, but cap only the stock board at five
+        # new symbols per user per cycle. Crypto has no symbol-count cap of its own.
+        # Both markets remain subject to the shared 30% portfolio allocation ceiling.
         entries_opened = 0
         selected_markets = {}
         experiment_by_user = {str(exp["user_id"]): exp for exp in experiments}
@@ -3032,10 +3033,12 @@ def _dual_paper_worker_cycle():
                 ranked_by_user.setdefault(uid, []).append((market,item))
         for uid, ranked in ranked_by_user.items():
             ranked.sort(key=lambda pair: (pair[1]["rank"], pair[1]["decision"].get("netEdgeProxyPct",0), pair[1]["decision"].get("momentumProxyPct",0)), reverse=True)
-            opened_this_cycle = 0
+            opened_stocks_this_cycle = 0
             for market,item in ranked:
-                if opened_this_cycle >= 5 or item["rank"] <= 0:
-                    break
+                if item["rank"] <= 0:
+                    continue
+                if market == "stocks" and opened_stocks_this_cycle >= 5:
+                    continue
                 cooldown_key = uid + ":" + market + ":" + item["symbol"]
                 if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
                     continue
@@ -3043,7 +3046,8 @@ def _dual_paper_worker_cycle():
                     result=_dual_try_adaptive_entry(experiment_by_user[uid],item["portfolio"],{**item["raw"],**item["decision"]},market)
                     if result:
                         entries_opened += 1
-                        opened_this_cycle += 1
+                        if market == "stocks":
+                            opened_stocks_this_cycle += 1
                         selected_markets.setdefault(uid,{}).setdefault(market,[]).append({"symbol":item["symbol"],"opportunityScore":item["rank"],"netEdgeProxyPct":item["decision"].get("netEdgeProxyPct")})
                         DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key]=time.time()
                 except Exception as exc:
@@ -3442,7 +3446,7 @@ def adaptive_paper_start(request: Request):
                   "crypto_stop_loss_pct":1.5,"crypto_take_profit_pct":3.0,
                   "stocks_stop_loss_pct":25.0,"stocks_take_profit_pct":20.0,
                   "fee_bps_per_side":10,"slippage_bps_per_side":5,
-                  "entry_cooldown_seconds":300,"max_entries_per_market_per_cycle":5,"max_entries_per_user_per_cycle":5,
+                  "entry_cooldown_seconds":300,"max_entries_per_stocks_cycle":5,
                   "live_orders_enabled":False}
     })
     if not exp:
