@@ -1094,13 +1094,19 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     # Intraday stock FAST ENTRY: prioritize the user's 5%+ daily movers,
     # while requiring fresh upward momentum, a volume expansion, a nearby breakout,
     # and a tradable (not excessively wide) IEX quote spread.
+    # FAST ENTRY is a qualified intraday setup, not a prediction. Basic/IEX
+    # frequently has incomplete quotes; missing spread must remain WATCH, never BUY.
+    # Accept either a fresh micro-breakout OR strong 3-minute continuation so that
+    # a stock does not have to print a new 5-bar high on the exact scan minute.
+    continuation = bool(m3 is not None and m3 >= 0.30)
+    breakout_or_continuation = bool(breakout or continuation)
     fast_entry = bool(
         change is not None and 5 <= change <= 300
         and m1 is not None and m1 > 0
         and m5 is not None and m5 >= 0.15
         and rvol is not None and rvol >= 1.3
         and spread is not None and 0 < spread <= 1.0
-        and breakout
+        and breakout_or_continuation
     )
     fast_entry_reasons = []
     if change is None or change < 5: fast_entry_reasons.append("DAILY_MOVE_BELOW_5PCT")
@@ -1108,7 +1114,7 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     if m1 is None or m1 <= 0: fast_entry_reasons.append("M1_NOT_POSITIVE")
     if m5 is None or m5 < 0.15: fast_entry_reasons.append("M5_MOMENTUM_WEAK")
     if rvol is None or rvol < 1.3: fast_entry_reasons.append("RVOL_BELOW_1_3")
-    if not breakout: fast_entry_reasons.append("NO_SHORT_TERM_BREAKOUT")
+    if not breakout_or_continuation: fast_entry_reasons.append("NO_BREAKOUT_OR_M3_CONTINUATION")
     if spread is None or spread <= 0 or spread > 1.0: fast_entry_reasons.append("SPREAD_NOT_TRADABLE")
     forecast = forecast_10m_from_bars(bars, price)
     setup = "STRONG" if score >= 7 else ("WATCH" if score >= 5 else "EARLY")
