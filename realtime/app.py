@@ -1091,13 +1091,25 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     # Include EARLY setups from score 3/11 upward so the daily scanner can surface developing moves; FAST_ENTRY remains independently strict.
     if score < 3 or (spread is not None and spread > 1.25):
         return None
+    # Intraday stock FAST ENTRY: prioritize the user's 5%+ daily movers,
+    # while requiring fresh upward momentum, a volume expansion, a nearby breakout,
+    # and a tradable (not excessively wide) IEX quote spread.
     fast_entry = bool(
-        change is not None and change >= 3
-        and m1 is not None and m1 > 0 and m5 is not None and m5 > 0
-        and rvol is not None and rvol >= 2
-        and spread is not None and 0 < spread <= 0.5
+        change is not None and 5 <= change <= 300
+        and m1 is not None and m1 > 0
+        and m5 is not None and m5 >= 0.15
+        and rvol is not None and rvol >= 1.3
+        and spread is not None and 0 < spread <= 1.0
         and breakout
     )
+    fast_entry_reasons = []
+    if change is None or change < 5: fast_entry_reasons.append("DAILY_MOVE_BELOW_5PCT")
+    elif change > 300: fast_entry_reasons.append("DAILY_MOVE_ABOVE_300PCT")
+    if m1 is None or m1 <= 0: fast_entry_reasons.append("M1_NOT_POSITIVE")
+    if m5 is None or m5 < 0.15: fast_entry_reasons.append("M5_MOMENTUM_WEAK")
+    if rvol is None or rvol < 1.3: fast_entry_reasons.append("RVOL_BELOW_1_3")
+    if not breakout: fast_entry_reasons.append("NO_SHORT_TERM_BREAKOUT")
+    if spread is None or spread <= 0 or spread > 1.0: fast_entry_reasons.append("SPREAD_NOT_TRADABLE")
     forecast = forecast_10m_from_bars(bars, price)
     setup = "STRONG" if score >= 7 else ("WATCH" if score >= 5 else "EARLY")
     return {
@@ -1106,6 +1118,7 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
         "session": session, "volume": int(daily_volume),
         "relativeVolume": rvol, "spreadPct": spread,
         "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
+        "fastEntryReasons": [] if fast_entry else fast_entry_reasons,
         "score": round(score, 1), "setup": setup,
         "reasons": reasons, "riskFlags": risks,
         "breakoutLevel": breakout_level,
@@ -1174,6 +1187,8 @@ def _universe_scan_cycle():
             "universeCount": len(assets), "snapshotCount": len(snapshots),
             "scanned": len(snapshots), "evaluated": len(selected),
             "candidateCount": len(candidates),
+            "fastEntryCount": sum(1 for x in candidates if x.get("fastEntry")),
+            "fastEntryWatchCount": sum(1 for x in candidates if not x.get("fastEntry") and x.get("score", 0) >= 3),
             "candidates": candidates[:UNIVERSE_CANDIDATE_LIMIT],
             "updatedAt": now, "lastError": None, "cycleSeconds": elapsed,
             "batchCount": len(batches) + len(bar_batches),
