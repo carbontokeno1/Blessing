@@ -292,7 +292,7 @@ async function runScan() {
     const stockRows=stocks.rows||[];
     if (!state.running) return;
     managePositions(cryptoRows);
-    managePositions(stockRows);
+    if (stocks.marketOpen) managePositions(stockRows);
     const cryptoChoice=chooseStrategy(cryptoRows.map(x=>x.bars));
     const stockChoice=chooseStrategy(stockRows.map(x=>x.bars));
     state.strategyByMarket={crypto:cryptoChoice,stocks:stockChoice};
