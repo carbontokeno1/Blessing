@@ -350,7 +350,7 @@ function maybeOpen(market, candidate, selectedStrategy) {
 }
 
 async function runScan() {
-  if (scanBusy || !state.running) return;
+  if (scanBusy || (!state.running && state.positions.length===0)) return;
   scanBusy=true;
   try {
     const [cryptoResult, stockResult]=await Promise.allSettled([scanCrypto(),scanStocks()]);
@@ -359,15 +359,17 @@ async function runScan() {
     const stocks=stockResult.status==="fulfilled"?stockResult.value:{unavailable:true,reason:"ALPACA_SCAN_FAILED",rows:[]};
     if(stockResult.status==="rejected") console.error("ALPACA_SCAN_ERROR",stockResult.reason?.message||"unknown");
     const stockRows=stocks.rows||[];
-    if (!state.running) return;
+    if (!state.running && state.positions.length===0) return;
     managePositions(cryptoRows);
     if (stocks.marketOpen) managePositions(stockRows);
     const cryptoChoice=chooseStrategy(cryptoRows.map(x=>x.bars));
     const stockChoice=chooseStrategy(stockRows.map(x=>x.bars));
     state.strategyByMarket={crypto:cryptoChoice,stocks:stockChoice};
     const events=[];
-    for (const row of cryptoRows.sort((a,b)=>b.quoteVolume-a.quoteVolume)) {
-      const e=maybeOpen("crypto",row,cryptoChoice.selected); if(e) events.push(e);
+    if (state.running) {
+      for (const row of cryptoRows.sort((a,b)=>b.quoteVolume-a.quoteVolume)) {
+        const e=maybeOpen("crypto",row,cryptoChoice.selected); if(e) events.push(e);
+      }
     }
     const rankedStocks=stockRows.map(row=>({...row,opportunityScore:stockOpportunityScore(row,stockChoice.selected)}))
       .filter(row=>Number.isFinite(row.opportunityScore))
@@ -392,6 +394,7 @@ async function runScan() {
   } finally {
     scanBusy=false;
     await persist();
+    if (!state.running && state.positions.length===0) stopLoop();
   }
 }
 function startLoop() {
@@ -493,7 +496,11 @@ async function route(req,res) {
     return send(res,200,{ok:true,running:true,mode:"PAPER_ONLY"});
   }
   if(url.pathname==="/api/control/stop"&&req.method==="POST") {
-    state.running=false;stopLoop();await persist();return send(res,200,{ok:true,running:false,openPositionsRemain:true,mode:"PAPER_ONLY"});
+    state.running=false;
+    if(state.positions.length===0) stopLoop();
+    else if(!loop) startLoop();
+    await persist();
+    return send(res,200,{ok:true,running:false,openPositionsRemain:true,positionMonitoringContinues:state.positions.length>0,mode:"PAPER_ONLY"});
   }
   if(url.pathname==="/api/control/close-all"&&req.method==="POST") {
     state.running=false;stopLoop();
