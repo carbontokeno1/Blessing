@@ -10,7 +10,7 @@ A separate, always-on-capable Node.js service for automatic **paper simulation o
 - Binance uses public Spot market-data endpoints only.
 - Binance Futures, leverage, margin, short selling, and live trading are not implemented.
 - The engine starts STOPPED. The owner must press START in the control dashboard.
-- STOP prevents new scans and entries. Existing simulated positions remain open; use the separate emergency close action if they should be closed at simulated market prices.
+- STOP halts the scan loop and all automatic position monitoring; existing simulated positions remain open and will not be auto-exited while stopped. Restart to resume management, or use the emergency close action to close all at simulated market prices.
 - The control API requires a strong `FAST_PROFIT_CONTROL_TOKEN` and restricts browser origin.
 - Never put broker API keys in the browser or commit them to Git.
 
