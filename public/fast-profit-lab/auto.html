@@ -7,7 +7,7 @@
 <div class="notice"><b>โหมดทดลองเท่านั้น:</b> ระบบนี้จำลองการซื้อขายอัตโนมัติจากข้อมูลตลาดจริง แต่ไม่ส่งคำสั่งซื้อขายไปยัง Alpaca หรือ Binance ไม่มีเงินจริงถูกใช้ การเชื่อมต่อ API หุ้นใช้เฉพาะข้อมูลตลาดและ Paper Clock เท่านั้น</div>
 <section class="card"><div class="row"><h2>การเชื่อมต่อเครื่องยนต์ทดลอง</h2><span id="connection" class="pill amber">ยังไม่เชื่อมต่อ</span></div>
 <div class="settings" style="margin-top:12px"><div class="field"><label for="apiUrl">Engine API URL</label><input id="apiUrl" placeholder="https://your-fast-profit-engine.onrender.com"></div><div class="field"><label for="token">Control Token</label><input id="token" type="password" autocomplete="off" placeholder="ใส่ token จาก Render Environment"></div><button id="connect">เชื่อมต่อ</button></div><div class="hint">URL และ Token จะเก็บเฉพาะ session ของแท็บนี้ ไม่บันทึกลงฐานข้อมูลสมาชิก</div><div id="error" class="error"></div>
-<div class="actions"><button id="start">▶ START AUTO</button><button id="stop" class="secondary">Ⅱ STOP NEW TRADES</button><button id="closeAll" class="danger">EMERGENCY CLOSE ALL (SIMULATED)</button><button id="scan" class="secondary">สแกนทันที</button></div>
+<div class="actions"><button id="start">▶ START AUTO</button><button id="stop" class="secondary">Ⅱ STOP ENGINE (KEEP OPEN POSITIONS)</button><button id="closeAll" class="danger">EMERGENCY CLOSE ALL (SIMULATED)</button><button id="scan" class="secondary">สแกนทันที</button></div>
 </section>
 <section class="grid">
 <div class="card metric"><small>สถานะระบบ</small><strong id="runState" class="amber">STOPPED</strong><small id="lastScan">ยังไม่มีรอบสแกน</small></div>
