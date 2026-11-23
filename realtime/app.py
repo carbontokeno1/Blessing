@@ -59,7 +59,8 @@ state = {
 }
 CRYPTO_TICKER_HISTORY: dict[str, list] = {}
 CRYPTO_TICKER_HISTORY_LOCK = threading.Lock()
-CRYPTO_TICKER_HISTORY_MAX = 5000
+CRYPTO_TICKER_HISTORY_MAX = 3700
+CRYPTO_TICKER_HISTORY_SYMBOL_LIMIT = 150
 
 clients: set[WebSocket] = set()
 loop: asyncio.AbstractEventLoop | None = None
@@ -342,10 +343,16 @@ def binance_th_stream_main():
                                     and base_asset not in {"USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD","BFUSD"}
                                     and not base_asset.endswith(("UP","DOWN","BULL","BEAR","3L","3S","5L","5S"))):
                                 with CRYPTO_TICKER_HISTORY_LOCK:
-                                    history = CRYPTO_TICKER_HISTORY.setdefault(symbol, [])
-                                    history.append((time.time(), float(price), float(quote_volume), float(bid or 0), float(ask or 0)))
-                                    if len(history) > CRYPTO_TICKER_HISTORY_MAX:
-                                        del history[:-CRYPTO_TICKER_HISTORY_MAX]
+                                    if symbol not in CRYPTO_TICKER_HISTORY and len(CRYPTO_TICKER_HISTORY) >= CRYPTO_TICKER_HISTORY_SYMBOL_LIMIT:
+                                        weakest = min(CRYPTO_TICKER_HISTORY, key=lambda key: CRYPTO_TICKER_HISTORY[key][-1][2] if CRYPTO_TICKER_HISTORY[key] else 0)
+                                        weakest_volume = CRYPTO_TICKER_HISTORY[weakest][-1][2] if CRYPTO_TICKER_HISTORY[weakest] else 0
+                                        if quote_volume > weakest_volume:
+                                            CRYPTO_TICKER_HISTORY.pop(weakest, None)
+                                    if symbol in CRYPTO_TICKER_HISTORY or len(CRYPTO_TICKER_HISTORY) < CRYPTO_TICKER_HISTORY_SYMBOL_LIMIT:
+                                        history = CRYPTO_TICKER_HISTORY.setdefault(symbol, [])
+                                        history.append((time.time(), float(price), float(quote_volume), float(bid or 0), float(ask or 0)))
+                                        if len(history) > CRYPTO_TICKER_HISTORY_MAX:
+                                            del history[:-CRYPTO_TICKER_HISTORY_MAX]
                             changed_quotes[symbol] = quote_row
                             changed = True
                         if changed:
