@@ -2893,13 +2893,30 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         return None
     if len(positions) >= int(portfolio.get("max_open_positions") or 2):
         return None
-    stop_pct, target_pct = ((1.0,2.0) if market=="crypto" else (25.0,20.0))
-    # Risk 0.5% of equity per entry; no cash reserve or fixed portfolio notional cap.
-    risk_budget = equity * 0.005
+    strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
+    stop_pct = float(strategy_config.get(market + "_stop_loss_pct", 1.5 if market == "crypto" else 25.0))
+    target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0 if market == "crypto" else 20.0))
+    risk_pct = float(portfolio.get("risk_per_trade_pct") or 0.5)
+    daily_limit_pct = float(portfolio.get("max_daily_loss_pct") or 2.0)
+    weekly_limit_pct = float(portfolio.get("max_weekly_loss_pct") or 5.0)
+    reserve_pct = float(portfolio.get("reserve_cash_pct") or 20.0)
+    max_notional_pct = float(strategy_config.get("max_notional_pct") or 20.0)
+    cumulative_pnl = float(portfolio.get("realized_pnl") or 0) + open_unrealized
+    if cumulative_pnl <= -(initial * 0.05):
+        return None
+    if daily_pnl <= -(initial * daily_limit_pct/100):
+        return None
+    if weekly_pnl <= -(initial * weekly_limit_pct/100):
+        return None
+    peak = float(portfolio.get("peak_equity") or initial)
+    if peak > 0 and (peak - equity) / peak * 100 >= float(portfolio.get("max_drawdown_pct") or 5.0):
+        return None
+    risk_budget = equity * risk_pct / 100
     notional_by_risk = risk_budget / (stop_pct/100)
-    reserve = float(portfolio.get("cash_balance") or 0) * float(portfolio.get("reserve_cash_pct") or 0)/100
-    deployable = max(0.0,float(portfolio.get("cash_balance") or 0)-reserve)
-    notional = min(notional_by_risk, deployable)
+    cash_balance = float(portfolio.get("cash_balance") or 0)
+    reserve = cash_balance * reserve_pct/100
+    deployable = max(0.0, cash_balance-reserve)
+    notional = min(notional_by_risk, deployable, equity * max_notional_pct/100)
     if notional < 1.0:
         return None
     fill_price = market_price * 1.0005
@@ -2985,15 +3002,14 @@ def _dual_paper_worker_cycle():
         stock_candidates = {}
         if stock_fresh:
             for row in (stock_scan.get("candidates") or []):
-                if row.get("symbol") and row.get("fastEntry") is True:
+                if row.get("symbol") and _num(row.get("price"),0):
                     normalized=dict(row); normalized["rvol"]=normalized.get("relativeVolume")
                     decision=adaptive_decision("stocks",normalized,fee_bps=10,slippage_bps=5)
                     if decision["decision"]=="PAPER_CANDIDATE":
                         stock_candidates[row["symbol"]]=(row,decision)
-        ranked_by_user = {}
+        ranked_by_user_market = {}
         for exp in experiments:
             uid=str(exp["user_id"])
-            ranked_by_user.setdefault(uid, [])
             for market, candidates, fresh in (
                 ("crypto",crypto_candidates,crypto_fresh),
                 ("stocks",stock_candidates,stock_fresh)
@@ -3021,40 +3037,42 @@ def _dual_paper_worker_cycle():
                 for symbol,(raw,decision) in candidates.items():
                     if symbol in held:
                         continue
-                    ranked_by_user[uid].append({
+                    ranked_by_user_market.setdefault((uid,market),[]).append({
                         "market":market,"symbol":symbol,"raw":raw,"decision":decision,
                         "portfolio":portfolio,
                         "rank":float(decision.get("opportunityScore") or 0),
                     })
 
-        # One cross-market winner per user per cycle. This avoids splitting attention
-        # or firing many low-quality entries just because both scanners are active.
+        # Run the same entry model independently for each market; one entry per market
+        # per cycle, with isolated cooldowns and isolated paper balances.
         entries_opened = 0
         selected_markets = {}
-        for uid, opportunities in ranked_by_user.items():
-            if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(uid, 0) < 300:
+        experiment_by_user = {str(exp["user_id"]): exp for exp in experiments}
+        for (uid,market), opportunities in ranked_by_user_market.items():
+            cooldown_key = uid + ":" + market
+            if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
                 continue
             opportunities.sort(key=lambda x: (x["rank"], x["decision"].get("netEdgeProxyPct",0),
                                                x["decision"].get("momentumProxyPct",0)), reverse=True)
             for item in opportunities:
                 if item["rank"] <= 0:
                     break
-                market=item["market"]
-                portfolio=item["portfolio"]
                 try:
                     result=_dual_try_adaptive_entry(
-                        next(exp for exp in experiments if str(exp["user_id"])==uid),
-                        portfolio,{**item["raw"],**item["decision"]},market
+                        experiment_by_user[uid],item["portfolio"],
+                        {**item["raw"],**item["decision"]},market
                     )
                     if result:
                         entries_opened += 1
-                        selected_markets[uid]={"market":market,"symbol":item["symbol"],
-                                               "opportunityScore":item["rank"],
-                                               "netEdgeProxyPct":item["decision"].get("netEdgeProxyPct")}
-                        DUAL_ADAPTIVE_ENTRY_COOLDOWNS[uid]=time.time()
+                        selected_markets.setdefault(uid,{})[market]={
+                            "symbol":item["symbol"],
+                            "opportunityScore":item["rank"],
+                            "netEdgeProxyPct":item["decision"].get("netEdgeProxyPct")
+                        }
+                        DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key]=time.time()
                         break
                 except Exception as exc:
-                    log.info("Adaptive cross-market entry skipped %s %s (%s)",market,item["symbol"],type(exc).__name__)
+                    log.info("Adaptive entry skipped %s %s (%s)",market,item["symbol"],type(exc).__name__)
                     continue
         DUAL_PAPER_WORKER_STATE.update({
             "status":"running","lastCycleAt":now.isoformat(),"lastError":None,
