@@ -2493,42 +2493,232 @@ DUAL_PAPER_WORKER_THREAD = None
 DUAL_PAPER_WORKER_LOCK = threading.Lock()
 
 
+def _dual_equity_snapshot(experiment: dict, portfolio: dict, positions: list):
+    """Persist a net-of-fees-and-estimated-slippage equity point for the 14-day run."""
+    market = portfolio["market"]
+    user_id = str(portfolio["user_id"])
+    cash = float(portfolio.get("cash_balance") or 0)
+    market_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0)
+                       for p in positions)
+    equity = cash + market_value
+    orders = _sb_rest("blessing_dual_orders", {
+        "select":"notional", "portfolio_id":"eq." + str(portfolio["id"]),
+        "status":"eq.filled", "limit":"5000"
+    }) or []
+    estimated_slippage = sum(float(o.get("notional") or 0) * 0.0005 for o in orders)
+    fees_paid = float(portfolio.get("fees_paid") or 0)
+    initial = float(portfolio.get("initial_capital") or 0)
+    net_equity = equity - estimated_slippage
+    previous = _sb_rest("blessing_dual_equity_marks", {
+        "select":"peak_equity,marked_at", "experiment_id":"eq." + str(experiment["id"]),
+        "market":"eq." + market, "order":"marked_at.desc", "limit":"1"
+    }) or []
+    if previous:
+        prev_at = datetime.fromisoformat(str(previous[0]["marked_at"]).replace("Z","+00:00"))
+        if (datetime.now(timezone.utc)-prev_at).total_seconds() < 60:
+            return None
+        peak = max(float(previous[0].get("peak_equity") or initial), net_equity)
+    else:
+        peak = max(initial, net_equity)
+    drawdown = max(0.0, (peak-net_equity)/peak*100) if peak > 0 else 0.0
+    net_pnl = net_equity - initial
+    mark = {
+        "experiment_id":experiment["id"],"user_id":user_id,"market":market,
+        "cash_balance":cash,"market_value":market_value,"equity":equity,
+        "realized_pnl":float(portfolio.get("realized_pnl") or 0),
+        "unrealized_pnl":sum(float(p.get("unrealized_pnl") or 0) for p in positions),
+        "fees_paid":fees_paid,"estimated_slippage":estimated_slippage,
+        "net_pnl_after_costs":net_pnl,
+        "net_return_pct":(net_pnl/initial*100) if initial else 0,
+        "peak_equity":peak,"drawdown_pct":drawdown
+    }
+    _sb_rest("blessing_dual_equity_marks", {}, "POST", mark)
+    if drawdown >= float(portfolio.get("max_drawdown_pct") or 10):
+        _sb_rest("blessing_dual_portfolios", {
+            "id":"eq."+str(portfolio["id"]), "user_id":"eq."+user_id
+        }, "PATCH", {"enabled":False,"updated_at":datetime.now(timezone.utc).isoformat()})
+        log.warning("Adaptive Paper stopped new entries at max drawdown user=%s market=%s dd=%.3f",user_id,market,drawdown)
+    return mark
+
+
+def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict, market: str):
+    user_id = str(portfolio["user_id"])
+    symbol = str(candidate.get("symbol") or "").upper()
+    if not symbol:
+        return None
+    try:
+        market_price = _dual_market_price(market, symbol)
+    except Exception:
+        return None
+    equity = float(portfolio.get("cash_balance") or 0)
+    positions = _sb_rest("blessing_dual_positions", {
+        "select":"id,symbol,quantity,entry_price,current_price,stop_loss_price",
+        "portfolio_id":"eq."+str(portfolio["id"]), "user_id":"eq."+user_id,
+        "status":"eq.open", "limit":"30"
+    }) or []
+    market_value = sum(float(p.get("quantity") or 0)*float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
+    equity += market_value
+    if any(p.get("symbol")==symbol for p in positions):
+        return None
+    if len(positions) >= int(portfolio.get("max_open_positions") or 2):
+        return None
+    stop_pct, target_pct = ((1.0,2.0) if market=="crypto" else (25.0,20.0))
+    # Risk 0.5% of equity per entry, with a 20% equity notional cap and reserve cash.
+    risk_budget = equity * 0.005
+    notional_by_risk = risk_budget / (stop_pct/100)
+    reserve = float(portfolio.get("cash_balance") or 0) * float(portfolio.get("reserve_cash_pct") or 20)/100
+    deployable = max(0.0,float(portfolio.get("cash_balance") or 0)-reserve)
+    notional = min(notional_by_risk, equity*0.20, deployable)
+    if notional < 1.0:
+        return None
+    fill_price = market_price * 1.0005
+    quantity = round(notional/fill_price, 10 if market=="crypto" else 6)
+    if quantity <= 0:
+        return None
+    stop_price = fill_price*(1-stop_pct/100)
+    target_price = fill_price*(1+target_pct/100)
+    result = _dual_rpc_order({
+        "p_user_id":user_id,"p_market":market,"p_symbol":symbol,"p_side":"buy",
+        "p_quantity":quantity,"p_price":fill_price,"p_stop_loss_price":stop_price,
+        "p_take_profit_price":target_price,"p_position_id":None,
+        "p_idempotency_key":"ADAPT14-"+str(experiment["id"])[:8]+"-"+market+"-"+symbol+"-"+str(int(time.time()//60))
+    })
+    DUAL_PAPER_WORKER_STATE.setdefault("actions",[]).append({
+        "at":datetime.now(timezone.utc).isoformat(),"action":"buy","market":market,
+        "symbol":symbol,"strategy":candidate.get("strategy"),"result":result
+    })
+    DUAL_PAPER_WORKER_STATE["actions"]=DUAL_PAPER_WORKER_STATE["actions"][-30:]
+    return result
+
+
 def _dual_paper_worker_cycle():
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
-        DUAL_PAPER_WORKER_STATE.update({"status": "waiting_config", "lastError": "SUPABASE_CONFIG_MISSING"})
+        DUAL_PAPER_WORKER_STATE.update({"status":"waiting_config","lastError":"SUPABASE_CONFIG_MISSING"})
         return
     if not DUAL_PAPER_WORKER_LOCK.acquire(blocking=False):
         return
     try:
-        rows = _sb_rest("blessing_dual_positions", {
-            "select": "id,user_id,market,symbol",
-            "status": "eq.open", "order": "opened_at.asc", "limit": "100"
+        # Always manage existing positions, even if an experiment is stopped.
+        open_rows = _sb_rest("blessing_dual_positions", {
+            "select":"id,user_id,market,symbol","status":"eq.open","order":"opened_at.asc","limit":"100"
         }) or []
-        checked = 0
-        exits = 0
-        for position in rows:
+        checked, exits = 0, 0
+        for position in open_rows:
             try:
-                price = _dual_market_price(position["market"], position["symbol"])
-                result = _sb_rpc("blessing_dual_mark_position", {
-                    "p_user_id": str(position["user_id"]),
-                    "p_market": position["market"],
-                    "p_position_id": str(position["id"]),
-                    "p_price": price
+                price = _dual_market_price(position["market"],position["symbol"])
+                result = _sb_rpc("blessing_dual_mark_position",{
+                    "p_user_id":str(position["user_id"]),"p_market":position["market"],
+                    "p_position_id":str(position["id"]),"p_price":price
                 })
                 checked += 1
-                if isinstance(result, dict) and result.get("closed"):
+                if isinstance(result,dict) and result.get("closed"):
                     exits += 1
             except Exception as exc:
-                log.info("Dual paper monitor skipped %s/%s (%s)",
-                         position.get("market"), position.get("symbol"), type(exc).__name__)
+                log.info("Dual paper monitor skipped %s/%s (%s)",position.get("market"),position.get("symbol"),type(exc).__name__)
+
+        now = datetime.now(timezone.utc)
+        experiments = _sb_rest("blessing_dual_experiments",{
+            "select":"id,user_id,started_at,ends_at,status,markets,config",
+            "status":"eq.active","ends_at":"gt."+now.isoformat(),"limit":"100"
+        }) or []
+        expired = _sb_rest("blessing_dual_experiments",{
+            "select":"id,user_id","status":"eq.active","ends_at":"lte."+now.isoformat(),"limit":"100"
+        }) or []
+        for exp in expired:
+            _sb_rest("blessing_dual_experiments",{"id":"eq."+str(exp["id"])}, "PATCH",{
+                "status":"completed","updated_at":now.isoformat()
+            })
+            _sb_rest("blessing_dual_portfolios",{"user_id":"eq."+str(exp["user_id"])}, "PATCH",{
+                "enabled":False,"updated_at":now.isoformat()
+            })
+
+        crypto_scan = None
+        try:
+            crypto_scan = altcoin_scanner(refresh=0)
+        except Exception as exc:
+            log.warning("Adaptive crypto scan unavailable (%s)",type(exc).__name__)
+        with UNIVERSE_LOCK:
+            stock_scan = dict(UNIVERSE_STATE)
+        try:
+            stock_age = (now-datetime.fromisoformat(str(stock_scan.get("updatedAt")).replace("Z","+00:00"))).total_seconds()
+        except Exception:
+            stock_age = 999999
+        stock_fresh = stock_scan.get("status")=="ok" and stock_age <= max(180,UNIVERSE_SCAN_INTERVAL*3)
+        stock_candidates = {}
+        if stock_fresh:
+            for row in (stock_scan.get("candidates") or []):
+                if row.get("symbol") and row.get("fastEntry") is True:
+                    normalized=dict(row); normalized["rvol"]=normalized.get("relativeVolume")
+                    decision=adaptive_decision("stocks",normalized,fee_bps=10,slippage_bps=5)
+                    if decision["decision"]=="PAPER_CANDIDATE":
+                        stock_candidates[row["symbol"]]=(row,decision)
+        crypto_candidates = {}
+        crypto_fresh = bool(crypto_scan and crypto_scan.get("status")=="ok"
+                            and crypto_scan.get("exchange")=="Binance")
+        if crypto_fresh:
+            for row in (crypto_scan.get("candidates") or []):
+                if row.get("source")!="Binance" or not row.get("symbol","").endswith("USDT"):
+                    continue
+                decision=adaptive_decision("crypto",row,fee_bps=10,slippage_bps=5)
+                if decision["decision"]=="PAPER_CANDIDATE":
+                    crypto_candidates[row["symbol"]]=(row,decision)
+
+        for exp in experiments:
+            uid=str(exp["user_id"])
+            for market, candidates, fresh in (
+                ("crypto",crypto_candidates,crypto_fresh),
+                ("stocks",stock_candidates,stock_fresh)
+            ):
+                if market not in (exp.get("markets") or ["crypto","stocks"]):
+                    continue
+                portfolios=_sb_rest("blessing_dual_portfolios",{
+                    "select":"id,user_id,market,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity",
+                    "user_id":"eq."+uid,"market":"eq."+market,"mode":"eq.paper","limit":"1"
+                }) or []
+                if not portfolios:
+                    continue
+                portfolio=portfolios[0]
+                if not portfolio.get("enabled"):
+                    continue
+                positions=_sb_rest("blessing_dual_positions",{
+                    "select":"id,symbol,quantity,entry_price,current_price,unrealized_pnl",
+                    "portfolio_id":"eq."+str(portfolio["id"]),"user_id":"eq."+uid,
+                    "status":"eq.open","limit":"100"
+                }) or []
+                _dual_equity_snapshot(exp,portfolio,positions)
+                if not fresh or not candidates:
+                    continue
+                held={p["symbol"] for p in positions}
+                ranked=[]
+                for symbol,(raw,decision) in candidates.items():
+                    if symbol in held:
+                        continue
+                    ranked.append((decision.get("momentumProxyPct",0),symbol,raw,decision))
+                ranked.sort(reverse=True)
+                for _,symbol,raw,decision in ranked:
+                    try:
+                        result=_dual_try_adaptive_entry(exp,portfolio,{**raw,**decision},market)
+                        if result:
+                            # Refresh cash/positions after each successful simulated fill.
+                            rows=_sb_rest("blessing_dual_portfolios",{
+                                "select":"id,user_id,market,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity",
+                                "id":"eq."+str(portfolio["id"]),"limit":"1"
+                            }) or []
+                            if rows: portfolio=rows[0]
+                            held.add(symbol)
+                    except Exception as exc:
+                        log.info("Adaptive paper entry skipped %s %s (%s)",market,symbol,type(exc).__name__)
+                        continue
         DUAL_PAPER_WORKER_STATE.update({
-            "status": "running", "lastCycleAt": datetime.now(timezone.utc).isoformat(),
-            "lastError": None, "cycles": DUAL_PAPER_WORKER_STATE["cycles"] + 1,
-            "positionsChecked": checked, "automaticExits": exits
+            "status":"running","lastCycleAt":now.isoformat(),"lastError":None,
+            "cycles":DUAL_PAPER_WORKER_STATE.get("cycles",0)+1,
+            "positionsChecked":checked,"automaticExits":exits,
+            "activeExperiments":len(experiments),
+            "cryptoCandidates":len(crypto_candidates),"stocksCandidates":len(stock_candidates)
         })
     except Exception as exc:
-        DUAL_PAPER_WORKER_STATE.update({"status": "error", "lastError": type(exc).__name__})
-        log.exception("Dual Paper monitor cycle failed")
+        DUAL_PAPER_WORKER_STATE.update({"status":"error","lastError":type(exc).__name__})
+        log.exception("Dual paper monitor cycle failed")
     finally:
         DUAL_PAPER_WORKER_LOCK.release()
 
@@ -2853,3 +3043,82 @@ def adaptive_paper_preview(request: Request):
         "decisions": {"crypto": crypto_rows[:30], "stocks": stock_rows[:30]},
         "disclaimer": "ผลลัพธ์เป็นการคัดกรองสัญญาณ ไม่ใช่คำสั่งซื้อขาย และไม่รับประกันกำไร"
     }
+
+
+@app.post("/ai/adaptive-paper/start")
+def adaptive_paper_start(request: Request):
+    """Start a 14-day adaptive experiment on both isolated Paper portfolios."""
+    user=_paper_auth_user(request)
+    uid=str(user["id"])
+    active=_sb_rest("blessing_dual_experiments",{
+        "select":"id,started_at,ends_at,status","user_id":"eq."+uid,"status":"eq.active","limit":"1"
+    }) or []
+    if active:
+        return {"ok":True,"alreadyActive":True,"experiment":active[0],"mode":"paper","liveOrdersEnabled":False}
+    portfolios={}
+    for market,config in DUAL_PAPER_PORTFOLIOS.items():
+        row=_dual_paper_ensure_portfolio(uid,config)
+        if row.get("mode")!="paper":
+            raise HTTPException(status_code=409,detail="อนุญาตเฉพาะ Paper Trading")
+        portfolios[market]=row
+    started=datetime.now(timezone.utc)
+    ends=started+timedelta(days=14)
+    exp=_sb_rest("blessing_dual_experiments",{}, "POST",{
+        "user_id":uid,"started_at":started.isoformat(),"ends_at":ends.isoformat(),
+        "status":"active","markets":["crypto","stocks"],
+        "config":{"strategy":"adaptive_regime","risk_per_trade_pct":0.5,
+                  "crypto_stop_loss_pct":1.0,"crypto_take_profit_pct":2.0,
+                  "stocks_stop_loss_pct":25.0,"stocks_take_profit_pct":20.0,
+                  "fee_bps":10,"slippage_bps_per_side":5}
+    })
+    if not exp:
+        raise HTTPException(status_code=503,detail="เริ่มการทดลองไม่สำเร็จ")
+    for market,row in portfolios.items():
+        _sb_rest("blessing_dual_portfolios",{"id":"eq."+str(row["id"]),"user_id":"eq."+uid},
+                 "PATCH",{"enabled":True,"updated_at":started.isoformat()})
+    return {"ok":True,"mode":"paper","liveOrdersEnabled":False,"automaticEntriesEnabled":True,
+            "experiment":exp[0],"markets":{"crypto":"enabled","stocks":"enabled"},
+            "message":"เริ่ม Adaptive Paper Trading 14 วัน ทั้งสองตลาดแล้ว ไม่มีคำสั่งเงินจริง"}
+
+
+@app.post("/ai/adaptive-paper/stop")
+def adaptive_paper_stop(request: Request):
+    user=_paper_auth_user(request)
+    uid=str(user["id"])
+    rows=_sb_rest("blessing_dual_experiments",{
+        "select":"id","user_id":"eq."+uid,"status":"eq.active","limit":"1"
+    }) or []
+    for row in rows:
+        _sb_rest("blessing_dual_experiments",{"id":"eq."+str(row["id"])},
+                 "PATCH",{"status":"stopped","updated_at":datetime.now(timezone.utc).isoformat()})
+    _sb_rest("blessing_dual_portfolios",{"user_id":"eq."+uid},
+             "PATCH",{"enabled":False,"updated_at":datetime.now(timezone.utc).isoformat()})
+    return {"ok":True,"stopped":True,"mode":"paper","message":"หยุดเปิดสถานะใหม่แล้ว ระบบยังติดตามและปิดสถานะเดิมตาม TP/SL"}
+
+
+@app.get("/ai/adaptive-paper/report")
+def adaptive_paper_report(request: Request):
+    user=_paper_auth_user(request)
+    uid=str(user["id"])
+    experiments=_sb_rest("blessing_dual_experiments",{
+        "select":"id,started_at,ends_at,status,markets,config","user_id":"eq."+uid,
+        "order":"created_at.desc","limit":"5"
+    }) or []
+    if not experiments:
+        return {"ok":True,"experiment":None,"markets":{},"mode":"paper","liveOrdersEnabled":False}
+    exp=experiments[0]
+    report={}
+    for market in ("crypto","stocks"):
+        marks=_sb_rest("blessing_dual_equity_marks",{
+            "select":"marked_at,cash_balance,market_value,equity,realized_pnl,unrealized_pnl,fees_paid,estimated_slippage,net_pnl_after_costs,net_return_pct,peak_equity,drawdown_pct",
+            "experiment_id":"eq."+str(exp["id"]),"market":"eq."+market,
+            "order":"marked_at.asc","limit":"10000"
+        }) or []
+        latest=marks[-1] if marks else None
+        max_dd=max([float(x.get("drawdown_pct") or 0) for x in marks] or [0])
+        report[market]={"markCount":len(marks),"latest":latest,"maxDrawdownPct":max_dd,
+                        "equityCurve":marks[-500:]}
+    return {"ok":True,"mode":"paper","liveOrdersEnabled":False,
+            "automaticEntriesEnabled":True,"experiment":exp,"markets":report,
+            "measurement":{"netProfit":"equity minus starting capital and estimated slippage; exchange fees already deducted from cash",
+                           "drawdown":"peak-to-trough based on net equity marks","slippageModel":"5 bps per filled order side"}}
