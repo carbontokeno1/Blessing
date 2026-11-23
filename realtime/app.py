@@ -1093,7 +1093,8 @@ def _universe_scan_cycle():
         if row:
             candidates.append(row)
     candidates.sort(key=lambda x: (
-        (x.get("relativeVolume") or 0) * 2
+        (x.get("score") or 0) * 2
+        + (x.get("relativeVolume") or 0)
         + (x.get("m5") or 0) + (x.get("m1") or 0)
         + min((x.get("dailyVolumeIex") or 0) / 1000000, 5)
     ), reverse=True)
