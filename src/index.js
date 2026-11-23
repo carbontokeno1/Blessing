@@ -161,7 +161,10 @@ export default {
         return json({ status: "source_error", message: error?.message || "scanner_failed", candidates: [], updatedAt: new Date().toISOString() }, 502);
       }
     }
-    if (pathname === "/admin-members") {\n      const adminUrl = new URL("/admin-members.html", request.url);\n      return env.ASSETS.fetch(new Request(adminUrl, request));\n    }\n    if (pathname === "/member") {\n      const memberUrl = new URL("/member.html", request.url);\n      return env.ASSETS.fetch(new Request(memberUrl, request));\n    }\n    if (pathname === "/paper-reports") {
+    if (pathname === "/admin-members" || pathname === "/member") {
+      return Response.redirect(new URL("/", request.url), 302);
+    }
+    if (pathname === "/paper-reports") {
       const reportUrl = new URL("/paper-reports.html", request.url);
       return env.ASSETS.fetch(new Request(reportUrl, request));
     }
