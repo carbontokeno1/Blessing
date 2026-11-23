@@ -726,6 +726,53 @@ def quotes_fallback(symbols: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD"):
                 if cached and now - cached["at"] < QUOTE_CACHE_SECONDS:
                     fresh[symbol] = dict(cached["payload"])
                     missing.remove(symbol)
+            # Use Alpaca's REST snapshot as a second source when the websocket has
+            # not produced a quote yet. This also covers brief websocket reconnects.
+            if missing and ALPACA_KEY and ALPACA_SECRET:
+                try:
+                    snapshots = _alpaca_snapshots(missing)
+                    snapshot_count = 0
+                    for symbol in list(missing):
+                        snap = snapshots.get(symbol) or {}
+                        trade = snap.get("latestTrade") or {}
+                        minute = snap.get("minuteBar") or {}
+                        daily = snap.get("dailyBar") or {}
+                        previous = snap.get("prevDailyBar") or {}
+                        price = _num(trade.get("p"), _num(minute.get("c"), _num(daily.get("c"), _num(previous.get("c")))))
+                        if not price or price <= 0:
+                            continue
+                        stamp = trade.get("t") or minute.get("t") or daily.get("t") or previous.get("t")
+                        price_time = None
+                        age = 999999
+                        if stamp:
+                            try:
+                                parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                                price_time = int(parsed.timestamp() * 1000)
+                                age = max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+                            except Exception:
+                                pass
+                        previous_close = _num(previous.get("c"), None)
+                        payload = {
+                            "symbol": symbol,
+                            "price": float(price),
+                            "changePct": round((float(price) / previous_close - 1) * 100, 4) if previous_close else None,
+                            "volume": int(_num(daily.get("v"), _num(previous.get("v"), 0)) or 0),
+                            "m1": None,
+                            "m5": None,
+                            "session": "PRE_MARKET_OR_REGULAR",
+                            "priceTime": price_time,
+                            "receivedAt": datetime.now(timezone.utc).isoformat(),
+                            "source": "Alpaca IEX REST snapshot",
+                            "stale": age > 300,
+                            "staleSeconds": age,
+                        }
+                        QUOTE_CACHE[symbol] = {"at": time.time(), "payload": payload}
+                        fresh[symbol] = payload
+                        snapshot_count += 1
+                    missing = [symbol for symbol in missing if symbol not in fresh]
+                    log.info("Alpaca REST snapshot fallback returned %d/%d requested symbols", snapshot_count, len(snapshots) or len(missing) + snapshot_count)
+                except Exception as exc:
+                    log.warning("Alpaca REST snapshot fallback unavailable: %s", type(exc).__name__)
             if missing:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
                     futures = {pool.submit(_fetch_yahoo_chart_quote, symbol): symbol for symbol in missing}
