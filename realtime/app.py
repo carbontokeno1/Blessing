@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
@@ -527,6 +528,40 @@ def scanner(rank_type: str = "DAY_1", direction: str = "DESC"):
     rank_type, direction = rank_type.upper(), direction.upper()
     if rank_type not in SCANNER_TYPES or direction not in {"ASC", "DESC"}:
         return {"status": "error", "message": "พารามิเตอร์การสแกนไม่ถูกต้อง", "candidates": [], "scanned": 0}
+    # Use the same verified Alpaca IEX universe scan for intraday and extended-hours
+    # movers. The daily Yahoo fallback remains separate and explicitly labeled.
+    if rank_type in {"PRE_MARKET", "AFTER_MARKET", "MIN_3", "MIN_5"}:
+        with UNIVERSE_LOCK:
+            scan = dict(UNIVERSE_STATE)
+        candidates = list(scan.get("candidates") or [])
+        if rank_type == "PRE_MARKET":
+            candidates = [x for x in candidates if x.get("session") == "PRE_MARKET"]
+            sort_key = lambda x: _num(x.get("changePct"), -999) or -999
+        elif rank_type == "AFTER_MARKET":
+            candidates = [x for x in candidates if x.get("session") == "AFTER_HOURS"]
+            sort_key = lambda x: _num(x.get("changePct"), -999) or -999
+        elif rank_type == "MIN_3":
+            candidates = [x for x in candidates if x.get("m3") is not None]
+            sort_key = lambda x: _num(x.get("m3"), -999) or -999
+        else:
+            candidates = [x for x in candidates if x.get("m5") is not None]
+            sort_key = lambda x: _num(x.get("m5"), -999) or -999
+        candidates.sort(key=sort_key, reverse=(direction == "DESC"))
+        return {
+            "provider": scan.get("provider", "Alpaca Basic · IEX"),
+            "status": scan.get("status", "waiting_scan"),
+            "message": (
+                "จัดอันดับจากข้อมูล IEX ในรอบสแกนล่าสุด · ไม่ใช่ข้อมูลครบทุกตลาด"
+                if candidates else
+                "รอบสแกนล่าสุดยังไม่มีหุ้นที่ผ่านเกณฑ์ในช่วงนี้ · อาจไม่มีข้อมูล IEX หรืออยู่นอกช่วงซื้อขาย"
+            ),
+            "rankType": rank_type, "direction": direction,
+            "scanned": len(candidates), "candidates": candidates[:100],
+            "updatedAt": scan.get("updatedAt"), "feed": "iex",
+            "coverage": scan.get("coverage"),
+            "limitations": scan.get("coverage"),
+        }
+
     cache_key = rank_type + ":" + direction
     now = time.time()
     cached = SCANNER_CACHE.get(cache_key)
@@ -966,7 +1001,24 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
 
     closes = [x["close"] for x in bars]
     m1 = ((closes[-1] / closes[-2]) - 1) * 100 if closes[-2] else None
+    m3 = ((closes[-1] / closes[-4]) - 1) * 100 if len(closes) >= 4 and closes[-4] else None
     m5 = ((closes[-1] / closes[-6]) - 1) * 100 if len(closes) >= 6 and closes[-6] else None
+    trade_time = trade.get("t") or minute.get("t")
+    session = "UNKNOWN"
+    if trade_time:
+        try:
+            et = datetime.fromisoformat(str(trade_time).replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
+            minute_of_day = et.hour * 60 + et.minute
+            if et.weekday() < 5 and 240 <= minute_of_day < 570:
+                session = "PRE_MARKET"
+            elif et.weekday() < 5 and 570 <= minute_of_day < 960:
+                session = "CORE"
+            elif et.weekday() < 5 and 960 <= minute_of_day < 1200:
+                session = "AFTER_HOURS"
+            else:
+                session = "CLOSED"
+        except Exception:
+            session = "UNKNOWN"
     previous_volumes = [x["volume"] for x in bars[-6:-1]]
     average_volume = sum(previous_volumes) / len(previous_volumes) if previous_volumes else 0
     rvol = bars[-1]["volume"] / average_volume if average_volume > 0 else None
@@ -1041,7 +1093,8 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     setup = "STRONG" if score >= 7 else ("WATCH" if score >= 5 else "EARLY")
     return {
         "symbol": symbol, "exchange": "Alpaca IEX/" + exchange,
-        "price": price, "changePct": change, "m1": m1, "m5": m5,
+        "price": price, "changePct": change, "m1": m1, "m3": m3, "m5": m5,
+        "session": session, "volume": int(daily_volume),
         "relativeVolume": rvol, "spreadPct": spread,
         "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
         "score": round(score, 1), "setup": setup,
