@@ -1976,7 +1976,10 @@ def dual_paper_status(request: Request):
             "openPositions": positions, "recentOrders": orders,
         }
     return {"ok": True, "mode": "paper", "liveOrdersEnabled": False,
-            "crossPortfolioTransfersEnabled": False, "portfolios": result}
+            "crossPortfolioTransfersEnabled": False, "portfolios": result,
+            "worker": {**dict(DUAL_PAPER_WORKER_STATE),
+                       "intervalSeconds": DUAL_PAPER_WORKER_INTERVAL,
+                       "automaticTakeProfitStopLoss": True}}
 
 
 @app.post("/ai/dual-paper/refresh")
