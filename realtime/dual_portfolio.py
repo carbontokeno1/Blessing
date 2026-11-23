@@ -16,7 +16,7 @@ PORTFOLIOS = {
         "broker": "binance_th",
         "currency": "USDT",
         "starting_capital": "100",
-        "reserve_cash_pct": "20",
+        "reserve_cash_pct": "0",
         "risk_per_trade_pct": "1",
         "max_daily_loss_pct": "3",
         "max_weekly_loss_pct": "6",
@@ -31,7 +31,7 @@ PORTFOLIOS = {
         "broker": "webull",
         "currency": "USD",
         "starting_capital": "100",
-        "reserve_cash_pct": "20",
+        "reserve_cash_pct": "0",
         "risk_per_trade_pct": "1",
         "max_daily_loss_pct": "3",
         "max_weekly_loss_pct": "6",
@@ -81,7 +81,7 @@ def portfolio_overview() -> dict:
             "separate portfolio identifiers and base currencies",
             "separate starting capital, PnL, fees, positions, and risk limits",
             "no cross-portfolio transfers or shared collateral",
-            "each portfolio reserves its own cash independently",
+            "all available cash is deployable subject to per-trade and portfolio risk limits",
         ],
     }
 
@@ -90,7 +90,7 @@ def calculate_position_size(market: str, equity, stop_distance_pct) -> dict:
     """Risk-based notional sizing, capped by that portfolio's deployable cash.
 
     Example: $100 equity, 1% risk budget, 1.5% stop distance gives $66.66
-    notional before fees/slippage, subject to the 80% deployable-cash cap.
+    notional before fees/slippage, capped only by the full available cash balance.
     """
     config = portfolio_config(market)
     equity_value = _decimal(equity)
