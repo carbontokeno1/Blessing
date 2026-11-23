@@ -24,7 +24,7 @@ as $$
 declare v_role text;
 begin
   if auth.uid() is null or not private.has_admin_role() then raise exception 'admin_only' using errcode='42501'; end if;
-  if p_status not in ('active','suspended','closed','pending') then raise exception 'invalid_member_status' using errcode='22023'; end if;
+  if p_status not in ('active','suspended','pending') then raise exception 'invalid_member_status' using errcode='22023'; end if;
   select role into v_role from public.profiles where user_id=p_user_id;
   if v_role is distinct from 'member' then raise exception 'member_account_not_found' using errcode='P0002'; end if;
   update public.profiles set status=p_status,updated_at=now() where user_id=p_user_id;
