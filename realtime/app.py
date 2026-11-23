@@ -1088,7 +1088,8 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
 
     # Keep a broader, ranked watchlist. Very wide spreads are excluded;
     # strict FAST_ENTRY remains a separate, higher bar.
-    if score < 4 or (spread is not None and spread > 1.25):
+    # Include EARLY setups from score 3/11 upward so the daily scanner can surface developing moves; FAST_ENTRY remains independently strict.
+    if score < 3 or (spread is not None and spread > 1.25):
         return None
     fast_entry = bool(
         change is not None and change >= 3
