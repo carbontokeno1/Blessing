@@ -2003,7 +2003,8 @@ async def dual_paper_refresh(request: Request):
                     price = _binance_th_public_price(symbol)
                     source = "binance_th_public"
                 else:
-                    price, source = _dual_stock_market_price(symbol)
+                    price = _dual_market_price("stocks", symbol)
+                    source = "alpaca_iex_verified_live"
                 quantity = float(position.get("quantity") or 0)
                 entry = float(position.get("entry_price") or 0)
                 entry_fee = float(position.get("entry_fee") or 0)
@@ -2109,8 +2110,9 @@ def dual_paper_quote(request: Request, market: str, symbol: str):
         if not symbol or len(symbol) > 10 or not symbol[0].isalpha() or not all(c.isalnum() or c in ".-" for c in symbol):
             raise HTTPException(status_code=422, detail="สัญลักษณ์หุ้นไม่ถูกต้อง")
         try:
-            price, price_source = _dual_stock_market_price(symbol)
-            source = "Webull/Alpaca verified streaming quote"
+            price = _dual_market_price("stocks", symbol)
+            price_source = "alpaca_iex_verified_live"
+            source = "Alpaca IEX verified live trade/quote"
             currency = "USD"
         except Exception as exc:
             log.warning("Stock quote unavailable for %s: %s", symbol, type(exc).__name__)
