@@ -2588,9 +2588,9 @@ def binance_th_live_readiness(request: Request):
             "ok": True, "provider": "Binance TH", "accountCanTrade": can_trade,
             "exchangeTradingSymbols": active_symbols, "assets": free_assets,
             "ready": len(blockers) == 0, "blockers": blockers,
-            "liveOrdersEnabled": False,
+            "liveOrdersEnabled": switch_on,
             "manualMarketOrderEndpointImplemented": True,
-            "automatedLiveTradingImplemented": False,
+            "automatedLiveTradingImplemented": True,
             "checkedAt": datetime.now(timezone.utc).isoformat(),
             "message": "ตรวจสอบความพร้อมเท่านั้น ไม่มีการส่งคำสั่งซื้อขาย"
         }
