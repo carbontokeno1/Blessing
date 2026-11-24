@@ -891,14 +891,12 @@ function memberOverview(){const p=window.BLESSING_AUTH?.profile||{};return '<div
 let adminPortfolioReportTimer=null;
 function adminPortfolioReportView(){
  return '<div class="heading"><div><h1>📊 รายงานเรียลไทม์ทุกพอร์ต</h1><div class="muted">สมาชิก 10 ราย · 4 พอร์ตต่อสมาชิก · อัปเดตทุก 10 วินาที</div></div><button class="primary" onclick="loadAdminPortfolioReport()">รีเฟรชรายงาน</button></div>'+
- '<div class="notice">แสดงข้อมูล Paper จากฐานข้อมูลจริง ส่วนพอร์ต Live แสดง LOCKED และไม่ถือว่าวงเงินที่วางแผนไว้เป็นเงินจริง</div>
+ '<div class="notice">แสดงข้อมูล Paper จากฐานข้อมูลจริง ส่วนพอร์ต Live แสดง LOCKED และไม่ถือว่าวงเงินที่วางแผนไว้เป็นเงินจริง</div>'+
  '<div class="card section"><div class="heading"><div><h3>💰 ศูนย์ควบคุมวงเงินสมาชิก</h3><div class="small muted">Super Admin เท่านั้น · แยกคริปโต/หุ้น และ Paper/เงินจริง · บันทึกประวัติทุกคำสั่ง</div></div><span class="pill">OWNER ONLY</span></div><div class="notice">วงเงินนี้คือวงเงินอนุมัติ ไม่ใช่ยอดเงินฝากหรือเงินคงเหลือจริง · Live ยังปิดการส่งคำสั่งซื้อขายอยู่</div><form id="adminCapitalCommandForm" style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0"><input id="adminCapitalCommandInput" type="text" maxlength="500" placeholder="เช่น ตั้งวงเงินหุ้นทดลองสมาชิก 701 เป็น 80,000 บาท" style="flex:1;min-width:220px;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--text)"><button class="primary" type="submit">ส่งคำสั่ง</button><button class="secondary" type="button" id="adminCapitalRefresh">รีเฟรชวงเงิน</button></form><div id="adminCapitalCommandMessage" class="small muted">ระบุตลาดและโหมดให้ชัดเจนทุกครั้ง · ตรวจสอบวงเงินได้ด้วยคำสั่ง “ตรวจสอบวงเงินทั้งหมดสมาชิก 701”</div><div id="adminCapitalReport" class="empty">กำลังโหลดวงเงิน...</div></div>'+
-'+
  '<div id="portfolioReportUpdated" class="small muted" style="margin:10px 0">กำลังโหลด...</div>'+
  '<div id="portfolioReportSummary" class="grid"></div>'+
  '<div class="card section"><div class="heading"><h3>รายงานแยก 40 พอร์ต</h3><span class="pill">OWNER · READ ONLY</span></div><div id="portfolioReportBody" class="empty">กำลังอ่านข้อมูล...</div></div>'+'<div class="card section"><div class="heading"><div><h3>พอร์ต Paper กลาง · รายละเอียดการลงทุน</h3><div class="small muted">แยกจาก 40 พอร์ตสมาชิก · ราคาเข้า · ราคาปัจจุบัน · P/L · Take Profit · Stop Loss · ประวัติคำสั่ง</div></div><span class="pill">PAPER ONLY</span></div><div id="dualPaperDetail" class="empty">กำลังอ่านข้อมูลพอร์ตกลาง...</div></div>';
 }
-
 async function loadAdminCapitalReport(){
  const el=document.getElementById('adminCapitalReport'),sb=window.BLESSING_AUTH?.client;
  if(!el||!sb)return;
