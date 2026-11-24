@@ -311,14 +311,14 @@ def alpaca_stream_main():
 
 def binance_th_stream_main():
     """Consume Binance TH all-market ticker updates over its official public WebSocket."""
-    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!ticker@arr"
+    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!miniTicker@arr"
     while True:
         try:
             async def run_stream():
                 state["cryptoConnection"] = "connecting"
                 async with websockets.connect(url, ping_interval=60, ping_timeout=30, close_timeout=5, max_size=2**22) as ws:
                     state["cryptoConnection"] = "connected"
-                    log.info("Binance TH all-market live ticker stream connected")
+                    log.info("Binance TH all-market mini-ticker stream connected")
                     async for raw_message in ws:
                         payload = json.loads(raw_message)
                         data = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
@@ -333,16 +333,21 @@ def binance_th_stream_main():
                             price = _num(item.get("c"), 0)
                             if not symbol or price <= 0:
                                 continue
+                            # Binance TH miniTicker payload uses open (o), close (c),
+                            # base volume (v), and quote volume (q); it does not include
+                            # bid/ask or the ticker percentage-change field.
+                            open_price = _num(item.get("o"), 0)
                             bid = _num(item.get("b"), 0)
                             ask = _num(item.get("a"), 0)
                             quote_volume = _num(item.get("q"), 0)
+                            change_pct = ((price / open_price) - 1) * 100 if open_price > 0 else 0
                             quote_row = {
                                 "symbol": symbol,
                                 "price": float(price),
                                 "bid": bid,
                                 "ask": ask,
                                 "quoteVolume24h": quote_volume,
-                                "change24hPct": _num(item.get("P"), 0),
+                                "change24hPct": change_pct,
                                 "eventTime": item.get("E"),
                                 "receivedAt": now,
                                 "source": "Binance TH WebSocket live ticker",
