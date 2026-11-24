@@ -24,6 +24,7 @@ from ai_decision import build_decision_preview
 from adaptive_strategy import adaptive_decision, build_binance_th_candidates, experiment_window
 from dual_portfolio import portfolio_overview
 from fastapi.middleware.cors import CORSMiddleware
+from member_capital import register_member_capital_routes
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("blessing-realtime")
@@ -1816,6 +1817,8 @@ def _binance_th_owner_auth(request: Request):
         raise HTTPException(status_code=403, detail="ต้องใช้บัญชี Super Admin ที่เปิดใช้งานเท่านั้น")
     return user
 
+
+register_member_capital_routes(app, _binance_th_owner_auth, _sb_rest, _sb_rpc)
 
 @app.post("/admin/member-portfolios/control")
 async def admin_control_member_portfolios(request: Request):
