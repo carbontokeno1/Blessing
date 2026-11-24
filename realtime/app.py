@@ -2663,7 +2663,8 @@ async def binance_th_owner_market_order(request: Request):
         if not base_asset or not quote_asset or quote_asset not in ("THB","USDT"):
             raise HTTPException(status_code=422, detail="ระยะแรกจำกัดคู่ Spot เฉพาะตลาด THB และ USDT")
         filters = {str(x.get("filterType")):x for x in symbol_info.get("filters",[]) if isinstance(x,dict)}
-        lot = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE") or {}
+        market_lot = filters.get("MARKET_LOT_SIZE") or {}
+        lot = market_lot if Decimal(str(market_lot.get("stepSize") or "0")) > 0 else (filters.get("LOT_SIZE") or market_lot)
         step = Decimal(str(lot.get("stepSize") or "0"))
         min_qty = Decimal(str(lot.get("minQty") or "0"))
         max_qty = Decimal(str(lot.get("maxQty") or "0"))
@@ -2747,6 +2748,11 @@ async def binance_th_owner_market_order(request: Request):
         _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(intent_id)},"PATCH",{
             "exchange_order_id":str(exchange_result.get("orderId") or "" ) or None,"exchange_status":exchange_status,
             "executed_quantity":executed_qty,"cumulative_quote_quantity":cumulative_quote,"status":stored_status,
+            "remaining_reserved_amount":str(
+                Decimal("0") if stored_status in ("FILLED","CANCELED","REJECTED","EXPIRED") else
+                max(Decimal("0"), (Decimal(str(requested_quote_value)) - Decimal(cumulative_quote)) if side == "BUY"
+                    else (Decimal(str(requested_qty_value)) - Decimal(executed_qty)))
+            ),
             "exchange_response":exchange_result if isinstance(exchange_result,dict) else {},
             "finalized_at":datetime.now(timezone.utc).isoformat() if stored_status in ("FILLED","CANCELED","REJECTED","EXPIRED") else None,
             "updated_at":datetime.now(timezone.utc).isoformat()})
@@ -2785,7 +2791,7 @@ async def binance_th_owner_reconcile_order(request: Request):
     if not client_order_id or len(client_order_id)>36:
         raise HTTPException(status_code=422,detail="clientOrderId ไม่ถูกต้อง")
     rows = _sb_rest("blessing_owner_live_order_intents",{
-        "select":"id,owner_user_id,client_order_id,symbol,status","owner_user_id":"eq."+str(owner["id"]),
+        "select":"id,owner_user_id,client_order_id,symbol,status,requested_quantity,requested_quote_amount","owner_user_id":"eq."+str(owner["id"]),
         "client_order_id":"eq."+client_order_id,"limit":"1"
     })
     if not rows:
@@ -2803,6 +2809,11 @@ async def binance_th_owner_reconcile_order(request: Request):
         _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(row["id"])},"PATCH",{
             "exchange_order_id":str(result.get("orderId") or "") or None,"exchange_status":exchange_status,
             "executed_quantity":executed,"cumulative_quote_quantity":cumulative,"status":status,
+            "remaining_reserved_amount":str(
+                Decimal("0") if status in ("FILLED","CANCELED","REJECTED","EXPIRED") else
+                max(Decimal("0"), (Decimal(str(rows[0].get("requested_quote_amount") or "0")) - Decimal(cumulative)) if rows[0].get("requested_quote_amount") is not None
+                    else (Decimal(str(rows[0].get("requested_quantity") or "0")) - Decimal(executed)))
+            ),
             "exchange_response":result,"error_code":None,"error_message":None,
             "finalized_at":now if status in ("FILLED","CANCELED","REJECTED","EXPIRED") else None,"updated_at":now
         })
