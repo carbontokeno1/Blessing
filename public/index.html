@@ -895,7 +895,7 @@ async function loadAdminPortfolioControls(){
  const el=document.getElementById('adminPortfolioControls');
  const sb=window.BLESSING_AUTH?.client;
  if(!el||!sb)return;
- el.innerHTML='กำลังอ่านทะเบียนพอร์ต 40 รายการ...';
+ if(!el.innerHTML.trim())el.innerHTML='<div class="small muted">กำลังอ่านทะเบียนพอร์ต 40 รายการ...</div>';
  try{
   const {data,error}=await sb.auth.getSession();
   if(error||!data.session?.access_token)throw Error('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
