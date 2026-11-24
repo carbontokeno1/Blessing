@@ -2089,7 +2089,7 @@ def admin_member_portfolios_report(request: Request):
     stock_ids = [str(row["id"]) for row in stock_slots if row.get("id")]
     crypto_ids = [str(row["id"]) for row in crypto_slots if row.get("id")]
     stock_positions = _sb_rest("blessing_stock_paper_slot_positions", {
-        "select": "id,slot_id,symbol,quantity,average_entry_price_usd,current_price_usd,current_fx_thb_per_usd,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
+        "select": "id,slot_id,symbol,quantity,average_entry_price_usd,current_price_usd,entry_fx_thb_per_usd,current_fx_thb_per_usd,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
         "slot_id": "in.(" + ",".join(stock_ids) + ")", "status": "eq.open", "limit": "1000",
     }) if stock_ids else []
     crypto_positions = _sb_rest("blessing_paper_slot_positions", {
@@ -2163,8 +2163,8 @@ def admin_member_portfolios_report(request: Request):
                 "filledOrders": filled_orders, "buyOrders": buy_orders, "sellOrders": sell_orders,
                 "positions": [{
                     "symbol": p.get("symbol"), "quantity": num(p.get("quantity")),
-                    "entryPrice": num(p.get("average_entry_price_usd") if ptype == "stock_paper" else p.get("average_entry_price_thb")),
-                    "currentPrice": num(p.get("current_price_usd") if ptype == "stock_paper" else p.get("current_price_thb")),
+                    "entryPrice": (num(p.get("average_entry_price_usd")) * num(p.get("entry_fx_thb_per_usd"))) if ptype == "stock_paper" else num(p.get("average_entry_price_thb")),
+                    "currentPrice": (num(p.get("current_price_usd")) * num(p.get("current_fx_thb_per_usd"))) if ptype == "stock_paper" else num(p.get("current_price_thb")),
                     "unrealizedPnl": num(p.get("unrealized_pnl_thb")), "openedAt": p.get("opened_at"),
                 } for p in positions],
                 "slotUpdatedAt": slot.get("updated_at"),
@@ -4312,6 +4312,12 @@ def _member_slot_engine_cycle():
     try:
         now = datetime.now(timezone.utc)
         fx = _member_slot_usd_thb()
+        # Heartbeat keeps owner reports visibly current even when no strategy signal qualifies.
+        heartbeat = now.isoformat()
+        _sb_rest("blessing_paper_member_slots", {"enabled":"eq.true","mode":"eq.paper"},
+                 method="PATCH", body={"status":"running","updated_at":heartbeat})
+        _sb_rest("blessing_stock_paper_member_slots", {"enabled":"eq.true"},
+                 method="PATCH", body={"status":"running","updated_at":heartbeat})
         crypto_slots = _sb_rest("blessing_paper_member_slots", {
             "select":"id,slot_no,initial_capital,cash_balance,max_open_positions,enabled,status",
             "enabled":"eq.true", "mode":"eq.paper", "limit":"20"
