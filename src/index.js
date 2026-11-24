@@ -46,7 +46,7 @@ async function binanceThAccount(env) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || (typeof payload?.code === "number" && payload.code !== 0)) {
-    return json({ ok: false, configured: true, connected: false, provider: "Binance TH", httpStatus: response.status, errorCode: payload?.code ?? null, message: payload?.msg || "Binance TH authentication failed" }, 502);
+    return json({ ok: false, configured: true, connected: false, provider: "Binance TH", httpStatus: response.status, errorCode: payload?.code ?? null, message: payload?.msg || `Binance TH authentication failed (HTTP ${response.status}; Binance code ${payload?.code ?? "not provided"})` }, 502);
   }
   const assets = (payload.balances || [])
     .map(x => ({ asset: String(x.asset || ""), free: String(x.free || "0"), locked: String(x.locked || "0") }))
