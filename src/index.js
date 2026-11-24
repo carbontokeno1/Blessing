@@ -284,6 +284,9 @@ export default {
         return json({ status: "source_error", message: error?.message || "scanner_failed", candidates: [], updatedAt: new Date().toISOString() }, 502);
       }
     }
+    if (pathname === "/api/binance-th/auto-trade/portfolio") {
+      return binanceThLiveProxy(request,"/binance-th/auto-trade/portfolio","GET");
+    }
     if (pathname === "/api/binance-th/auto-trade/status") {
       if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
       return binanceThLiveProxy(request,"/binance-th/auto-trade/status","GET");
@@ -353,7 +356,7 @@ export default {
       const headers = new Headers(assetResponse.headers);
       headers.set("cache-control", "no-store, no-cache, must-revalidate, max-age=0");
       headers.set("pragma", "no-cache");
-      headers.set("x-blessing-build", "owner-auto-trade-proxy-2026-11-24");
+      headers.set("x-blessing-build", "owner-live-portfolio-proxy-2026-11-25");
       return new Response(request.method === "HEAD" ? null : assetResponse.body, {
         status: assetResponse.status,
         statusText: assetResponse.statusText,
