@@ -4556,13 +4556,35 @@ async def member_slot_engine_startup():
 def admin_member_slot_engine_status(request: Request):
     _binance_th_owner_auth(request)
     crypto = _sb_rest("blessing_paper_member_slots", {
-        "select":"slot_no,display_label,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status",
+        "select":"slot_no,display_label,assigned_user_id,mode,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at,started_at,stopped_at",
         "order":"slot_no.asc","limit":"10"
     }) or []
     stocks = _sb_rest("blessing_stock_paper_member_slots", {
-        "select":"slot_no,display_label,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status",
+        "select":"slot_no,display_label,assigned_user_id,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at,started_at,stopped_at",
         "order":"slot_no.asc","limit":"10"
     }) or []
-    return {"ok":True,"engine":dict(MEMBER_SLOT_ENGINE_STATE),
-            "cryptoPaperSlots":crypto,"stockPaperSlots":stocks,
-            "liveTradingEnabled":False}
+    crypto_orders = _sb_rest("blessing_paper_slot_orders", {
+        "select":"slot_id,side,symbol,status,reason,realized_pnl_thb,created_at",
+        "order":"created_at.desc","limit":"20"
+    }) or []
+    stock_orders = _sb_rest("blessing_stock_paper_slot_orders", {
+        "select":"slot_id,side,symbol,status,reason,realized_pnl_thb,created_at",
+        "order":"created_at.desc","limit":"20"
+    }) or []
+    crypto_enabled = sum(1 for row in crypto if row.get("enabled"))
+    stock_enabled = sum(1 for row in stocks if row.get("enabled"))
+    return {
+        "ok":True,
+        "engine":dict(MEMBER_SLOT_ENGINE_STATE),
+        "cryptoPaperSlots":crypto,
+        "stockPaperSlots":stocks,
+        "summary":{
+            "cryptoEnabled":crypto_enabled,"cryptoTotal":len(crypto),
+            "stocksEnabled":stock_enabled,"stocksTotal":len(stocks),
+            "latestCryptoOrderAt":crypto_orders[0].get("created_at") if crypto_orders else None,
+            "latestStockOrderAt":stock_orders[0].get("created_at") if stock_orders else None,
+        },
+        "recentCryptoOrders":crypto_orders,
+        "recentStockOrders":stock_orders,
+        "liveTradingEnabled":False
+    }
