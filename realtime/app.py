@@ -1924,7 +1924,7 @@ def dual_paper_initialize(request: Request):
             "cash_balance": config["capital"], "mode": "paper", "enabled": False,
             "reserve_cash_pct": 0, "risk_per_trade_pct": 1,
             "max_daily_loss_pct": 3, "max_weekly_loss_pct": 6,
-            "max_drawdown_pct": 10, "max_open_positions": 2,
+            "max_drawdown_pct": 10, "max_open_positions": 5,
             "peak_equity": config["capital"],
         }
         rows = _sb_rest("blessing_dual_portfolios", {}, "POST", payload)
@@ -2785,13 +2785,13 @@ def dual_paper_status(request: Request):
             "realizedPnl":realized,"unrealizedPnl":unrealized,
             "feesPaid":float(row["fees_paid"]),"totalPnl":realized+unrealized,
             "mode":row["mode"],"enabled":bool(row["enabled"]),
-            "riskLimits":{"maxPositionLossPct":25,"maxTotalAllocationPct":30,
+            "riskLimits":{"maxPositionLossPct":25,"maxTotalAllocationPct":100,
                 "reserveCashPct":0,"dailyLossLimitEnabled":False,
                 "weeklyLossLimitEnabled":False,"cumulativeLossLimitEnabled":False,
-                "drawdownStopEnabled":False,"maxOpenPositions":2 if market == "stocks" else None},
+                "drawdownStopEnabled":False,"maxOpenPositions":5 if market == "stocks" else None},
             "openPositions":positions,"recentOrders":orders,
             "tradingRules":({"stopLossPct":25,"takeProfitMinPct":5,"takeProfitMaxPct":15,
-                             "maxOpenPositions":2,"automaticEntry":True,"stopByUserOnly":True,
+                             "maxOpenPositions":5,"maxTotalAllocationPct":100,"automaticEntry":True,"stopByUserOnly":True,
                              "feePctPerSide":0.10,"slippageBpsPerSide":5,
                              "source":"server_enforced"} if market == "stocks" else {"source":"per_order"}),
             "liveOrdersEnabled":False
@@ -2894,7 +2894,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     equity += market_value
     if any(p.get("symbol")==symbol for p in positions):
         return None
-    if market == "stocks" and len(positions) >= 2:
+    if market == "stocks" and len(positions) >= 5:
         return None
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
     if market == "stocks":
@@ -2907,7 +2907,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         stop_pct = float(strategy_config.get(market + "_stop_loss_pct", 1.5))
         target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0))
         stop_pct = min(25.0, max(0.1, stop_pct))
-    max_notional_pct = float(strategy_config.get("max_notional_pct") or 6.0)
+    max_notional_pct = float(strategy_config.get("max_notional_pct") or 100.0)
     max_total_allocation_pct = float(strategy_config.get("max_total_allocation_pct") or 100.0)
     all_portfolios = _sb_rest("blessing_dual_portfolios", {
         "select":"id,market,cash_balance,initial_capital",
@@ -2926,7 +2926,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     remaining_allocation = max(0.0, total_equity * max_total_allocation_pct / 100 - total_exposure)
     # No reserve: each entry targets a 6% slice of combined crypto + stock equity.
     # Crypto has no per-cycle symbol-count cap; all entries still share one 30% allocation cap.
-    notional = min(cash_balance, remaining_allocation, total_equity * min(max_notional_pct, 6.0) / 100)
+    notional = min(cash_balance, remaining_allocation, total_equity * min(max_notional_pct, 100.0) / 100)
     if notional < 1.0:
         return None
     fill_price = market_price * 1.0005
@@ -3059,7 +3059,7 @@ def _dual_paper_worker_cycle():
             for portfolio in enabled_stock_portfolios:
                 uid = str(portfolio["user_id"])
                 stock_experiment = {"id":"AUTO-STOCK", "config":{"stocks_stop_loss_pct":25,
-                    "stocks_take_profit_pct":10,"max_notional_pct":6,"max_total_allocation_pct":30}}
+                    "stocks_take_profit_pct":10,"max_notional_pct":100,"max_total_allocation_pct":100}}
                 ranked_stock_candidates = sorted(
                     stock_candidates.items(),
                     key=lambda item: float(item[1][1].get("opportunityScore") or 0),
@@ -3086,9 +3086,9 @@ def _dual_paper_worker_cycle():
                     # Re-read open positions; the entry helper enforces the two-position cap.
                     open_now = _sb_rest("blessing_dual_positions", {
                         "select":"id","portfolio_id":"eq."+str(portfolio["id"]),
-                        "user_id":"eq."+uid,"status":"eq.open","limit":"3"
+                        "user_id":"eq."+uid,"status":"eq.open","limit":"6"
                     }) or []
-                    if len(open_now) >= 2:
+                    if len(open_now) >= 5:
                         break
         experiment_by_user = {str(exp["user_id"]): exp for exp in experiments}
         ranked_by_user = {}
@@ -3320,8 +3320,8 @@ async def dual_paper_order(request: Request):
                 "select":"id,symbol", "portfolio_id":"eq." + str(portfolio["id"]),
                 "user_id":"eq." + str(user["id"]), "status":"eq.open", "limit":"3"
             }) or []
-            if len(open_stocks) >= 2:
-                raise HTTPException(status_code=409, detail="พอร์ตหุ้นเปิดครบ 2 สถานะแล้ว")
+            if len(open_stocks) >= 5:
+                raise HTTPException(status_code=409, detail="พอร์ตหุ้นเปิดครบ 5 สถานะแล้ว")
             if any(str(row.get("symbol") or "").upper() == symbol for row in open_stocks):
                 raise HTTPException(status_code=409, detail="หุ้นนี้มีสถานะเปิดอยู่แล้ว")
 
