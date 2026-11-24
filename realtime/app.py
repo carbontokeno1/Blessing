@@ -4068,6 +4068,9 @@ def _dual_paper_worker_cycle():
             "status":"eq.active","limit":"100"
         }) or []
 
+        # Initialize cycle counters before either market loop. Crypto entries run first.
+        entries_opened = 0
+        selected_markets = {}
         crypto_candidates = {}
         crypto_stamp=state.get("lastCryptoMessageAt")
         try:
@@ -4126,8 +4129,6 @@ def _dual_paper_worker_cycle():
         # Stock Paper automation is controlled only by the user's portfolio START/STOP button.
         # The worker keeps scanning while enabled, enters only qualifying candidates, and
         # always monitors existing positions above even after STOP is pressed.
-        entries_opened = 0
-        selected_markets = {}
         if stock_fresh and stock_candidates:
             enabled_stock_portfolios = _sb_rest("blessing_dual_portfolios", {
                 "select":"id,user_id,market,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity",
