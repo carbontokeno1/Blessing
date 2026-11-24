@@ -35,6 +35,8 @@ APP_SECRET = os.getenv("WEBULL_APP_SECRET", "")
 ALPACA_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET = os.getenv("ALPACA_API_SECRET", "")
 ALPACA_FEED = os.getenv("ALPACA_FEED", "iex").lower()
+BINANCE_TH_API_BASE = os.getenv("BINANCE_TH_API_BASE", "https://api.binance.th").rstrip("/")
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
 # REST-only by default avoids exhausting Alpaca Basic single-stream connection limits.
 ALPACA_STREAM_ENABLED = os.getenv("ALPACA_STREAM_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 REGION = os.getenv("WEBULL_REGION", "us")
@@ -1381,33 +1383,75 @@ def _okx_public_tickers():
         raise RuntimeError("OKX_NO_USDT_SPOT_TICKERS")
     return normalized
 
+def _binance_th_market_headers():
+    headers = {"Accept": "application/json", "User-Agent": "BlessingTrade-BinanceTH/1.0"}
+    # Public market-data routes do not require a key; attach the owner's key if configured.
+    if BINANCE_API_KEY:
+        headers["X-MBX-APIKEY"] = BINANCE_API_KEY
+    return headers
+
+
 def _binance_public_tickers():
+    """Build the scanner universe from Binance TH's official all-market ticker stream."""
+    now = time.time()
+    rows = []
+    for item in list((state.get("crypto_quotes") or {}).values()):
+        if not isinstance(item, dict):
+            continue
+        try:
+            age = now - datetime.fromisoformat(str(item.get("receivedAt")).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            age = 999999
+        if age < 0 or age > 60:
+            continue
+        pair = str(item.get("symbol") or "").upper()
+        price = _num(item.get("price"), 0) or 0
+        change_pct = _num(item.get("change24hPct"), 0) or 0
+        open_price = price / (1 + change_pct / 100) if price > 0 and change_pct > -99.9 else 0
+        if not pair.endswith("USDT") or price <= 0 or open_price <= 0:
+            continue
+        rows.append({
+            "symbol": pair, "lastPrice": price,
+            "quoteVolume": _num(item.get("quoteVolume24h"), 0) or 0,
+            "openPrice": open_price, "bidPrice": _num(item.get("bid"), 0) or 0,
+            "askPrice": _num(item.get("ask"), 0) or 0,
+            "closeTime": int(_num(item.get("eventTime"), 0) or 0),
+        })
+    if not rows:
+        raise RuntimeError("BINANCE_TH_LIVE_TICKERS_NOT_READY")
+    return rows
+
+
+def _binance_1m_klines(symbol: str):
+    """Read closed 1-minute candles from Binance TH official Spot REST API."""
     response = requests.get(
-        "https://data-api.binance.vision/api/v3/ticker/24hr",
-        timeout=(5, 15),
-        headers={"User-Agent": "BlessingTrade-MarketScanner/1.0"},
+        BINANCE_TH_API_BASE + "/api/v1/klines",
+        params={"symbol": symbol, "interval": "1m", "limit": 65},
+        timeout=(4, 12), headers=_binance_th_market_headers(),
     )
     response.raise_for_status()
     rows = response.json()
     if not isinstance(rows, list):
-        raise RuntimeError("BINANCE_INVALID_TICKER_RESPONSE")
-    normalized = []
+        raise RuntimeError("BINANCE_TH_INVALID_KLINE_RESPONSE")
+    now_ms = int(time.time() * 1000)
+    bars = []
     for row in rows:
-        if not isinstance(row, dict):
+        if not isinstance(row, list) or len(row) < 8:
             continue
-        pair = str(row.get("symbol") or "").upper()
-        if not pair.endswith("USDT"):
+        try:
+            close_time = int(row[6])
+            if close_time >= now_ms:
+                continue
+            bars.append({
+                "openTime": int(row[0]), "open": float(row[1]), "high": float(row[2]),
+                "low": float(row[3]), "close": float(row[4]), "volume": float(row[5]),
+                "closeTime": close_time, "quoteVolume": float(row[7]),
+            })
+        except (TypeError, ValueError, IndexError):
             continue
-        normalized.append({
-            "symbol": pair,
-            "lastPrice": _num(row.get("lastPrice"), 0),
-            "quoteVolume": _num(row.get("quoteVolume"), 0),
-            "openPrice": _num(row.get("openPrice"), 0),
-            "bidPrice": _num(row.get("bidPrice"), 0),
-            "askPrice": _num(row.get("askPrice"), 0),
-            "closeTime": int(_num(row.get("closeTime"), 0) or 0),
-        })
-    return normalized
+    if not bars:
+        raise RuntimeError("BINANCE_TH_EMPTY_CANDLE_RESPONSE")
+    return bars
 
 
 def _binance_1m_klines(symbol: str):
@@ -1505,40 +1549,14 @@ def altcoin_scanner(refresh: int = 0):
             result["cacheAgeSeconds"] = int(now - ALTCOIN_CACHE["at"])
             return result
 
-    provider = "Binance"
+    provider = "Binance TH Spot API"
     bitmart_error = None
     try:
         # Binance is the execution venue for Paper Trading; use it as the primary scanner.
         try:
             tickers = _binance_public_tickers()
         except Exception as primary_error:
-            log.warning("Binance primary ticker endpoint failed: %s", type(primary_error).__name__)
-            # Try the alternate Binance host before falling back to BitMart display-only data.
-            tickers = None
-            alternate_error = primary_error
-            for host in ("https://api.binance.com", "https://data-api.binance.vision"):
-                try:
-                    response = requests.get(
-                        host + "/api/v3/ticker/24hr", timeout=(4, 10),
-                        headers={"User-Agent": "BlessingTrade-MarketScanner/1.0"})
-                    response.raise_for_status()
-                    raw = response.json()
-                    if not isinstance(raw, list):
-                        raise RuntimeError("BINANCE_INVALID_TICKER_RESPONSE")
-                    tickers = [{
-                        "symbol": str(x.get("symbol") or "").upper(),
-                        "lastPrice": _num(x.get("lastPrice"), 0),
-                        "quoteVolume": _num(x.get("quoteVolume"), 0),
-                        "openPrice": _num(x.get("openPrice"), 0),
-                        "bidPrice": _num(x.get("bidPrice"), 0),
-                        "askPrice": _num(x.get("askPrice"), 0),
-                        "closeTime": int(_num(x.get("closeTime"), 0) or 0),
-                    } for x in raw if isinstance(x, dict) and str(x.get("symbol") or "").upper().endswith("USDT")]
-                    break
-                except Exception as fallback_error:
-                    alternate_error = fallback_error
-            if tickers is None:
-                raise RuntimeError("BINANCE_ALL_TICKER_HOSTS_FAILED:" + type(alternate_error).__name__)
+            raise RuntimeError("BINANCE_TH_LIVE_TICKERS_UNAVAILABLE:" + type(primary_error).__name__)
     except Exception as binance_error:
         log.error("Binance scanner unavailable: %s", type(binance_error).__name__)
         try:
@@ -1567,7 +1585,7 @@ def altcoin_scanner(refresh: int = 0):
     eligible = []
     reject = {"not_usdt": 0, "stable_or_leveraged": 0, "low_volume": 0, "invalid_price": 0}
     for item in tickers:
-        if provider == "Binance":
+        if provider == "Binance TH Spot API":
             pair = str(item.get("symbol") or "").upper()
             price = _num(item.get("lastPrice"), 0) or 0
             quote_volume = _num(item.get("quoteVolume"), 0) or 0
@@ -1615,7 +1633,7 @@ def altcoin_scanner(refresh: int = 0):
     # Evaluate a broad, liquid top-100 universe; all eligible pairs are counted in scanned.
     selected = eligible[:100]
     candle_errors = 0
-    if provider == "Binance" and selected:
+    if provider == "Binance TH Spot API" and selected:
         with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
             futures = {pool.submit(_binance_1m_klines, row["symbol"]): row for row in selected}
             for future in concurrent.futures.as_completed(futures):
@@ -1679,7 +1697,7 @@ def altcoin_scanner(refresh: int = 0):
         "metricsNote": (
             "FAST_ENTRY requires positive 1m/5m momentum, RVOL >= 2, 20-bar breakout, spread > 0 and <= 0.5%, and score >= 60. "
             "Non-entry candidates include rejectReason for diagnostics."
-            if provider == "Binance" else
+            if provider == "Binance TH Spot API" else
             "Fallback feed is display-only; no Paper entries are allowed without Binance candle data."
         ),
     }
@@ -2812,47 +2830,30 @@ def dual_paper_quote(request: Request, market: str, symbol: str):
 
 
 def _binance_public_price(symbol: str):
-    # Binance's /ticker/price endpoint can return HTTP 403 on some hosted IPs.
-    # The scanner already uses /ticker/24hr successfully, so try that public
-    # endpoint first before falling back to /ticker/price.
+    """Use Binance TH Spot ticker for Paper marks; never route to Binance Global."""
     last_error = None
-    for host in ("https://data-api.binance.vision", "https://api.binance.com"):
-        try:
-            response = requests.get(host + "/api/v3/ticker/24hr",
-                                    params={"symbol": symbol}, timeout=(4, 8),
-                                    headers={"User-Agent":"BlessingPaperWorker/1.0"})
-            response.raise_for_status()
-            payload = response.json()
-            price = _num(payload.get("lastPrice"), 0) if isinstance(payload, dict) else 0
-            if price and price > 0:
-                return price
-            last_error = RuntimeError("BINANCE_INVALID_24H_PRICE_RESPONSE")
-        except Exception as exc:
-            last_error = exc
-            log.warning("Binance 24h price host failed for %s (%s): %s", symbol, host, type(exc).__name__)
-    for host in ("https://data-api.binance.vision", "https://api.binance.com"):
-        try:
-            response = requests.get(host + "/api/v3/ticker/price",
-                                    params={"symbol": symbol}, timeout=(4, 8),
-                                    headers={"User-Agent":"BlessingPaperWorker/1.0"})
-            response.raise_for_status()
-            payload = response.json()
-            price = _num(payload.get("price"), 0) if isinstance(payload, dict) else 0
-            if price and price > 0:
-                return price
-            last_error = RuntimeError("BINANCE_INVALID_PRICE_RESPONSE")
-        except Exception as exc:
-            last_error = exc
-            log.warning("Binance price host failed for %s (%s): %s", symbol, host, type(exc).__name__)
-    # OKX is a public-price fallback for marking existing paper positions only.
-    # It never authorizes a new Binance paper entry; unsupported pairs fail closed.
+    try:
+        response = requests.get(
+            BINANCE_TH_API_BASE + "/api/v1/ticker/24hr",
+            params={"symbol": str(symbol or "").upper()},
+            timeout=(4, 10), headers=_binance_th_market_headers(),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        price = _num(payload.get("lastPrice"), 0) if isinstance(payload, dict) else 0
+        if price and price > 0:
+            return float(price)
+        last_error = RuntimeError("BINANCE_TH_INVALID_24H_PRICE_RESPONSE")
+    except Exception as exc:
+        last_error = exc
+        log.warning("Binance TH Paper mark-price failed for %s (%s)", symbol, type(exc).__name__)
+    # OKX is a mark-only fallback for an existing Paper position, never for new entries.
     try:
         base = str(symbol or "").upper()
         if base.endswith("USDT"):
-            inst_id = base[:-4] + "-USDT"
             response = requests.get(
                 "https://www.okx.com/api/v5/market/ticker",
-                params={"instId": inst_id}, timeout=(4, 8),
+                params={"instId": base[:-4] + "-USDT"}, timeout=(4, 8),
                 headers={"User-Agent": "BlessingPaperWorker/1.0"},
             )
             response.raise_for_status()
@@ -2861,10 +2862,10 @@ def _binance_public_price(symbol: str):
             price = _num(rows[0].get("last"), 0) if rows else 0
             if price and price > 0:
                 log.info("Paper position mark price fallback provider=OKX symbol=%s", symbol)
-                return price
+                return float(price)
     except Exception as exc:
         last_error = exc
-        log.warning("OKX paper mark-price fallback failed for %s: %s", symbol, type(exc).__name__)
+        log.warning("OKX Paper mark-price fallback failed for %s (%s)", symbol, type(exc).__name__)
     if last_error:
         raise last_error
     return None
@@ -3509,11 +3510,22 @@ def _dual_stock_buy_lock(user_id: str):
 
 
 def _binance_th_adaptive_candidates():
-    """Snapshot the rolling history collected from Binance TH's live all-market stream."""
-    with CRYPTO_TICKER_HISTORY_LOCK:
-        snapshot = {symbol: list(rows) for symbol, rows in CRYPTO_TICKER_HISTORY.items()}
-    return build_binance_th_candidates(snapshot)
-
+    """Use the same Binance TH live-ticker + official REST-candle scanner as the dashboard."""
+    payload = altcoin_scanner(refresh=0)
+    if not isinstance(payload, dict) or payload.get("status") != "ok" or payload.get("provider") != "Binance TH Spot API":
+        return []
+    output = []
+    for row in payload.get("candidates") or []:
+        if not isinstance(row, dict) or row.get("candleError"):
+            continue
+        symbol = str(row.get("symbol") or "").upper()
+        price = _num(row.get("price"), 0) or 0
+        if not symbol.endswith("USDT") or price <= 0:
+            continue
+        output.append({**row, "symbol": symbol, "price": price,
+                       "source": "Binance TH Spot API + live WebSocket",
+                       "relativeVolume": row.get("rvol")})
+    return output
 
 def _dual_equity_snapshot(experiment: dict, portfolio: dict, positions: list):
     """Persist a net-of-fees-and-estimated-slippage equity point for the 14-day run."""
@@ -4347,7 +4359,7 @@ def _member_slot_engine_cycle():
             crypto_age = (now-datetime.fromisoformat(str(crypto_stamp).replace("Z","+00:00"))).total_seconds() if crypto_stamp else 999999
         except Exception:
             crypto_age = 999999
-        crypto_fresh = state.get("cryptoConnection") == "streaming" and 0 <= crypto_age <= 10
+        crypto_fresh = state.get("cryptoConnection") == "streaming" and 0 <= crypto_age <= 60
         crypto_candidates = {}
         if crypto_fresh:
             for row in _binance_th_adaptive_candidates():
