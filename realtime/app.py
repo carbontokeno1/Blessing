@@ -4273,3 +4273,287 @@ def adaptive_paper_report(request: Request):
                            "drawdown":"peak-to-trough based on net equity marks","slippageModel":"5 bps per filled order side"}}
 
 # Keep the dual paper monitor and verified Alpaca IEX fallback in the deployed backend.
+
+
+# Independent automated Paper engine for the ten unassigned member slots.
+# Each slot has its own THB cash ledger, positions and order history.
+# This engine never references user portfolios and never submits live orders.
+MEMBER_SLOT_ENGINE_INTERVAL = max(20, int(os.getenv("MEMBER_SLOT_ENGINE_INTERVAL", "30")))
+MEMBER_SLOT_ENGINE_THREAD = None
+MEMBER_SLOT_ENGINE_LOCK = threading.Lock()
+MEMBER_SLOT_ENGINE_COOLDOWNS = {}
+MEMBER_SLOT_ENGINE_STATE = {
+    "status": "starting" if (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY) else "waiting_config",
+    "lastCycleAt": None, "lastError": None, "cycles": 0,
+    "cryptoCandidates": 0, "stockCandidates": 0, "actions": [],
+    "liveTradingEnabled": False
+}
+
+
+def _member_slot_usd_thb():
+    # Use a current public FX quote; fail closed rather than inventing an exchange rate.
+    response = requests.get("https://api.frankfurter.app/latest",
+                            params={"from": "USD", "to": "THB"},
+                            timeout=(4, 8),
+                            headers={"User-Agent": "BlessingMemberPaper/1.0"})
+    response.raise_for_status()
+    rate = _num((response.json().get("rates") or {}).get("THB"), 0)
+    if not rate or rate <= 0:
+        raise RuntimeError("USD_THB_RATE_UNAVAILABLE")
+    return float(rate)
+
+
+def _member_slot_engine_cycle():
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        MEMBER_SLOT_ENGINE_STATE.update({"status":"waiting_config","lastError":"SUPABASE_WORKER_CONFIG_MISSING"})
+        return
+    if not MEMBER_SLOT_ENGINE_LOCK.acquire(blocking=False):
+        return
+    try:
+        now = datetime.now(timezone.utc)
+        fx = _member_slot_usd_thb()
+        crypto_slots = _sb_rest("blessing_paper_member_slots", {
+            "select":"id,slot_no,initial_capital,cash_balance,max_open_positions,enabled,status",
+            "enabled":"eq.true", "mode":"eq.paper", "limit":"20"
+        }) or []
+        stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
+            "select":"id,slot_no,initial_capital,cash_balance,max_open_positions,enabled,status",
+            "enabled":"eq.true", "limit":"20"
+        }) or []
+
+        # Crypto candidates are sourced only from a fresh Binance TH stream.
+        crypto_stamp = state.get("lastCryptoMessageAt")
+        try:
+            crypto_age = (now-datetime.fromisoformat(str(crypto_stamp).replace("Z","+00:00"))).total_seconds() if crypto_stamp else 999999
+        except Exception:
+            crypto_age = 999999
+        crypto_fresh = state.get("cryptoConnection") == "streaming" and 0 <= crypto_age <= 10
+        crypto_candidates = {}
+        if crypto_fresh:
+            for row in _binance_th_adaptive_candidates():
+                symbol = str(row.get("symbol") or "").upper()
+                price = _num(row.get("price"), 0)
+                if not symbol or not price or not symbol.endswith("USDT"):
+                    continue
+                decision = adaptive_decision("crypto", row, fee_bps=10, slippage_bps=5)
+                if decision.get("decision") == "PAPER_CANDIDATE":
+                    crypto_candidates[symbol] = (price, decision)
+
+        # Stock entries use the current Alpaca IEX universe scan and current USD/THB FX.
+        with UNIVERSE_LOCK:
+            stock_scan = dict(UNIVERSE_STATE)
+        stock_stamp = stock_scan.get("updatedAt")
+        try:
+            stock_age = (now-datetime.fromisoformat(str(stock_stamp).replace("Z","+00:00"))).total_seconds() if stock_stamp else 999999
+        except Exception:
+            stock_age = 999999
+        stock_fresh = stock_scan.get("status") == "ok" and stock_age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
+        stock_candidates = {}
+        if stock_fresh:
+            for raw in (stock_scan.get("candidates") or []):
+                symbol = str(raw.get("symbol") or "").upper()
+                price = _num(raw.get("price"), 0)
+                if not symbol or not price:
+                    continue
+                normalized = dict(raw)
+                normalized["rvol"] = normalized.get("relativeVolume")
+                decision = adaptive_decision("stocks", normalized, fee_bps=10, slippage_bps=5)
+                if decision.get("decision") == "PAPER_CANDIDATE":
+                    stock_candidates[symbol] = (price, decision)
+
+        actions = []
+        # Mark and manage all open crypto positions independently for each slot.
+        for slot in crypto_slots:
+            positions = _sb_rest("blessing_paper_slot_positions", {
+                "select":"id,symbol,quantity,average_entry_price_thb,current_price_thb,status",
+                "slot_id":"eq."+str(slot["id"]), "status":"eq.open", "limit":"100"
+            }) or []
+            for pos in positions:
+                quote = crypto_candidates.get(pos["symbol"])
+                price = quote[0] if quote else None
+                if not price:
+                    try:
+                        price = _binance_public_price(pos["symbol"])
+                    except Exception:
+                        continue
+                try:
+                    _sb_rpc("blessing_member_slot_paper_trade", {
+                        "p_market":"crypto","p_slot_id":str(slot["id"]),"p_action":"mark",
+                        "p_symbol":pos["symbol"],"p_price":price,"p_fx":fx
+                    })
+                    current_thb = price * fx
+                    entry_thb = float(pos.get("average_entry_price_thb") or 0)
+                    reason = "TAKE_PROFIT" if current_thb >= entry_thb * 1.03 else (
+                             "STOP_LOSS" if current_thb <= entry_thb * 0.985 else None)
+                    if reason:
+                        result = _sb_rpc("blessing_member_slot_paper_trade", {
+                            "p_market":"crypto","p_slot_id":str(slot["id"]),"p_action":"sell",
+                            "p_symbol":pos["symbol"],"p_price":price,"p_fx":fx,
+                            "p_reason":reason,
+                            "p_idempotency_key":"slot-exit-"+str(slot["id"])+"-"+str(pos["id"])
+                        })
+                        actions.append({"slotNo":slot["slot_no"],"market":"crypto","action":"sell",
+                                        "symbol":pos["symbol"],"reason":reason,"result":result})
+                except Exception as exc:
+                    log.warning("Member crypto slot %s position monitor skipped (%s)",slot["slot_no"],type(exc).__name__)
+
+            if not crypto_fresh:
+                continue
+            open_now = _sb_rest("blessing_paper_slot_positions", {
+                "select":"symbol","slot_id":"eq."+str(slot["id"]),"status":"eq.open","limit":"100"
+            }) or []
+            held = {x["symbol"] for x in open_now}
+            if len(open_now) >= int(slot.get("max_open_positions") or 4):
+                continue
+            ranked = sorted(crypto_candidates.items(),
+                            key=lambda item: float(item[1][1].get("opportunityScore") or 0), reverse=True)
+            for symbol, (price, decision) in ranked:
+                if symbol in held:
+                    continue
+                key = str(slot["id"])+":crypto:"+symbol
+                if time.time()-MEMBER_SLOT_ENGINE_COOLDOWNS.get(key,0) < 300:
+                    continue
+                try:
+                    result = _sb_rpc("blessing_member_slot_paper_trade", {
+                        "p_market":"crypto","p_slot_id":str(slot["id"]),"p_action":"buy",
+                        "p_symbol":symbol,"p_price":price,"p_fx":fx,
+                        "p_reason":"BINANCE_TH_ADAPTIVE_PAPER",
+                        "p_idempotency_key":"slot-buy-"+str(slot["id"])+"-"+symbol+"-"+str(int(time.time()//300))
+                    })
+                    MEMBER_SLOT_ENGINE_COOLDOWNS[key] = time.time()
+                    actions.append({"slotNo":slot["slot_no"],"market":"crypto","action":"buy",
+                                    "symbol":symbol,"score":decision.get("opportunityScore"),"result":result})
+                    break
+                except Exception as exc:
+                    log.info("Member crypto slot %s entry skipped %s (%s)",slot["slot_no"],symbol,type(exc).__name__)
+
+        # Mark, exit and open stock positions using Alpaca IEX USD quotes.
+        for slot in stock_slots:
+            positions = _sb_rest("blessing_stock_paper_slot_positions", {
+                "select":"id,symbol,quantity,average_entry_price_usd,current_price_usd,entry_fx_thb_per_usd,status",
+                "slot_id":"eq."+str(slot["id"]), "status":"eq.open", "limit":"100"
+            }) or []
+            prices = {}
+            if positions:
+                symbols = list(dict.fromkeys(x["symbol"] for x in positions))
+                for offset in range(0, len(symbols), 100):
+                    try:
+                        snaps = _alpaca_snapshots(symbols[offset:offset+100])
+                    except Exception as exc:
+                        log.warning("Member stock slot quote refresh skipped (%s)",type(exc).__name__)
+                        snaps = {}
+                    for symbol, snap in snaps.items():
+                        trade = snap.get("latestTrade") or {}
+                        minute = snap.get("minuteBar") or {}
+                        px = _num(trade.get("p"), _num(minute.get("c"), 0)) or 0
+                        if px > 0:
+                            prices[symbol] = px
+            for pos in positions:
+                price = prices.get(pos["symbol"])
+                if not price:
+                    continue
+                try:
+                    _sb_rpc("blessing_member_slot_paper_trade", {
+                        "p_market":"stocks","p_slot_id":str(slot["id"]),"p_action":"mark",
+                        "p_symbol":pos["symbol"],"p_price":price,"p_fx":fx
+                    })
+                    entry_thb = float(pos.get("average_entry_price_usd") or 0) * float(pos.get("entry_fx_thb_per_usd") or fx)
+                    current_thb = price * fx
+                    reason = "TAKE_PROFIT" if current_thb >= entry_thb * 1.05 else (
+                             "STOP_LOSS" if current_thb <= entry_thb * 0.97 else None)
+                    if reason:
+                        result = _sb_rpc("blessing_member_slot_paper_trade", {
+                            "p_market":"stocks","p_slot_id":str(slot["id"]),"p_action":"sell",
+                            "p_symbol":pos["symbol"],"p_price":price,"p_fx":fx,"p_reason":reason,
+                            "p_idempotency_key":"slot-stock-exit-"+str(slot["id"])+"-"+str(pos["id"])
+                        })
+                        actions.append({"slotNo":slot["slot_no"],"market":"stocks","action":"sell",
+                                        "symbol":pos["symbol"],"reason":reason,"result":result})
+                except Exception as exc:
+                    log.warning("Member stock slot %s position monitor skipped (%s)",slot["slot_no"],type(exc).__name__)
+
+            if not stock_fresh:
+                continue
+            open_now = _sb_rest("blessing_stock_paper_slot_positions", {
+                "select":"symbol","slot_id":"eq."+str(slot["id"]),"status":"eq.open","limit":"100"
+            }) or []
+            held = {x["symbol"] for x in open_now}
+            if len(open_now) >= int(slot.get("max_open_positions") or 5):
+                continue
+            ranked = sorted(stock_candidates.items(),
+                            key=lambda item: float(item[1][1].get("opportunityScore") or 0), reverse=True)
+            for symbol, (price, decision) in ranked:
+                if symbol in held:
+                    continue
+                key = str(slot["id"])+":stocks:"+symbol
+                if time.time()-MEMBER_SLOT_ENGINE_COOLDOWNS.get(key,0) < 600:
+                    continue
+                try:
+                    result = _sb_rpc("blessing_member_slot_paper_trade", {
+                        "p_market":"stocks","p_slot_id":str(slot["id"]),"p_action":"buy",
+                        "p_symbol":symbol,"p_price":price,"p_fx":fx,
+                        "p_reason":"ALPACA_IEX_ADAPTIVE_PAPER",
+                        "p_idempotency_key":"slot-stock-buy-"+str(slot["id"])+"-"+symbol+"-"+str(int(time.time()//600))
+                    })
+                    MEMBER_SLOT_ENGINE_COOLDOWNS[key] = time.time()
+                    actions.append({"slotNo":slot["slot_no"],"market":"stocks","action":"buy",
+                                    "symbol":symbol,"score":decision.get("opportunityScore"),"result":result})
+                    break
+                except Exception as exc:
+                    log.info("Member stock slot %s entry skipped %s (%s)",slot["slot_no"],symbol,type(exc).__name__)
+
+        MEMBER_SLOT_ENGINE_STATE.update({
+            "status":"running","lastCycleAt":now.isoformat(),"lastError":None,
+            "cycles":MEMBER_SLOT_ENGINE_STATE.get("cycles",0)+1,
+            "cryptoCandidates":len(crypto_candidates),"stockCandidates":len(stock_candidates),
+            "cryptoStreamFresh":crypto_fresh,"stockScanFresh":stock_fresh,
+            "usdThb":fx,"cryptoSlots":len(crypto_slots),"stockSlots":len(stock_slots),
+            "actions":(MEMBER_SLOT_ENGINE_STATE.get("actions",[])+actions)[-50:],
+            "liveTradingEnabled":False
+        })
+    except Exception as exc:
+        MEMBER_SLOT_ENGINE_STATE.update({"status":"error","lastError":type(exc).__name__,
+                                         "lastCycleAt":datetime.now(timezone.utc).isoformat(),
+                                         "liveTradingEnabled":False})
+        log.exception("Member slot Paper engine cycle failed")
+    finally:
+        MEMBER_SLOT_ENGINE_LOCK.release()
+
+
+def _member_slot_engine_loop():
+    while True:
+        try:
+            _member_slot_engine_cycle()
+        except Exception:
+            log.exception("Member slot Paper engine loop error")
+        time.sleep(MEMBER_SLOT_ENGINE_INTERVAL)
+
+
+@app.on_event("startup")
+async def member_slot_engine_startup():
+    global MEMBER_SLOT_ENGINE_THREAD
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        MEMBER_SLOT_ENGINE_STATE["status"] = "waiting_config"
+        return
+    if MEMBER_SLOT_ENGINE_THREAD and MEMBER_SLOT_ENGINE_THREAD.is_alive():
+        return
+    MEMBER_SLOT_ENGINE_THREAD = threading.Thread(
+        target=_member_slot_engine_loop, name="member-slot-paper-engine", daemon=True
+    )
+    MEMBER_SLOT_ENGINE_THREAD.start()
+
+
+@app.get("/admin/member-slot-engine/status")
+def admin_member_slot_engine_status(request: Request):
+    _binance_th_owner_auth(request)
+    crypto = _sb_rest("blessing_paper_member_slots", {
+        "select":"slot_no,display_label,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status",
+        "order":"slot_no.asc","limit":"10"
+    }) or []
+    stocks = _sb_rest("blessing_stock_paper_member_slots", {
+        "select":"slot_no,display_label,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status",
+        "order":"slot_no.asc","limit":"10"
+    }) or []
+    return {"ok":True,"engine":dict(MEMBER_SLOT_ENGINE_STATE),
+            "cryptoPaperSlots":crypto,"stockPaperSlots":stocks,
+            "liveTradingEnabled":False}
