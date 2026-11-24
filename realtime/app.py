@@ -2791,7 +2791,7 @@ def dual_paper_status(request: Request):
                 "drawdownStopEnabled":False,"maxOpenPositions":2 if market == "stocks" else None},
             "openPositions":positions,"recentOrders":orders,
             "tradingRules":({"stopLossPct":25,"takeProfitMinPct":5,"takeProfitMaxPct":15,
-                             "maxOpenPositions":2,"manualBuyOnly":True,
+                             "maxOpenPositions":2,"automaticEntry":True,"stopByUserOnly":True,
                              "feePctPerSide":0.10,"slippageBpsPerSide":5,
                              "source":"server_enforced"} if market == "stocks" else {"source":"per_order"}),
             "liveOrdersEnabled":False
@@ -2878,8 +2878,7 @@ def _dual_equity_snapshot(experiment: dict, portfolio: dict, positions: list):
 def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict, market: str):
     user_id = str(portfolio["user_id"])
     symbol = str(candidate.get("symbol") or "").upper()
-    if not symbol or market == "stocks":
-        # US equities are always user-initiated; the adaptive worker may not auto-buy them.
+    if not symbol:
         return None
     try:
         market_price = _dual_market_price(market, symbol)
@@ -2895,11 +2894,19 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     equity += market_value
     if any(p.get("symbol")==symbol for p in positions):
         return None
+    if market == "stocks" and len(positions) >= 2:
+        return None
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
-    stop_pct = float(strategy_config.get(market + "_stop_loss_pct", 1.5 if market == "crypto" else 25.0))
-    target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0 if market == "crypto" else 25.0))
-    # Hard cap: an individual position may not lose more than 25% of its entry notional.
-    stop_pct = min(25.0, max(0.1, stop_pct))
+    if market == "stocks":
+        # Stock automation uses a fixed -25% stop and a configured TP inside +5%..+15%.
+        stop_pct = 25.0
+        target_pct = float(strategy_config.get("stocks_take_profit_pct", 10.0))
+        if not 5.0 <= target_pct <= 15.0:
+            target_pct = 10.0
+    else:
+        stop_pct = float(strategy_config.get(market + "_stop_loss_pct", 1.5))
+        target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0))
+        stop_pct = min(25.0, max(0.1, stop_pct))
     max_notional_pct = float(strategy_config.get("max_notional_pct") or 6.0)
     max_total_allocation_pct = float(strategy_config.get("max_total_allocation_pct") or 100.0)
     all_portfolios = _sb_rest("blessing_dual_portfolios", {
@@ -3039,10 +3046,50 @@ def _dual_paper_worker_cycle():
                         "rank":float(decision.get("opportunityScore") or 0),
                     })
 
-        # Only crypto may enter automatically. US stocks are never opened by this worker.
-        # Existing stock positions are still monitored and closed by TP/SL above.
+        # Stock Paper automation is controlled only by the user's portfolio START/STOP button.
+        # The worker keeps scanning while enabled, enters only qualifying candidates, and
+        # always monitors existing positions above even after STOP is pressed.
         entries_opened = 0
         selected_markets = {}
+        if stock_fresh and stock_candidates:
+            enabled_stock_portfolios = _sb_rest("blessing_dual_portfolios", {
+                "select":"id,user_id,market,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity",
+                "market":"eq.stocks","mode":"eq.paper","enabled":"eq.true","limit":"1000"
+            }) or []
+            for portfolio in enabled_stock_portfolios:
+                uid = str(portfolio["user_id"])
+                stock_experiment = {"id":"AUTO-STOCK", "config":{"stocks_stop_loss_pct":25,
+                    "stocks_take_profit_pct":10,"max_notional_pct":6,"max_total_allocation_pct":30}}
+                ranked_stock_candidates = sorted(
+                    stock_candidates.items(),
+                    key=lambda item: float(item[1][1].get("opportunityScore") or 0),
+                    reverse=True
+                )
+                for symbol, (raw, decision) in ranked_stock_candidates:
+                    cooldown_key = uid + ":stocks:" + symbol
+                    if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
+                        continue
+                    try:
+                        result = _dual_try_adaptive_entry(
+                            stock_experiment, portfolio, {**raw, **decision}, "stocks"
+                        )
+                        if result:
+                            entries_opened += 1
+                            selected_markets.setdefault(uid, {}).setdefault("stocks", []).append({
+                                "symbol":symbol,
+                                "opportunityScore":float(decision.get("opportunityScore") or 0),
+                                "netEdgeProxyPct":decision.get("netEdgeProxyPct")
+                            })
+                            DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key] = time.time()
+                    except Exception as exc:
+                        log.info("Automatic stock entry skipped %s (%s)", symbol, type(exc).__name__)
+                    # Re-read open positions; the entry helper enforces the two-position cap.
+                    open_now = _sb_rest("blessing_dual_positions", {
+                        "select":"id","portfolio_id":"eq."+str(portfolio["id"]),
+                        "user_id":"eq."+uid,"status":"eq.open","limit":"3"
+                    }) or []
+                    if len(open_now) >= 2:
+                        break
         experiment_by_user = {str(exp["user_id"]): exp for exp in experiments}
         ranked_by_user = {}
         for (uid,market), opportunities in ranked_by_user_market.items():
