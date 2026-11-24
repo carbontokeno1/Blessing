@@ -44,9 +44,18 @@ async function binanceThAccount(env) {
     headers: { accept: "application/json", "X-MBX-APIKEY": apiKey },
     signal: AbortSignal.timeout(10000)
   });
-  const payload = await response.json().catch(() => ({}));
+  const responseText = await response.text();
+  let payload = {};
+  try { payload = responseText ? JSON.parse(responseText) : {}; } catch { payload = {}; }
   if (!response.ok || (typeof payload?.code === "number" && payload.code !== 0)) {
-    return json({ ok: false, configured: true, connected: false, provider: "Binance TH", httpStatus: response.status, errorCode: payload?.code ?? null, message: payload?.msg || `Binance TH authentication failed (HTTP ${response.status}; Binance code ${payload?.code ?? "not provided"})` }, 502);
+    const message = response.status === 403
+      ? "Binance TH ตอบ HTTP 403: ถูกปฏิเสธที่ชั้น WAF (Web Application Firewall) ตามเอกสาร Binance TH ไม่ใช่รหัสยืนยัน API โดยตรง กรุณาหยุดกดตรวจซ้ำถี่ ๆ และให้ตรวจสอบการอนุญาตคำขอจากต้นทางเซิร์ฟเวอร์กับ Binance TH"
+      : response.status === 429
+        ? "Binance TH ตอบ HTTP 429: มีการเรียก API ถี่เกินไป กรุณารอสักครู่ก่อนลองใหม่"
+        : response.status === 418
+          ? "Binance TH ตอบ HTTP 418: IP ต้นทางถูกระงับชั่วคราวจากการเรียกเกิน rate limit"
+          : payload?.msg || `Binance TH request failed (HTTP ${response.status}; Binance code ${payload?.code ?? "not provided"})`;
+    return json({ ok: false, configured: true, connected: false, provider: "Binance TH", httpStatus: response.status, errorCode: payload?.code ?? null, message }, 502);
   }
   const assets = (payload.balances || [])
     .map(x => ({ asset: String(x.asset || ""), free: String(x.free || "0"), locked: String(x.locked || "0") }))
