@@ -2050,6 +2050,158 @@ def admin_member_portfolios(request: Request):
     }
 
 
+@app.get("/admin/member-portfolios/report")
+def admin_member_portfolios_report(request: Request):
+    """Owner-only consolidated read-only report for all 40 isolated member portfolios."""
+    _binance_th_owner_auth(request)
+    registry = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,assigned_user_id,paper_slot_id,allocated_capital,status,enabled,live_trading_approved,updated_at",
+        "order": "member_no.asc,portfolio_type.asc",
+        "limit": "100",
+    }) or []
+    if len(registry) != 40:
+        raise HTTPException(status_code=503, detail={
+            "code": "PORTFOLIO_REGISTRY_INCOMPLETE",
+            "expected": 40, "found": len(registry),
+            "message": "ทะเบียนพอร์ตสมาชิกยังไม่ครบ 40 พอร์ต",
+        })
+
+    def num(value):
+        try:
+            result = float(value or 0)
+            return result if math.isfinite(result) else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
+        "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at",
+        "slot_no": "in.(1,2,3,4,5,6,7,8,9,10)", "limit": "20",
+    }) or []
+    crypto_slot_ids = list(dict.fromkeys(
+        str(row["paper_slot_id"]) for row in registry
+        if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id")
+    ))
+    crypto_slots = _sb_rest("blessing_paper_member_slots", {
+        "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at",
+        "id": "in.(" + ",".join(crypto_slot_ids) + ")", "limit": "20",
+    }) if crypto_slot_ids else []
+
+    stock_ids = [str(row["id"]) for row in stock_slots if row.get("id")]
+    crypto_ids = [str(row["id"]) for row in crypto_slots if row.get("id")]
+    stock_positions = _sb_rest("blessing_stock_paper_slot_positions", {
+        "select": "id,slot_id,symbol,quantity,average_entry_price_usd,current_price_usd,current_fx_thb_per_usd,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
+        "slot_id": "in.(" + ",".join(stock_ids) + ")", "status": "eq.open", "limit": "1000",
+    }) if stock_ids else []
+    crypto_positions = _sb_rest("blessing_paper_slot_positions", {
+        "select": "id,slot_id,symbol,quantity,average_entry_price_thb,current_price_thb,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
+        "slot_id": "in.(" + ",".join(crypto_ids) + ")", "status": "eq.open", "limit": "1000",
+    }) if crypto_ids else []
+
+    stock_orders = _sb_rest("blessing_stock_paper_slot_orders", {
+        "select": "slot_id,side,status,fee_thb,created_at",
+        "slot_id": "in.(" + ",".join(stock_ids) + ")", "limit": "5000",
+        "order": "created_at.desc",
+    }) if stock_ids else []
+    crypto_orders = _sb_rest("blessing_paper_slot_orders", {
+        "select": "slot_id,side,status,fee_thb,created_at",
+        "slot_id": "in.(" + ",".join(crypto_ids) + ")", "limit": "5000",
+        "order": "created_at.desc",
+    }) if crypto_ids else []
+
+    stock_by_member = {str(row.get("slot_no")): row for row in stock_slots}
+    crypto_by_id = {str(row.get("id")): row for row in crypto_slots}
+    positions_by_slot = {}
+    for pos in (stock_positions or []) + (crypto_positions or []):
+        positions_by_slot.setdefault(str(pos.get("slot_id")), []).append(pos)
+    orders_by_slot = {}
+    for order in (stock_orders or []) + (crypto_orders or []):
+        orders_by_slot.setdefault(str(order.get("slot_id")), []).append(order)
+
+    reports = []
+    totals = {
+        "paperPortfolios": 0, "paperCapital": 0.0, "paperCash": 0.0,
+        "paperMarketValue": 0.0, "paperEquity": 0.0, "paperRealizedPnl": 0.0,
+        "paperUnrealizedPnl": 0.0, "paperFees": 0.0, "paperNetPnl": 0.0,
+        "openPositions": 0, "filledOrders": 0, "liveLocked": 0,
+    }
+    for row in registry:
+        ptype = row.get("portfolio_type")
+        is_paper = row.get("mode") == "paper" and ptype in ("crypto_paper", "stock_paper")
+        slot = None
+        positions = []
+        orders = []
+        if ptype == "crypto_paper":
+            slot = crypto_by_id.get(str(row.get("paper_slot_id"))) if row.get("paper_slot_id") else None
+        elif ptype == "stock_paper":
+            slot = stock_by_member.get(str(row.get("member_no")))
+        if is_paper and slot:
+            sid = str(slot.get("id"))
+            positions = positions_by_slot.get(sid, [])
+            orders = orders_by_slot.get(sid, [])
+            cash = num(slot.get("cash_balance"))
+            capital = num(slot.get("initial_capital") or row.get("allocated_capital"))
+            realized = num(slot.get("realized_pnl"))
+            fees = num(slot.get("fees_paid"))
+            unrealized = sum(num(p.get("unrealized_pnl_thb")) for p in positions)
+            market_value = 0.0
+            for p in positions:
+                qty = num(p.get("quantity"))
+                if ptype == "stock_paper":
+                    market_value += qty * num(p.get("current_price_usd")) * num(p.get("current_fx_thb_per_usd"))
+                else:
+                    market_value += qty * num(p.get("current_price_thb"))
+            equity = cash + market_value
+            filled_orders = sum(1 for o in orders if o.get("status") in ("filled", "executed"))
+            buy_orders = sum(1 for o in orders if o.get("side") == "buy" and o.get("status") in ("filled", "executed"))
+            sell_orders = sum(1 for o in orders if o.get("side") == "sell" and o.get("status") in ("filled", "executed"))
+            report = {
+                **row, "reportStatus": "paper_data", "dataAvailable": True,
+                "capital": capital, "cash": cash, "marketValue": market_value,
+                "equity": equity, "realizedPnl": realized, "unrealizedPnl": unrealized,
+                "netPnl": realized + unrealized, "returnPct": ((equity - capital) / capital * 100) if capital else 0,
+                "fees": fees, "openPositions": len(positions), "orderCount": len(orders),
+                "filledOrders": filled_orders, "buyOrders": buy_orders, "sellOrders": sell_orders,
+                "positions": [{
+                    "symbol": p.get("symbol"), "quantity": num(p.get("quantity")),
+                    "entryPrice": num(p.get("average_entry_price_usd") if ptype == "stock_paper" else p.get("average_entry_price_thb")),
+                    "currentPrice": num(p.get("current_price_usd") if ptype == "stock_paper" else p.get("current_price_thb")),
+                    "unrealizedPnl": num(p.get("unrealized_pnl_thb")), "openedAt": p.get("opened_at"),
+                } for p in positions],
+                "slotUpdatedAt": slot.get("updated_at"),
+            }
+            totals["paperPortfolios"] += 1
+            for key, value in (
+                ("paperCapital", capital), ("paperCash", cash), ("paperMarketValue", market_value),
+                ("paperEquity", equity), ("paperRealizedPnl", realized),
+                ("paperUnrealizedPnl", unrealized), ("paperFees", fees),
+                ("paperNetPnl", realized + unrealized), ("openPositions", len(positions)),
+                ("filledOrders", filled_orders),
+            ):
+                totals[key] += value
+        else:
+            report = {
+                **row, "reportStatus": "live_locked" if row.get("mode") == "live" else "paper_slot_missing",
+                "dataAvailable": False, "capital": num(row.get("allocated_capital")),
+                "cash": None, "marketValue": None, "equity": None,
+                "realizedPnl": None, "unrealizedPnl": None, "netPnl": None,
+                "returnPct": None, "fees": None, "openPositions": 0, "orderCount": 0,
+                "filledOrders": 0, "buyOrders": 0, "sellOrders": 0, "positions": [],
+                "slotUpdatedAt": None,
+            }
+            if row.get("mode") == "live":
+                totals["liveLocked"] += 1
+        reports.append(report)
+
+    return {
+        "ok": True, "reportType": "owner_all_member_portfolios",
+        "memberCount": 10, "portfolioCount": len(reports),
+        "refreshedAt": datetime.now(timezone.utc).isoformat(),
+        "refreshIntervalSeconds": 10, "liveTradingEnabled": False,
+        "totals": totals, "portfolios": reports,
+        "dataNote": "Paper equity uses saved cash plus current position values. Live portfolios are locked and do not show allocated plans as real balances.",
+    }
+
+
 @app.get("/binance-th/account")
 def binance_th_account_read(request: Request):
     """Read-only Binance TH account snapshot. No order endpoints are implemented here."""
