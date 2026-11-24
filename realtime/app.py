@@ -312,7 +312,7 @@ def alpaca_stream_main():
 
 def binance_th_stream_main():
     """Consume Binance TH all-market ticker updates over its official public WebSocket."""
-    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!miniTicker@arr/!bookTicker"
+    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!miniTicker@arr"
     while True:
         try:
             async def run_stream():
@@ -445,6 +445,52 @@ def public_status() -> dict:
     }
 
 
+def binance_th_book_stream_main():
+    """Consume Binance TH best-bid/ask updates on a separate official public stream."""
+    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!bookTicker"
+    while True:
+        try:
+            async def run_stream():
+                async with websockets.connect(url, ping_interval=60, ping_timeout=30, close_timeout=5, max_size=2**22) as ws:
+                    log.info("Binance TH all-market book-ticker stream connected")
+                    async for raw_message in ws:
+                        payload = json.loads(raw_message)
+                        data = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
+                        items = data if isinstance(data, list) else [data]
+                        now = datetime.now(timezone.utc).isoformat()
+                        changed_quotes = {}
+                        for item in items:
+                            if not isinstance(item, dict):
+                                continue
+                            symbol = str(item.get("s") or "").upper()
+                            bid = _num(item.get("b"), 0)
+                            ask = _num(item.get("a"), 0)
+                            if not symbol or bid <= 0 or ask <= 0 or ask < bid:
+                                continue
+                            state["crypto_book_quotes"][symbol] = {
+                                "bid": bid, "ask": ask, "receivedAt": now
+                            }
+                            existing = state["crypto_quotes"].get(symbol)
+                            if isinstance(existing, dict):
+                                existing.update({
+                                    "bid": bid, "ask": ask, "bookReceivedAt": now
+                                })
+                                changed_quotes[symbol] = dict(existing)
+                        if changed_quotes and loop and loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                broadcast({
+                                    "type": "market_data",
+                                    "data": state["quotes"],
+                                    "cryptoData": changed_quotes,
+                                    "status": public_status(),
+                                }), loop
+                            )
+            asyncio.run(run_stream())
+        except Exception as exc:
+            log.warning("Binance TH book-ticker WebSocket disconnected (%s); retrying", type(exc).__name__)
+            time.sleep(5)
+
+
 @app.on_event("startup")
 async def startup():
     global loop, stream_thread
@@ -452,6 +498,9 @@ async def startup():
     global crypto_stream_thread
     crypto_stream_thread = threading.Thread(target=binance_th_stream_main, name="binance-th-live-ticker", daemon=True)
     crypto_stream_thread.start()
+    global crypto_book_stream_thread
+    crypto_book_stream_thread = threading.Thread(target=binance_th_book_stream_main, name="binance-th-book-ticker", daemon=True)
+    crypto_book_stream_thread.start()
     if ALPACA_KEY and ALPACA_SECRET:
         state["provider"] = "alpaca"
         if ALPACA_STREAM_ENABLED:
