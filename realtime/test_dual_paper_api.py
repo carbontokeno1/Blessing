@@ -171,7 +171,7 @@ class AutomaticStockEntryTests(unittest.TestCase):
     @patch.object(blessing_app, "_dual_market_price", return_value=200.0)
     @patch.object(blessing_app, "_dual_rpc_order")
     @patch.object(blessing_app, "_sb_rest")
-    def test_stock_worker_never_opens_third_position(self, sb_rest, rpc, quote):
+    def test_stock_worker_never_opens_sixth_position(self, sb_rest, rpc, quote):
         portfolio = {
             "id": "22222222-2222-4222-8222-222222222222",
             "user_id": "11111111-1111-4111-8111-111111111111",
@@ -179,7 +179,7 @@ class AutomaticStockEntryTests(unittest.TestCase):
             "initial_capital": 100.0,
         }
         sb_rest.return_value = [
-            [{"id":"p1","symbol":"MSFT"},{"id":"p2","symbol":"NVDA"}]
+            [{"id":f"p{i}","symbol":f"S{i}"} for i in range(1,6)]
         ][0]
         result = blessing_app._dual_try_adaptive_entry(
             {"id":"AUTO-STOCK","config":{"stocks_take_profit_pct":10}},
