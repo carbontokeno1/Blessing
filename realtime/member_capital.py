@@ -170,6 +170,21 @@ def register_member_capital_routes(app, owner_auth, sb_rest, sb_rpc):
         return {"ok":True,"kind":"mutation","parsedCommand":parsed,"result":result,
                 "notice":"เปลี่ยนวงเงินอนุมัติเท่านั้น ไม่ได้เปิดใช้ Live Trading หรือเพิ่มเงินจริงในบัญชีโบรกเกอร์"}
 
+    @app.get("/admin/member-capital/history")
+    def admin_member_capital_history(request: Request, memberNo: int = None, limit: int = 100):
+        owner_auth(request)
+        if memberNo is not None and (memberNo < 701 or memberNo > 710):
+            raise HTTPException(status_code=400, detail="หมายเลขสมาชิกต้องอยู่ระหว่าง 701–710")
+        limit = max(1, min(int(limit or 100), 500))
+        params = {
+            "select":"id,portfolio_id,member_no,portfolio_type,market,mode,action,amount,previous_limit,new_limit,currency,reason,initiated_by,created_at",
+            "order":"created_at.desc", "limit":str(limit)
+        }
+        if memberNo is not None:
+            params["member_no"] = "eq." + str(memberNo)
+        rows = sb_rest("blessing_member_capital_ledger", params) or []
+        return {"ok":True,"count":len(rows),"history":rows,"liveExecutionEnabled":False}
+
     @app.get("/admin/member-capital/report")
     def admin_member_capital_report(request: Request):
         owner_auth(request)
