@@ -1893,6 +1893,109 @@ def binance_th_account_read(request: Request):
     }
 
 
+def _binance_th_signed_request(method: str, path: str, params: dict, api_key: str, api_secret: str):
+    signed = dict(params)
+    signed["recvWindow"] = "5000"
+    signed["timestamp"] = str(int(time.time() * 1000))
+    query = urllib.parse.urlencode(signed)
+    signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+    url = "https://api.binance.th" + path + "?" + query + "&signature=" + signature
+    response = requests.request(
+        method, url, headers={"Accept": "application/json", "X-MBX-APIKEY": api_key},
+        timeout=(5, 15),
+    )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {"msg": "Binance TH returned a non-JSON response"}
+    if not response.ok:
+        status = response.status_code
+        message = "Binance TH WAF blocked this server (HTTP 403)" if status == 403 else str(payload.get("msg") or "Binance TH rejected the request")
+        raise HTTPException(status_code=502, detail=message)
+    if isinstance(payload, dict) and isinstance(payload.get("code"), int) and payload.get("code") < 0:
+        raise HTTPException(status_code=502, detail=str(payload.get("msg") or "Binance TH API error"))
+    return payload
+
+
+@app.post("/binance-th/order")
+def binance_th_place_order(request: Request):
+    """Manually place one tightly capped Binance TH Spot MARKET order; disabled by default."""
+    _binance_th_owner_auth(request)
+    if os.getenv("BLESSING_LIVE_TRADING_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        raise HTTPException(status_code=423, detail="โหมดเงินจริงยังถูกล็อกอยู่: ต้องเปิด BLESSING_LIVE_TRADING_ENABLED ใน Render ก่อน")
+    try:
+        body = request.json()
+        if asyncio.iscoroutine(body):
+            raise HTTPException(status_code=400, detail="Invalid request body")
+    except Exception:
+        body = None
+    # FastAPI sync handlers cannot await Request.json(); parse the cached body synchronously.
+    try:
+        raw = request._body if hasattr(request, "_body") else None
+        if raw is None:
+            raise HTTPException(status_code=400, detail="Invalid request body")
+        body = json.loads(raw.decode("utf-8"))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    if not isinstance(body, dict) or body.get("confirm") != "CONFIRM_LIVE_ORDER":
+        raise HTTPException(status_code=400, detail="ต้องยืนยันคำสั่งด้วย confirm=CONFIRM_LIVE_ORDER")
+    symbol = str(body.get("symbol") or "").strip().upper()
+    side = str(body.get("side") or "").strip().upper()
+    if not symbol.endswith("USDT") or not symbol[:-4].isalnum() or len(symbol) > 20:
+        raise HTTPException(status_code=400, detail="รองรับเฉพาะคู่ Spot ที่ลงท้าย USDT")
+    if side not in {"BUY", "SELL"}:
+        raise HTTPException(status_code=400, detail="side ต้องเป็น BUY หรือ SELL")
+    api_key = os.getenv("BINANCE_TH_API_KEY", "").strip()
+    api_secret = os.getenv("BINANCE_TH_API_SECRET", "").strip()
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=503, detail="ยังไม่ได้ตั้งค่า Binance TH API Key/Secret ใน Render")
+    try:
+        cap = float(os.getenv("BLESSING_MAX_ORDER_USDT", "20"))
+    except ValueError:
+        cap = 20.0
+    cap = max(10.0, min(cap, 20.0))
+    params = {"symbol": symbol, "side": side, "type": "MARKET", "newOrderRespType": "FULL",
+              "newClientOrderId": "blessing-" + uuid.uuid4().hex[:24]}
+    if side == "BUY":
+        amount = _num(body.get("quoteOrderQty"))
+        if amount is None or amount < 10 or amount > cap:
+            raise HTTPException(status_code=400, detail=f"มูลค่าซื้อได้ตั้งแต่ 10 ถึง {cap:g} USDT ต่อคำสั่ง")
+        account_payload = _binance_th_signed_request("GET", "/api/v1/accountV2", {}, api_key, api_secret)
+        account = account_payload.get("data") if isinstance(account_payload, dict) and isinstance(account_payload.get("data"), dict) else account_payload
+        if not bool(account.get("canTrade", False)):
+            raise HTTPException(status_code=403, detail="บัญชี Binance TH ไม่อนุญาตให้เทรด")
+        usdt = next((x for x in account.get("balances", []) if x.get("asset") == "USDT"), {})
+        if _num(usdt.get("free"), 0) < amount:
+            raise HTTPException(status_code=400, detail="ยอด USDT ว่างไม่เพียงพอ")
+        params["quoteOrderQty"] = format(amount, ".8f").rstrip("0").rstrip(".")
+    else:
+        quantity = _num(body.get("quantity"))
+        if quantity is None or quantity <= 0:
+            raise HTTPException(status_code=400, detail="กรุณาระบุจำนวนเหรียญที่ต้องการขาย")
+        ticker = requests.get("https://api.binance.th/api/v1/ticker/price",
+                              params={"symbol": symbol}, timeout=(5, 10))
+        ticker.raise_for_status()
+        price = _num(ticker.json().get("price"))
+        if not price or quantity * price > cap:
+            raise HTTPException(status_code=400, detail=f"มูลค่าขายต้องไม่เกิน {cap:g} USDT ต่อคำสั่ง")
+        account_payload = _binance_th_signed_request("GET", "/api/v1/accountV2", {}, api_key, api_secret)
+        account = account_payload.get("data") if isinstance(account_payload, dict) and isinstance(account_payload.get("data"), dict) else account_payload
+        if not bool(account.get("canTrade", False)):
+            raise HTTPException(status_code=403, detail="บัญชี Binance TH ไม่อนุญาตให้เทรด")
+        base_asset = symbol[:-4]
+        asset = next((x for x in account.get("balances", []) if x.get("asset") == base_asset), {})
+        if _num(asset.get("free"), 0) < quantity:
+            raise HTTPException(status_code=400, detail=f"ยอด {base_asset} ว่างไม่เพียงพอ")
+        params["quantity"] = format(quantity, ".8f").rstrip("0").rstrip(".")
+    result = _binance_th_signed_request("POST", "/api/v1/order", params, api_key, api_secret)
+    log.warning("LIVE ORDER submitted: symbol=%s side=%s clientOrderId=%s", symbol, side, params["newClientOrderId"])
+    return {"ok": True, "provider": "Binance TH", "mode": "LIVE", "order": result,
+            "message": "ส่งคำสั่งไป Binance TH แล้ว โปรดตรวจสอบสถานะคำสั่งและยอดคงเหลือ"}
+
+
 @app.post("/paper-engine/start")
 def paper_engine_start(request: Request):
     user = _paper_auth_user(request)
