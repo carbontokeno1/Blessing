@@ -1,0 +1,30 @@
+# FAST PROFIT LAB — safe preview only.
+# Free web service is for setup/API checks, NOT 24/7 trading.
+# State is ephemeral until a paid persistent disk is approved and attached.
+services:
+  - type: web
+    name: fast-profit-lab-paper
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: fast-profit-engine
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeployTrigger: off
+    healthCheckPath: /health
+    numInstances: 1
+    envVars:
+      - key: FAST_PROFIT_CONTROL_TOKEN
+        sync: false
+      - key: DASHBOARD_ORIGIN
+        value: https://blessing.carbontokeno1.workers.dev
+      - key: STATE_FILE
+        value: /tmp/fast-profit-state.json
+      - key: USD_THB_FX
+        value: "34"
+      - key: TRADING_TIME_ZONE
+        value: Asia/Bangkok
+      - key: SCAN_INTERVAL_SECONDS
+        value: "60"
+      - key: ALPACA_DATA_FEED
+        value: iex
