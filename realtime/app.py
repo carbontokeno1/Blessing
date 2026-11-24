@@ -1813,7 +1813,7 @@ def admin_member_portfolios(request: Request):
     """Owner-only inventory of the four isolated portfolios reserved for each of ten demo members."""
     _binance_th_owner_auth(request)
     rows = _sb_rest("blessing_member_portfolio_registry", {
-        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,assigned_user_id,paper_slot_id,status,enabled,live_trading_approved,created_at,updated_at",
+        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,assigned_user_id,paper_slot_id,allocated_capital,status,enabled,live_trading_approved,created_at,updated_at",
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     })
