@@ -20,7 +20,7 @@ ACTIVE_STATES = {"RUNNING", "STOPPING"}
 TERMINAL = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
 _worker_lock = threading.Lock()
 _worker_started = False
-_worker_state = {"status": "starting", "lastCycleAt": None, "lastError": None, "cycles": 0, "lastAction": None}
+_worker_state = {"status": "starting", "lastCycleAt": None, "lastError": None, "cycles": 0, "entries": 0, "exits": 0, "freeUSDT": None, "dailyLossPct": None, "lastAction": None}
 
 
 def _d(value, default="0"):
@@ -231,7 +231,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                 "symbol": pos["symbol"], "reason": reason, "realizedPnl": _fmt(pnl),
                 "exitPrice": _fmt(fill["avgPrice"]), "clientOrderId": fill["clientOrderId"]
             })
-            _worker_state["lastAction"] = {"action": "SELL", "symbol": pos["symbol"], "reason": reason, "pnl": _fmt(pnl)}
+            _worker_state["exits"] += 1\n            _worker_state["lastAction"] = {"action": "SELL", "symbol": pos["symbol"], "reason": reason, "pnl": _fmt(pnl)}
         except Exception:
             sb_rest("blessing_owner_live_positions", {"id": "eq." + pid}, "PATCH", {
                 "status": "RECONCILIATION_REQUIRED", "updated_at": datetime.now(timezone.utc).isoformat()
@@ -293,7 +293,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         }) or []
         realized_today = sum((_d(x.get("realized_pnl")) for x in closed_today), Decimal("0"))
         max_loss = day_start * _d(config.get("max_daily_loss_pct", 2)) / Decimal("100")
-        if day_start > 0 and realized_today <= -max_loss:
+        if day_start > 0:\n            _worker_state["dailyLossPct"] = _fmt(max(Decimal("0"), -realized_today / day_start * Decimal("100")))\n        if day_start > 0 and realized_today <= -max_loss:
             sb_rest("blessing_owner_auto_trade_control", {"owner_user_id": "eq." + uid}, "PATCH", {
                 "run_state": "STOPPING", "last_error": "MAX_DAILY_LOSS_REACHED",
                 "updated_at": datetime.now(timezone.utc).isoformat()
@@ -348,7 +348,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             "stopLoss": _fmt(stop_price), "takeProfit": _fmt(take_price),
             "quoteAmount": _fmt(fill["quoteQty"]), "clientOrderId": fill["clientOrderId"]
         })
-        _worker_state["lastAction"] = {"action": "BUY", "symbol": symbol, "quantity": _fmt(qty), "quoteAmount": _fmt(fill["quoteQty"])}
+        _worker_state["entries"] += 1\n        _worker_state["lastAction"] = {"action": "BUY", "symbol": symbol, "quantity": _fmt(qty), "quoteAmount": _fmt(fill["quoteQty"])}
 
     def worker_loop():
         _worker_state["status"] = "running"
