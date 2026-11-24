@@ -1854,30 +1854,38 @@ async def admin_control_member_portfolios(request: Request):
     else:
         targets = registry
 
-    updated = []
-    for row in targets:
-        # This is an owner-controlled availability flag only. Live order permission remains locked.
-        changed = _sb_rest("blessing_member_portfolio_registry", {
-            "id": "eq." + str(row["id"]),
+    # Apply each category in one REST update instead of up to 40 serial PATCH calls.
+    target_ids = [str(row["id"]) for row in targets]
+    changed = _sb_rest("blessing_member_portfolio_registry", {
+        "id": "in.(" + ",".join(target_ids) + ")",
+    }, method="PATCH", body={"enabled": enabled})
+    if len(changed) != len(targets):
+        raise HTTPException(status_code=502, detail="บันทึกสถานะทะเบียนพอร์ตไม่ครบ")
+
+    crypto_slot_ids = [
+        str(row["paper_slot_id"]) for row in targets
+        if row.get("mode") == "paper" and row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id")
+    ]
+    stock_slot_nos = [
+        str(row["member_no"]) for row in targets
+        if row.get("mode") == "paper" and row.get("portfolio_type") == "stock_paper"
+    ]
+    if crypto_slot_ids:
+        _sb_rest("blessing_paper_member_slots", {
+            "id": "in.(" + ",".join(crypto_slot_ids) + ")",
         }, method="PATCH", body={"enabled": enabled})
-        if not changed:
-            raise HTTPException(status_code=502, detail="บันทึกสถานะพอร์ตไม่สำเร็จ")
-        if row.get("mode") == "paper":
-            if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id"):
-                _sb_rest("blessing_paper_member_slots", {
-                    "id": "eq." + str(row["paper_slot_id"]),
-                }, method="PATCH", body={"enabled": enabled})
-            elif row.get("portfolio_type") == "stock_paper":
-                _sb_rest("blessing_stock_paper_member_slots", {
-                    "slot_no": "eq." + str(row["member_no"]),
-                }, method="PATCH", body={"enabled": enabled})
-        updated.append({
-            "memberNo": row.get("member_no"),
-            "portfolioType": row.get("portfolio_type"),
-            "enabled": enabled,
-            "liveTradingApproved": bool(row.get("live_trading_approved")),
-            "liveOrdersStillLocked": row.get("mode") == "live",
-        })
+    if stock_slot_nos:
+        _sb_rest("blessing_stock_paper_member_slots", {
+            "slot_no": "in.(" + ",".join(stock_slot_nos) + ")",
+        }, method="PATCH", body={"enabled": enabled})
+
+    updated = [{
+        "memberNo": row.get("member_no"),
+        "portfolioType": row.get("portfolio_type"),
+        "enabled": enabled,
+        "liveTradingApproved": bool(row.get("live_trading_approved")),
+        "liveOrdersStillLocked": row.get("mode") == "live",
+    } for row in targets]
     return {
         "ok": True,
         "updatedCount": len(updated),
