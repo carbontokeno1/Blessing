@@ -4324,13 +4324,14 @@ def _member_slot_engine_cycle():
         return
     try:
         now = datetime.now(timezone.utc)
-        fx = _member_slot_usd_thb()
-        # Heartbeat keeps owner reports visibly current even when no strategy signal qualifies.
+        # Refresh health first; a temporary FX-provider outage must not make a healthy
+        # Paper engine appear offline. Trading still fails closed until FX is available.
         heartbeat = now.isoformat()
         _sb_rest("blessing_paper_member_slots", {"enabled":"eq.true","mode":"eq.paper"},
                  method="PATCH", body={"updated_at":heartbeat})
         _sb_rest("blessing_stock_paper_member_slots", {"enabled":"eq.true"},
                  method="PATCH", body={"updated_at":heartbeat})
+        fx = _member_slot_usd_thb()
         crypto_slots = _sb_rest("blessing_paper_member_slots", {
             "select":"id,slot_no,initial_capital,cash_balance,max_open_positions,enabled,status",
             "enabled":"eq.true", "mode":"eq.paper", "limit":"20"
@@ -4562,6 +4563,7 @@ async def member_slot_engine_startup():
         target=_member_slot_engine_loop, name="member-slot-paper-engine", daemon=True
     )
     MEMBER_SLOT_ENGINE_THREAD.start()
+    log.info("Member slot Paper engine thread started; interval=%ss", MEMBER_SLOT_ENGINE_INTERVAL)
 
 
 @app.get("/admin/member-slot-engine/status")
