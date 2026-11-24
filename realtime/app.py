@@ -1918,25 +1918,13 @@ def _binance_th_signed_request(method: str, path: str, params: dict, api_key: st
 
 
 @app.post("/binance-th/order")
-def binance_th_place_order(request: Request):
+async def binance_th_place_order(request: Request):
     """Manually place one tightly capped Binance TH Spot MARKET order; disabled by default."""
     _binance_th_owner_auth(request)
     if os.getenv("BLESSING_LIVE_TRADING_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
         raise HTTPException(status_code=423, detail="โหมดเงินจริงยังถูกล็อกอยู่: ต้องเปิด BLESSING_LIVE_TRADING_ENABLED ใน Render ก่อน")
     try:
-        body = request.json()
-        if asyncio.iscoroutine(body):
-            raise HTTPException(status_code=400, detail="Invalid request body")
-    except Exception:
-        body = None
-    # FastAPI sync handlers cannot await Request.json(); parse the cached body synchronously.
-    try:
-        raw = request._body if hasattr(request, "_body") else None
-        if raw is None:
-            raise HTTPException(status_code=400, detail="Invalid request body")
-        body = json.loads(raw.decode("utf-8"))
-    except HTTPException:
-        raise
+        body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
