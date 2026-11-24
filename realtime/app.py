@@ -368,6 +368,10 @@ def binance_th_stream_main():
                         if changed:
                             state["lastCryptoMessageAt"] = now
                             state["cryptoConnection"] = "streaming"
+                            if not state.get("cryptoStreamFirstFrameLogged"):
+                                log.info("Binance TH ticker stream first data frame: received=%d cached=%d",
+                                         len(items), len(state.get("crypto_quotes") or {}))
+                                state["cryptoStreamFirstFrameLogged"] = True
                             if loop and loop.is_running():
                                 asyncio.run_coroutine_threadsafe(
                                     broadcast({
@@ -1427,7 +1431,12 @@ def _binance_public_tickers():
             "closeTime": int(_num(item.get("eventTime"), 0) or 0),
         })
     if not rows:
-        raise RuntimeError("BINANCE_TH_LIVE_TICKERS_NOT_READY")
+        raise RuntimeError(
+            "BINANCE_TH_LIVE_TICKERS_NOT_READY:"
+            + "connection=" + str(state.get("cryptoConnection"))
+            + ",quotes=" + str(len(state.get("crypto_quotes") or {}))
+            + ",lastMessage=" + str(state.get("lastCryptoMessageAt"))
+        )
     return rows
 
 
@@ -1540,7 +1549,7 @@ def altcoin_scanner(refresh: int = 0):
         except Exception as primary_error:
             raise RuntimeError("BINANCE_TH_LIVE_TICKERS_UNAVAILABLE:" + type(primary_error).__name__)
     except Exception as binance_error:
-        log.error("Binance scanner unavailable: %s", type(binance_error).__name__)
+        log.error("Binance scanner unavailable: %s", str(binance_error)[:240])
         try:
             tickers = _bitmart_public_tickers()
             provider = "BitMart"
