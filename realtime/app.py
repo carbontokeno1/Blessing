@@ -1406,10 +1406,18 @@ def _binance_public_tickers():
         if age < 0 or age > 60:
             continue
         pair = str(item.get("symbol") or "").upper()
+        # Binance TH Alpha tickers may use identifiers such as ALPHA_772USDT.
+        # These are not standard Spot symbol names for /api/v1/klines.
+        # Only send conventional ASCII alphanumeric BASEUSDT pairs to the Spot scanner.
+        if not pair.endswith("USDT"):
+            continue
+        base_asset = pair[:-4]
+        if not base_asset or not base_asset.isascii() or not base_asset.isalnum():
+            continue
         price = _num(item.get("price"), 0) or 0
         change_pct = _num(item.get("change24hPct"), 0) or 0
         open_price = price / (1 + change_pct / 100) if price > 0 and change_pct > -99.9 else 0
-        if not pair.endswith("USDT") or price <= 0 or open_price <= 0:
+        if price <= 0 or open_price <= 0:
             continue
         rows.append({
             "symbol": pair, "lastPrice": price,
