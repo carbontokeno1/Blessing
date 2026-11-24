@@ -1645,7 +1645,7 @@ def altcoin_scanner(refresh: int = 0):
                     candle_errors += 1
                     row["candleError"] = type(candle_error).__name__
                     row["rejectReason"] = "CANDLE_DATA_UNAVAILABLE"
-        metrics_source = "Binance 1m closed candles; 100 highest-volume eligible USDT pairs"
+        metrics_source = "Binance TH 1m closed candles; 100 highest-volume eligible USDT pairs"
     else:
         metrics_source = provider + " ticker snapshot only; Paper entries disabled without Binance candles"
 
@@ -1679,7 +1679,7 @@ def altcoin_scanner(refresh: int = 0):
 
     payload = {
         "status": "ok" if selected else "empty",
-        "provider": provider + " Spot public market data",
+        "provider": provider,
         "exchange": provider,
         "scanned": len(eligible),
         "eligibleTotal": len(eligible),
