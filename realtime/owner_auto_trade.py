@@ -255,7 +255,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                     continue
                 spread_pct = (ask - bid) / price * Decimal("100")
                 value = available * bid
-                if spread_pct > Decimal("0.30") or value < max(min_notional, Decimal("10")):
+                if spread_pct > Decimal("0.30") or value < min_notional:
                     continue
                 # AI-style selection: prioritize weaker 24h assets with liquid, tight books.
                 choices.append((change, spread_pct, -volume, asset, symbol, available, value))
@@ -350,7 +350,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                 })
                 record_event(uid, "STOPPED", "LIVE", {"reason": "all_positions_closed"})
             return
-        if control.get("run_state") != "STOPPING" and config.get("auto_convert_to_usdt") is True and free_usdt < _d(config.get("min_usdt_reserve", 50)):
+        if control.get("run_state") != "STOPPING" and config.get("auto_convert_to_usdt") is True and free_usdt <= _d(config.get("min_usdt_reserve", 0)):
             conversion = convert_best_asset_to_usdt(uid, account, positions, config)
             if conversion:
                 account = account_snapshot()
@@ -574,7 +574,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             "unpricedAssets": unpriced,
             "conversionPolicy": {
                 "enabled": bool((owner_control(uid).get("strategy_config") or {}).get("auto_convert_to_usdt", False)),
-                "minUSDTReserve": (owner_control(uid).get("strategy_config") or {}).get("min_usdt_reserve", 50),
+                "minUSDTReserve": (owner_control(uid).get("strategy_config") or {}).get("min_usdt_reserve", 0),
                 "selection": "AI เลือกเหรียญ Altcoin ที่อ่อนกว่า โดยต้องมีคู่ USDT, สภาพคล่องและสเปรดผ่านเกณฑ์; งดเหรียญหลักและเหรียญที่มีโพซิชัน/ยอดจอง"
             },
             "valuationNote": "มูลค่าประเมินจากคู่ USDT ที่มีราคา; สินทรัพย์ที่ไม่มีคู่ตรงจะแสดงเป็นยังไม่ประเมิน"
@@ -638,7 +638,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         cfg.setdefault("scan_interval_seconds", 15)
         cfg.setdefault("max_position_pct", 20)
         cfg.setdefault("auto_convert_to_usdt", True)
-        cfg.setdefault("min_usdt_reserve", 50)
+        cfg.setdefault("min_usdt_reserve", 0)
         now = datetime.now(timezone.utc).isoformat()
         sb_rest("blessing_owner_auto_trade_control", {"owner_user_id": "eq." + uid}, "PATCH", {
             "run_state": "RUNNING", "run_mode": "LIVE", "live_approved": True,
