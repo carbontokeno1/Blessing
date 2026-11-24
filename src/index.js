@@ -29,18 +29,16 @@ async function binanceThAccount(env) {
   if (!env.BINANCE_TH_API_KEY || !env.BINANCE_TH_API_SECRET) {
     return json({ ok: false, configured: false, provider: "Binance TH", message: "กรุณาตั้งค่า Worker Secrets: BINANCE_TH_API_KEY และ BINANCE_TH_API_SECRET" }, 503);
   }
-  const params = new URLSearchParams({ recvWindow: "5000", timestamp: String(Date.now()) });
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey("raw", encoder.encode(env.BINANCE_TH_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(params.toString()));
-  const hex = [...new Uint8Array(signature)].map(b => b.toString(16).padStart(2, "0")).join("");
-  const response = await fetch("https://api.binance.th/api/v1/accountV2?" + params.toString() + "&signature=" + hex, {
+  // Binance TH accountV2 documentation shows API-key authentication plus timestamp.
+  // Unlike SIGNED order endpoints, this endpoint's documented example does not require a signature.
+  const params = new URLSearchParams({ timestamp: String(Date.now()) });
+  const response = await fetch("https://api.binance.th/api/v1/accountV2?" + params.toString(), {
     method: "GET",
     headers: { accept: "application/json", "X-MBX-APIKEY": env.BINANCE_TH_API_KEY },
     signal: AbortSignal.timeout(10000)
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload?.code) {
+  if (!response.ok || (typeof payload?.code === "number" && payload.code !== 0)) {
     return json({ ok: false, configured: true, connected: false, provider: "Binance TH", httpStatus: response.status, errorCode: payload?.code ?? null, message: payload?.msg || "Binance TH authentication failed" }, 502);
   }
   const assets = (payload.balances || [])
@@ -52,7 +50,7 @@ async function binanceThAccount(env) {
     assetCount: assets.length, assets,
     checkedAt: new Date().toISOString(),
     tradingEnabledInBlessing: false,
-    message: "เชื่อมต่อสำเร็จ · อ่านข้อมูลบัญชีเท่านั้น · ยังไม่ส่งคำสั่งซื้อขาย"
+    message: "ตรวจสอบบัญชีสำเร็จ · อ่านข้อมูลบัญชีเท่านั้น · ยังไม่ส่งคำสั่งซื้อขาย"
   });
 }
 
