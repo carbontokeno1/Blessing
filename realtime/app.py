@@ -1948,6 +1948,13 @@ async def admin_control_member_portfolios(request: Request):
     else:
         targets = registry
 
+    # This endpoint is PAPER-only. Never let the global switch enable LIVE rows.
+    targets = [row for row in targets
+               if row.get("mode") == "paper"
+               and row.get("portfolio_type") in ("crypto_paper", "stock_paper")]
+    if not targets:
+        raise HTTPException(status_code=404, detail="ไม่พบพอร์ต PAPER ที่ควบคุมได้")
+
     # Apply each category in one REST update instead of up to 40 serial PATCH calls.
     target_ids = [str(row["id"]) for row in targets]
     changed = _sb_rest("blessing_member_portfolio_registry", {
