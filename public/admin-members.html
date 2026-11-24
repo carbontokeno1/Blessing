@@ -3,18 +3,19 @@
 <style>
 :root{color-scheme:dark;--bg:#0b1020;--panel:#121a2d;--line:#26334d;--muted:#94a3b8;--gold:#f4b942;--green:#36c98f;--red:#fb7185}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,#18284b 0,transparent 40%),var(--bg);color:#edf3ff;font:15px system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1100px;margin:auto;padding:22px 14px 60px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.brand{font-weight:900;letter-spacing:.15em;color:var(--gold)}.muted,small{color:var(--muted)}.card{background:linear-gradient(145deg,#151f35,#101729);border:1px solid var(--line);border-radius:16px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}input,select,button{font:inherit;border-radius:10px;padding:11px 12px;border:1px solid var(--line)}input,select{width:100%;background:#0b1324;color:white;margin:5px 0 10px}button{background:var(--gold);color:#171717;font-weight:800;cursor:pointer;border:0}button.secondary{background:#26344c;color:#fff}button.danger{background:#7f1d1d;color:#fff}button:disabled{opacity:.5;cursor:not-allowed}label{font-size:12px;color:var(--muted)}.hidden{display:none!important}.status{padding:12px;border-radius:10px;background:#0b1324;color:var(--muted);white-space:pre-wrap;margin-top:10px}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:760px;font-size:13px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:middle}th{color:var(--muted)}.tag{padding:4px 8px;border-radius:20px;background:#183a35;color:#77e5ba;font-size:11px}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions button{font-size:12px;padding:8px 10px}.member{border:1px solid var(--line);border-radius:13px;padding:14px;margin:10px 0;background:#0d1628}.memberHead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.allocs{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:12px}.alloc{background:#101a2c;border:1px solid var(--line);padding:12px;border-radius:12px}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}@media(max-width:560px){main{padding:14px 10px}.card{padding:13px}.row{grid-template-columns:1fr}}
+main{max-width:1100px;margin:auto;padding:22px 14px 60px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.brand{font-weight:900;letter-spacing:.15em;color:var(--gold)}.muted,small{color:var(--muted)}.card{background:linear-gradient(145deg,#151f35,#101729);border:1px solid var(--line);border-radius:16px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}input,select,button{font:inherit;border-radius:10px;padding:11px 12px;border:1px solid var(--line)}input,select{width:100%;background:#0b1324;color:white;margin:5px 0 10px}button{background:var(--gold);color:#171717;font-weight:800;cursor:pointer;border:0}button.secondary{background:#26344c;color:#fff}button.danger{background:#7f1d1d;color:#fff}button:disabled{opacity:.5;cursor:not-allowed}label{font-size:12px;color:var(--muted)}.hidden{display:none!important}.status{padding:12px;border-radius:10px;background:#0b1324;color:var(--muted);white-space:pre-wrap;margin-top:10px}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:760px;font-size:13px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:middle}th{color:var(--muted)}.tag{padding:4px 8px;border-radius:20px;background:#183a35;color:#77e5ba;font-size:11px}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions button{font-size:12px;padding:8px 10px}.member{border:1px solid var(--line);border-radius:13px;padding:14px;margin:10px 0;background:#0d1628}.memberHead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.allocs{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:12px}.alloc{background:#101a2c;border:1px solid var(--line);padding:12px;border-radius:12px}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.tradeGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}.tradeMember{background:#0d1628;border:1px solid var(--line);border-radius:12px;padding:13px}.tradeAccount{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line)}.tradeAccount:first-of-type{border-top:0}.tradeAccount button{min-width:92px}.on{color:#77e5ba}.off{color:#fb7185}.globalActions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.globalActions button{flex:1;min-width:190px}@media(max-width:560px){main{padding:14px 10px}.card{padding:13px}.row{grid-template-columns:1fr}.tradeAccount{align-items:flex-start;flex-direction:column}.tradeAccount button{width:100%}}
 </style></head><body><main>
 <header class="top"><div><div class="brand">BLESSING · CONTROL CENTER</div><div class="muted">อนุมัติสมาชิกและจัดสรรวงเงินรายบุคคล · PAPER ONLY</div></div><button id="logout" class="secondary hidden">ออกจากระบบ</button></header>
 <section id="login" class="card"><h1>ผู้ดูแลระบบ</h1><p class="muted">เข้าสู่ระบบด้วยบัญชี Admin / Super Admin ของ BLESSING</p><form id="loginForm"><label>อีเมล</label><input id="email" type="email" required autocomplete="username"><label>รหัสผ่าน</label><input id="password" type="password" required autocomplete="current-password"><button>เข้าสู่ระบบ</button></form><div id="loginMsg" class="status">ระบบจะตรวจสอบสิทธิ์จากฐานข้อมูล ไม่ใช้การซ่อนปุ่มเป็นมาตรการรักษาความปลอดภัย</div></section>
 <section id="app" class="hidden">
 <div class="card"><div class="memberHead"><div><h1>สมาชิกและวงเงิน</h1><div class="muted">ทุนต้นทางอยู่ในบัญชีหลักของเจ้าของระบบ · แยกยอดภายในรายสมาชิก</div></div><span class="tag">ADMIN ONLY</span></div><div class="status">วงเงินที่จัดสรรในระยะนี้เป็น Paper Allocation เพื่อทดสอบบัญชีแยก ยังไม่ส่งคำสั่งซื้อขายเงินจริงและไม่ใช่ยอดเงินฝากที่ถอนได้</div></div>
+<div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>สวิตช์ควบคุมการเทรด PAPER</h2><div class="muted">เปิด–ปิดทุกบัญชีพร้อมกัน หรือแยกควบคุมหุ้นและคริปโตของสมาชิกแต่ละราย</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="globalActions"><button id="allTradingOn">▶ เปิดเทรดสมาชิกทั้งหมด</button><button id="allTradingOff" class="danger">■ ปิดเทรดสมาชิกทั้งหมด</button></div><div id="tradingStatus" class="status">กำลังโหลดสถานะพอร์ต...</div><h3>ควบคุมรายสมาชิก / รายพอร์ต</h3><div id="tradingMembers" class="tradeGrid"></div></div>
 <div class="card"><h2>รายชื่อสมาชิก</h2><div id="members"><div class="status">กำลังโหลด...</div></div></div>
 </section></main>
 <script type="module">
 import {createClient} from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb=createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
-const $=id=>document.getElementById(id);let current=null;
+const $=id=>document.getElementById(id);let current=null,ownerMode=false,profileCache=[];
 const fmt=(n,c)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c;
 function msg(t){$('loginMsg').textContent=t}
 async function start(session){
@@ -22,8 +23,9 @@ async function start(session){
  const {data:p,error}=await sb.from('profiles').select('email,display_name,role,status').eq('user_id',session.user.id).maybeSingle();
  if(error)throw error;
  if(!p||p.status!=='active'||!['admin','super_admin'].includes(p.role))throw Error('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ');
- current=session.user;$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');
- await loadMembers();
+ current=session.user;ownerMode=p.role==='super_admin';$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');
+ $('tradingControls').style.display=ownerMode?'block':'none';
+ await loadMembers();if(ownerMode)await loadTradingControls();
 }
 async function loadMembers(){
  const box=$('members');box.textContent='กำลังโหลด...';
@@ -33,7 +35,7 @@ async function loadMembers(){
   sb.from('blessing_member_allocations').select('id,user_id,market,broker,currency,allocated_capital,reserved_capital,realized_pnl,fees_paid,mode,enabled')
  ]);
  if(pe||me||ae){box.textContent='โหลดข้อมูลไม่สำเร็จ: '+(pe||me||ae).message;return}
- const mMap=new Map((members||[]).map(x=>[x.user_id,x])),aMap=new Map();
+ profileCache=profiles||[];const mMap=new Map((members||[]).map(x=>[x.user_id,x])),aMap=new Map();
  for(const a of allocs||[]){if(!aMap.has(a.user_id))aMap.set(a.user_id,[]);aMap.get(a.user_id).push(a)}
  box.replaceChildren();
  if(!profiles?.length){box.textContent='ยังไม่มีผู้สมัครสมาชิก';return}
@@ -59,6 +61,48 @@ async function loadMembers(){
   wrap.append(allocsWrap);box.append(wrap);
  }
 }
+async function adminApi(path,method='GET',body){
+ const response=await fetch(path,{method,headers:{'authorization':'Bearer '+(await sb.auth.getSession()).data.session.access_token,'content-type':'application/json','accept':'application/json'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});
+ const payload=await response.json().catch(()=>({}));
+ if(!response.ok)throw Error(payload.detail||payload.message||'HTTP '+response.status);
+ return payload;
+}
+async function loadTradingControls(){
+ const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังอ่านสถานะจากเซิร์ฟเวอร์...';box.replaceChildren();
+ try{
+  const data=await adminApi('/api/admin/member-portfolios');
+  const rows=(data.portfolios||[]).filter(x=>['crypto_paper','stock_paper'].includes(x.portfolio_type));
+  if(!rows.length){status.textContent='ยังไม่มีพอร์ต PAPER ในทะเบียนสมาชิก';return}
+  const profileMap=new Map(profileCache.map(p=>[p.user_id,p]));
+  const groups=new Map();
+  for(const row of rows){const key=String(row.member_no);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(row)}
+  let enabled=0;
+  for(const row of rows)if(row.enabled)enabled++;
+  status.textContent='พบพอร์ต PAPER '+rows.length+' บัญชี · เปิดอยู่ '+enabled+' · ปิดอยู่ '+(rows.length-enabled)+' · สถานะนี้เป็นการเปิดสิทธิ์ให้ Engine ทำงาน ไม่ใช่คำสั่ง LIVE';
+  for(const [memberNo,items] of groups){
+   const card=document.createElement('article');card.className='tradeMember';
+   const heading=document.createElement('b');const assigned=items.find(x=>x.assigned_user_id),prof=assigned?profileMap.get(assigned.assigned_user_id):null;
+   heading.textContent='สมาชิก '+memberNo+' · '+(prof?.display_name||assigned?.member_label||'ยังไม่ผูกบัญชี');card.append(heading);
+   for(const row of items){
+    const line=document.createElement('div');line.className='tradeAccount';
+    const info=document.createElement('div');const title=document.createElement('b');title.textContent=row.portfolio_type==='crypto_paper'?'CRYPTO PAPER':'STOCK PAPER';
+    const state=document.createElement('div');state.className=row.enabled?'on':'off';state.textContent=row.enabled?'● เปิดใช้งาน':'● ปิดใช้งาน';
+    info.append(title,state);
+    const btn=document.createElement('button');btn.className=row.enabled?'danger':'secondary';btn.textContent=row.enabled?'ปิดพอร์ตนี้':'เปิดพอร์ตนี้';btn.onclick=async()=>{btn.disabled=true;try{await adminApi('/api/admin/member-portfolios/control','POST',{portfolioId:row.id,enabled:!row.enabled});await loadTradingControls()}catch(e){alert('เปลี่ยนสถานะไม่สำเร็จ: '+e.message);btn.disabled=false}};
+    line.append(info,btn);card.append(line);
+   }
+   box.append(card);
+  }
+ }catch(e){status.textContent='โหลดสถานะหรือเชื่อมต่อระบบไม่ได้: '+e.message}
+}
+async function setAllTrading(enabled){
+ const buttons=[$('allTradingOn'),$('allTradingOff')];buttons.forEach(b=>b.disabled=true);
+ try{const result=await adminApi('/api/admin/member-portfolios/control','POST',{enabled});await loadTradingControls();alert((enabled?'เปิด':'ปิด')+' พอร์ต PAPER สำเร็จ '+(result.updatedCount||0)+' พอร์ต')}
+ catch(e){alert('สั่งงานไม่สำเร็จ: '+e.message)}
+ finally{buttons.forEach(b=>b.disabled=false)}
+}
+$('allTradingOn').addEventListener('click',()=>{if(confirm('ยืนยันเปิดเทรด PAPER ให้สมาชิกทุกบัญชี ทั้งหุ้นและคริปโต?'))setAllTrading(true)});
+$('allTradingOff').addEventListener('click',()=>{if(confirm('ยืนยันปิดเทรด PAPER ของสมาชิกทุกบัญชี?'))setAllTrading(false)});
 async function changeStatus(id,status){
  try{const {data,error}=await sb.rpc('blessing_admin_set_member_status',{p_user_id:id,p_status:status});if(error)throw error;await loadMembers()}catch(e){alert('บันทึกสถานะไม่สำเร็จ: '+e.message)}
 }
