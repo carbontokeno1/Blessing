@@ -2192,12 +2192,152 @@ def admin_member_portfolios_report(request: Request):
                 totals["liveLocked"] += 1
         reports.append(report)
 
+    # Also include the separate central dual-paper engine. It is deliberately
+    # kept separate from the 40 member slots unless its user is explicitly assigned.
+    dual_portfolios = _sb_rest("blessing_dual_portfolios", {
+        "select": "id,user_id,market,broker,currency,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,updated_at",
+        "mode": "eq.paper", "limit": "100",
+    }) or []
+    dual_user_labels = {
+        str(item.get("assigned_user_id")): item.get("member_label") or ("สมาชิก " + str(item.get("member_no")))
+        for item in registry if item.get("assigned_user_id")
+    }
+    dual_stock_symbols = list(dict.fromkeys(
+        str(p.get("symbol")) for dp in dual_portfolios if dp.get("market") == "stocks"
+        for p in (_sb_rest("blessing_dual_positions", {
+            "select": "symbol", "portfolio_id": "eq." + str(dp["id"]),
+            "status": "eq.open", "limit": "500",
+        }) or []) if p.get("symbol")
+    ))
+    dual_stock_snapshots = {}
+    if dual_stock_symbols and ALPACA_KEY and ALPACA_SECRET and ALPACA_FEED in ("iex", "sip"):
+        try:
+            dual_stock_snapshots = _alpaca_snapshots(dual_stock_symbols)
+        except Exception:
+            log.exception("Owner portfolio report: Alpaca batch snapshot failed")
+    dual_reports = []
+    dual_totals = {}
+    for dp in dual_portfolios:
+        market = str(dp.get("market") or "")
+        currency = str(dp.get("currency") or ("USD" if market == "stocks" else "USDT"))
+        pid = str(dp.get("id"))
+        positions = _sb_rest("blessing_dual_positions", {
+            "select": "id,symbol,quantity,entry_price,current_price,stop_loss_price,take_profit_price,entry_fee,exit_fee,unrealized_pnl,realized_pnl,status,opened_at,closed_at,close_reason",
+            "portfolio_id": "eq." + pid, "status": "eq.open", "limit": "500",
+        }) or []
+        orders = _sb_rest("blessing_dual_orders", {
+            "select": "symbol,side,quantity,price,notional,fee,status,realized_pnl,reason,created_at",
+            "portfolio_id": "eq." + pid, "order": "created_at.desc", "limit": "25",
+        }) or []
+        position_reports = []
+        market_value = 0.0
+        unrealized_total = 0.0
+        for pos in positions:
+            symbol = str(pos.get("symbol") or "")
+            entry = num(pos.get("entry_price"))
+            quantity = num(pos.get("quantity"))
+            current = num(pos.get("current_price"))
+            live_price = None
+            price_source = "stored"
+            price_at = None
+            price_age = None
+            if market == "crypto":
+                quote = (state.get("crypto_quotes") or {}).get(symbol)
+                if isinstance(quote, dict):
+                    try:
+                        stamp = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
+                        age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                        candidate = num(quote.get("price"))
+                        if 0 <= age <= 5 and candidate > 0:
+                            live_price, price_source, price_at, price_age = candidate, "Binance TH stream", quote.get("receivedAt"), age
+                    except Exception:
+                        pass
+            elif market == "stocks":
+                quote = (state.get("quotes") or {}).get(symbol)
+                if isinstance(quote, dict):
+                    try:
+                        stamp = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
+                        age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                        candidate = _dual_price_number(quote.get("raw") or quote)
+                        if 0 <= age <= 5 and candidate and candidate > 0:
+                            live_price, price_source, price_at, price_age = float(candidate), "Alpaca IEX stream", quote.get("receivedAt"), age
+                    except Exception:
+                        pass
+                if live_price is None:
+                    snap = dual_stock_snapshots.get(symbol) or {}
+                    trade = snap.get("latestTrade") or {}
+                    candidate = num(trade.get("p"))
+                    trade_at = trade.get("t")
+                    if candidate > 0 and trade_at:
+                        try:
+                            stamp = datetime.fromisoformat(str(trade_at).replace("Z", "+00:00"))
+                            age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                            if 0 <= age <= 5:
+                                live_price, price_source, price_at, price_age = candidate, "Alpaca IEX snapshot", trade_at, age
+                        except Exception:
+                            pass
+            if live_price is not None:
+                current = live_price
+            cost = entry * quantity
+            gross_pnl = (current - entry) * quantity if current > 0 and entry > 0 else None
+            net_pnl = (gross_pnl - num(pos.get("entry_fee"))) if gross_pnl is not None else num(pos.get("unrealized_pnl"))
+            pnl_pct = (net_pnl / cost * 100) if cost > 0 and net_pnl is not None else None
+            value = current * quantity if current > 0 else 0.0
+            market_value += value
+            unrealized_total += net_pnl or 0.0
+            position_reports.append({
+                "symbol": symbol, "quantity": quantity, "entryPrice": entry,
+                "currentPrice": current if current > 0 else None,
+                "stopLossPrice": num(pos.get("stop_loss_price")) or None,
+                "takeProfitPrice": num(pos.get("take_profit_price")) or None,
+                "unrealizedPnl": net_pnl, "grossUnrealizedPnl": gross_pnl,
+                "pnlPct": pnl_pct, "marketValue": value, "currency": currency,
+                "priceFresh": live_price is not None, "priceSource": price_source,
+                "priceUpdatedAt": price_at, "priceAgeSeconds": round(price_age, 2) if price_age is not None else None,
+                "openedAt": pos.get("opened_at"),
+            })
+        cash = num(dp.get("cash_balance"))
+        capital = num(dp.get("initial_capital"))
+        equity = cash + market_value
+        realized = num(dp.get("realized_pnl"))
+        fee_total = num(dp.get("fees_paid"))
+        order_reports = [{
+            "symbol": o.get("symbol"), "side": o.get("side"),
+            "quantity": num(o.get("quantity")), "price": num(o.get("price")),
+            "notional": num(o.get("notional")), "fee": num(o.get("fee")),
+            "status": o.get("status"), "realizedPnl": o.get("realized_pnl"),
+            "reason": o.get("reason"), "createdAt": o.get("created_at"),
+        } for o in orders]
+        dual_reports.append({
+            "market": market, "currency": currency, "broker": dp.get("broker"),
+            "mode": dp.get("mode"), "enabled": bool(dp.get("enabled")),
+            "memberLabel": dual_user_labels.get(str(dp.get("user_id")), "พอร์ต Paper กลาง · ยังไม่ผูกกับสมาชิก 40 พอร์ต"),
+            "capital": capital, "cash": cash, "marketValue": market_value,
+            "equity": equity, "realizedPnl": realized, "unrealizedPnl": unrealized_total,
+            "netPnl": realized + unrealized_total,
+            "returnPct": ((equity - capital) / capital * 100) if capital else 0,
+            "fees": fee_total, "openPositions": len(position_reports),
+            "positions": position_reports, "recentOrders": order_reports,
+        })
+        bucket = dual_totals.setdefault(currency, {
+            "capital": 0.0, "cash": 0.0, "marketValue": 0.0, "equity": 0.0,
+            "realizedPnl": 0.0, "unrealizedPnl": 0.0, "fees": 0.0,
+            "openPositions": 0,
+        })
+        for key, value in (
+            ("capital", capital), ("cash", cash), ("marketValue", market_value),
+            ("equity", equity), ("realizedPnl", realized), ("unrealizedPnl", unrealized_total),
+            ("fees", fee_total), ("openPositions", len(position_reports)),
+        ):
+            bucket[key] += value
+
     return {
         "ok": True, "reportType": "owner_all_member_portfolios",
         "memberCount": 10, "portfolioCount": len(reports),
         "refreshedAt": datetime.now(timezone.utc).isoformat(),
         "refreshIntervalSeconds": 10, "liveTradingEnabled": False,
         "totals": totals, "portfolios": reports,
+        "dualPaperPortfolios": dual_reports, "dualPaperTotals": dual_totals,
         "dataNote": "Paper equity uses saved cash plus current position values. Live portfolios are locked and do not show allocated plans as real balances.",
     }
 
