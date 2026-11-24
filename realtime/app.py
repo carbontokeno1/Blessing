@@ -1808,6 +1808,77 @@ def _binance_th_owner_auth(request: Request):
     return user
 
 
+@app.post("/admin/member-portfolios/control")
+async def admin_control_member_portfolios(request: Request):
+    """Super Admin can enable/disable portfolio availability; this never grants live-trading approval."""
+    _binance_th_owner_auth(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="ข้อมูลคำสั่งไม่ถูกต้อง")
+    enabled = payload.get("enabled")
+    portfolio_id = payload.get("portfolioId")
+    member_no = payload.get("memberNo")
+    portfolio_type = payload.get("portfolioType")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="ต้องระบุ enabled เป็น true หรือ false")
+
+    registry = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "id,member_no,portfolio_type,mode,paper_slot_id,live_trading_approved",
+        "order": "member_no.asc,portfolio_type.asc",
+        "limit": "100",
+    })
+    if len(registry) != 40:
+        raise HTTPException(status_code=503, detail="ทะเบียนพอร์ตต้องครบ 40 พอร์ตก่อนจึงควบคุมได้")
+
+    if portfolio_id:
+        targets = [row for row in registry if str(row.get("id")) == str(portfolio_id)]
+        if not targets:
+            raise HTTPException(status_code=404, detail="ไม่พบพอร์ตที่เลือก")
+    elif member_no is not None and portfolio_type:
+        targets = [row for row in registry if int(row.get("member_no")) == int(member_no)
+                   and row.get("portfolio_type") == str(portfolio_type)]
+        if not targets:
+            raise HTTPException(status_code=404, detail="ไม่พบพอร์ตสมาชิกที่เลือก")
+    elif member_no is not None:
+        targets = [row for row in registry if int(row.get("member_no")) == int(member_no)]
+    else:
+        targets = registry
+
+    updated = []
+    for row in targets:
+        # This is an owner-controlled availability flag only. Live order permission remains locked.
+        changed = _sb_rest("blessing_member_portfolio_registry", {
+            "id": "eq." + str(row["id"]),
+        }, method="PATCH", body={"enabled": enabled})
+        if not changed:
+            raise HTTPException(status_code=502, detail="บันทึกสถานะพอร์ตไม่สำเร็จ")
+        if row.get("mode") == "paper":
+            if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id"):
+                _sb_rest("blessing_paper_member_slots", {
+                    "id": "eq." + str(row["paper_slot_id"]),
+                }, method="PATCH", body={"enabled": enabled})
+            elif row.get("portfolio_type") == "stock_paper":
+                _sb_rest("blessing_stock_paper_member_slots", {
+                    "slot_no": "eq." + str(row["member_no"]),
+                }, method="PATCH", body={"enabled": enabled})
+        updated.append({
+            "memberNo": row.get("member_no"),
+            "portfolioType": row.get("portfolio_type"),
+            "enabled": enabled,
+            "liveTradingApproved": bool(row.get("live_trading_approved")),
+            "liveOrdersStillLocked": row.get("mode") == "live",
+        })
+    return {
+        "ok": True,
+        "updatedCount": len(updated),
+        "enabled": enabled,
+        "portfolios": updated,
+        "liveTradingEnabled": False,
+        "message": "ปรับสถานะพอร์ตแล้ว แต่การเปิดพอร์ตไม่ใช่การอนุมัติส่งคำสั่งเงินจริง",
+    }
+
+
 @app.get("/admin/member-portfolios")
 def admin_member_portfolios(request: Request):
     """Owner-only inventory of the four isolated portfolios reserved for each of ten demo members."""
