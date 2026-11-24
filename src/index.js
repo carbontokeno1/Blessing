@@ -284,6 +284,19 @@ export default {
         return json({ status: "source_error", message: error?.message || "scanner_failed", candidates: [], updatedAt: new Date().toISOString() }, 502);
       }
     }
+    if (pathname === "/api/binance-th/auto-trade/status") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      return binanceThLiveProxy(request,"/binance-th/auto-trade/status","GET");
+    }
+    if (pathname === "/api/binance-th/auto-trade/start") {
+      if (request.method !== "POST") return json({ok:false,message:"POST only"},405,{allow:"POST"});
+      try { return binanceThLiveProxy(request,"/binance-th/auto-trade/start","POST",await request.json()); }
+      catch(error) { return json({ok:false,message:"ข้อมูลคำสั่งไม่ถูกต้อง"},400); }
+    }
+    if (pathname === "/api/binance-th/auto-trade/stop") {
+      if (request.method !== "POST") return json({ok:false,message:"POST only"},405,{allow:"POST"});
+      return binanceThLiveProxy(request,"/binance-th/auto-trade/stop","POST",{});
+    }
     if (pathname === "/api/binance-th/live-readiness") {
       if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
       return binanceThLiveProxy(request,"/binance-th/live-readiness","GET");
