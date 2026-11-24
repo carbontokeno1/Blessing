@@ -229,6 +229,35 @@ async function altcoinScanner(request) {
 }
 
 export default {
+  // Scheduled keep-alive: wake the existing Render Free web service before its
+  // 15-minute idle window expires. This is health-only; it never touches trading.
+  async scheduled(controller, env, ctx) {
+    const startedAt = Date.now();
+    try {
+      const response = await fetch("https://blessing-webull-realtime-djfm.onrender.com/health", {
+        method: "GET",
+        headers: { "accept": "application/json", "user-agent": "BLESSING-KeepAlive/1.0" },
+        signal: AbortSignal.timeout(20000),
+        cache: "no-store"
+      });
+      const body = await response.text();
+      console.log(JSON.stringify({
+        event: "render_keepalive",
+        ok: response.ok,
+        status: response.status,
+        elapsedMs: Date.now() - startedAt,
+        response: body.slice(0, 300),
+        scheduledAt: new Date(controller.scheduledTime).toISOString()
+      }));
+      if (!response.ok) throw new Error("Render health returned HTTP " + response.status);
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "render_keepalive_failed",
+        elapsedMs: Date.now() - startedAt,
+        error: error?.message || "request_failed"
+      }));
+    }
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     const pathname = url.pathname.replace(/\/+$/, "") || "/";
