@@ -203,6 +203,81 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             "exchangeResponse": result,
         }
 
+
+    def convert_best_asset_to_usdt(uid, account, positions, config):
+        """Convert one suitable, unreserved altcoin balance to USDT when trading cash is low."""
+        if config.get("auto_convert_to_usdt") is not True:
+            return None
+        held = {str(p.get("base_asset") or "").upper() for p in positions
+                if p.get("status") in ("OPEN", "CLOSING", "RECONCILIATION_REQUIRED")}
+        active = sb_rest("blessing_owner_live_order_intents", {
+            "select": "reserved_asset,remaining_reserved_amount",
+            "owner_user_id": "eq." + str(uid),
+            "status": "in.(RESERVED,SUBMITTING,NEW,PARTIALLY_FILLED,UNKNOWN,RECONCILIATION_REQUIRED)",
+            "limit": "1000"
+        }) or []
+        reserved = {}
+        for row in active:
+            asset = str(row.get("reserved_asset") or "").upper()
+            reserved[asset] = reserved.get(asset, Decimal("0")) + _d(row.get("remaining_reserved_amount"))
+        protected = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USDP", "DAI",
+                     "BTC", "ETH", "BNB", "SOL", "XRP"}
+        import requests
+        choices = []
+        for row in account.get("balances", []):
+            asset = str(row.get("asset") or "").upper()
+            free = _d(row.get("free"))
+            available = max(Decimal("0"), free - reserved.get(asset, Decimal("0")))
+            if not asset or asset in protected or asset in held or available <= 0:
+                continue
+            symbol = asset + "USDT"
+            try:
+                info, lot, min_notional = exchange_rules(symbol)
+                if str(info.get("baseAsset") or "").upper() != asset or str(info.get("quoteAsset") or "").upper() != "USDT":
+                    continue
+                ticker_resp = requests.get(api_base + "/api/v1/ticker/24hr",
+                                           params={"symbol": symbol}, timeout=(4, 8))
+                ticker_resp.raise_for_status()
+                ticker = ticker_resp.json()
+                if isinstance(ticker, dict) and isinstance(ticker.get("data"), dict):
+                    ticker = ticker["data"]
+                book_resp = requests.get(api_base + "/api/v1/ticker/bookTicker",
+                                          params={"symbol": symbol}, timeout=(4, 8))
+                book_resp.raise_for_status()
+                book = book_resp.json()
+                if isinstance(book, dict) and isinstance(book.get("data"), dict):
+                    book = book["data"]
+                bid, ask = _d(book.get("bidPrice")), _d(book.get("askPrice"))
+                price = _d(ticker.get("lastPrice"))
+                volume = _d(ticker.get("quoteVolume"))
+                change = _d(ticker.get("priceChangePercent"))
+                if bid <= 0 or ask < bid or price <= 0 or volume < Decimal("100000"):
+                    continue
+                spread_pct = (ask - bid) / price * Decimal("100")
+                value = available * bid
+                if spread_pct > Decimal("0.30") or value < max(min_notional, Decimal("10")):
+                    continue
+                # AI-style selection: prioritize weaker 24h assets with liquid, tight books.
+                choices.append((change, spread_pct, -volume, asset, symbol, available, value))
+            except Exception:
+                continue
+        if not choices:
+            return None
+        choices.sort(key=lambda x: (x[0], x[1], x[2]))
+        change, spread, neg_volume, asset, symbol, quantity, value = choices[0]
+        fill = market_order(uid, symbol, "SELL", quantity=quantity)
+        record_event(uid, "AUTO_CONVERT_TO_USDT", "LIVE", {
+            "asset": asset, "symbol": symbol, "soldQuantity": _fmt(fill["executedQty"]),
+            "receivedUSDT": _fmt(fill["quoteQty"]), "change24hPct": _fmt(change),
+            "spreadPct": _fmt(spread), "clientOrderId": fill["clientOrderId"],
+            "selection": "weakest_24h_performance_with_liquidity_and_spread_filters"
+        })
+        _worker_state["lastAction"] = {
+            "action": "CONVERT_TO_USDT", "asset": asset, "symbol": symbol,
+            "receivedUSDT": _fmt(fill["quoteQty"])
+        }
+        return fill
+
     def close_position(uid, pos, price, reason, config):
         pid = str(pos["id"])
         qty = _d(pos.get("quantity"))
@@ -275,6 +350,12 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                 })
                 record_event(uid, "STOPPED", "LIVE", {"reason": "all_positions_closed"})
             return
+        if control.get("run_state") != "STOPPING" and config.get("auto_convert_to_usdt") is True and free_usdt < _d(config.get("min_usdt_reserve", 50)):
+            conversion = convert_best_asset_to_usdt(uid, account, positions, config)
+            if conversion:
+                account = account_snapshot()
+                balances = {str(x.get("asset") or "").upper(): _d(x.get("free")) for x in account.get("balances", []) if isinstance(x, dict)}
+                free_usdt = balances.get("USDT", Decimal("0"))
         if len(refreshed) >= int(config.get("max_open_positions", 3)):
             return
         if free_usdt <= 0:
@@ -491,6 +572,11 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             "unrealizedPnlUSDT": _fmt(unrealized_total), "realizedPnlUSDT": _fmt(realized_total),
             "reservedByAsset": {k: _fmt(v) for k, v in reserved.items()},
             "unpricedAssets": unpriced,
+            "conversionPolicy": {
+                "enabled": bool((owner_control(uid).get("strategy_config") or {}).get("auto_convert_to_usdt", False)),
+                "minUSDTReserve": (owner_control(uid).get("strategy_config") or {}).get("min_usdt_reserve", 50),
+                "selection": "AI เลือกเหรียญ Altcoin ที่อ่อนกว่า โดยต้องมีคู่ USDT, สภาพคล่องและสเปรดผ่านเกณฑ์; งดเหรียญหลักและเหรียญที่มีโพซิชัน/ยอดจอง"
+            },
             "valuationNote": "มูลค่าประเมินจากคู่ USDT ที่มีราคา; สินทรัพย์ที่ไม่มีคู่ตรงจะแสดงเป็นยังไม่ประเมิน"
         }
 
@@ -542,6 +628,8 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         cfg.setdefault("take_profit_pct", 3)
         cfg.setdefault("scan_interval_seconds", 15)
         cfg.setdefault("max_position_pct", 20)
+        cfg.setdefault("auto_convert_to_usdt", True)
+        cfg.setdefault("min_usdt_reserve", 50)
         now = datetime.now(timezone.utc).isoformat()
         sb_rest("blessing_owner_auto_trade_control", {"owner_user_id": "eq." + uid}, "PATCH", {
             "run_state": "RUNNING", "run_mode": "LIVE", "live_approved": True,
