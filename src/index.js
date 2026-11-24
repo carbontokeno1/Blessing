@@ -76,6 +76,27 @@ async function binanceThPlaceOrder(request) {
   }
 }
 
+
+
+async function binanceThLiveProxy(request, backendPath, method = "GET", body = undefined) {
+  const authorization = request.headers.get("authorization") || "";
+  if (!authorization.startsWith("Bearer ")) return json({ ok:false, message:"กรุณาเข้าสู่ระบบก่อน" },401);
+  if (!(await isBlessingOwner(request))) return json({ ok:false, message:"ต้องเข้าสู่ระบบด้วยบัญชี Super Admin ของ BLESSING" },403);
+  try {
+    const response = await fetch("https://blessing-webull-realtime-djfm.onrender.com" + backendPath, {
+      method,
+      headers: { "accept":"application/json", "authorization":authorization, ...(body !== undefined ? {"content-type":"application/json"} : {}) },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(30000),
+      cache:"no-store"
+    });
+    const payload = await response.json().catch(()=>({}));
+    return json(payload,response.status);
+  } catch(error) {
+    return json({ok:false,message:"เชื่อมต่อ Render backend ไม่สำเร็จ: "+(error?.message||"network_error")},502);
+  }
+}
+
 const EXCHANGES = {
   Binance: {
     tickers: "https://data-api.binance.vision/api/v3/ticker/24hr",
@@ -233,6 +254,29 @@ export default {
       } catch (error) {
         return json({ status: "source_error", message: error?.message || "scanner_failed", candidates: [], updatedAt: new Date().toISOString() }, 502);
       }
+    }
+    if (pathname === "/api/binance-th/live-readiness") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      return binanceThLiveProxy(request,"/binance-th/live-readiness","GET");
+    }
+    if (pathname === "/api/binance-th/live-order/market") {
+      if (request.method !== "POST") return json({ok:false,message:"POST only"},405,{allow:"POST"});
+      try {
+        const body=await request.json();
+        return binanceThLiveProxy(request,"/binance-th/live-order/market","POST",body);
+      } catch(error) { return json({ok:false,message:"ข้อมูลคำสั่งไม่ถูกต้อง"},400); }
+    }
+    if (pathname === "/api/binance-th/live-orders") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      const limit=new URL(request.url).searchParams.get("limit")||"25";
+      return binanceThLiveProxy(request,"/binance-th/live-orders?limit="+encodeURIComponent(limit),"GET");
+    }
+    if (pathname === "/api/binance-th/live-orders/reconcile") {
+      if (request.method !== "POST") return json({ok:false,message:"POST only"},405,{allow:"POST"});
+      try {
+        const body=await request.json();
+        return binanceThLiveProxy(request,"/binance-th/live-orders/reconcile","POST",body);
+      } catch(error) { return json({ok:false,message:"ข้อมูลคำสั่งไม่ถูกต้อง"},400); }
     }
     if (pathname === "/api/binance-th/order") {
       if (request.method !== "POST") return json({ ok: false, message: "POST only" }, 405, { "allow": "POST" });
