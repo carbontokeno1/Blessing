@@ -4556,11 +4556,11 @@ async def member_slot_engine_startup():
 def admin_member_slot_engine_status(request: Request):
     _binance_th_owner_auth(request)
     crypto = _sb_rest("blessing_paper_member_slots", {
-        "select":"slot_no,display_label,assigned_user_id,mode,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at,started_at,stopped_at",
+        "select":"id,slot_no,display_label,assigned_user_id,mode,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at,started_at,stopped_at",
         "order":"slot_no.asc","limit":"10"
     }) or []
     stocks = _sb_rest("blessing_stock_paper_member_slots", {
-        "select":"slot_no,display_label,assigned_user_id,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at,started_at,stopped_at",
+        "select":"id,slot_no,display_label,assigned_user_id,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at,started_at,stopped_at",
         "order":"slot_no.asc","limit":"10"
     }) or []
     crypto_orders = _sb_rest("blessing_paper_slot_orders", {
