@@ -907,6 +907,12 @@ async function loadAdminCapitalReport(){
   const money=x=>x==null?'ไม่จำกัด':('฿'+Number(x).toLocaleString('th-TH',{maximumFractionDigits:2}));
   const labels={crypto_paper:'คริปโตทดลอง',crypto_live:'คริปโตเงินจริง',stock_paper:'หุ้นทดลอง',stock_live:'หุ้นเงินจริง'};
   el.innerHTML='<div class="tablewrap"><table><thead><tr><th>สมาชิก</th><th>พอร์ต</th><th>วงเงินอนุมัติ</th><th>สถานะพอร์ต</th><th>Live</th></tr></thead><tbody>'+(j.portfolios||[]).map(x=>'<tr><td>'+esc(x.member_label||x.member_no)+'</td><td>'+esc(labels[x.portfolio_type]||x.portfolio_type)+'</td><td><b>'+money(x.authorized_limit)+'</b></td><td>'+(x.enabled?'เปิด':'ปิด')+'</td><td>'+(x.mode==='live'?(x.live_trading_approved?'ได้รับอนุมัติ':'LOCKED'):'—')+'</td></tr>').join('')+'</tbody></table></div><div class="small muted" style="margin-top:8px">40 พอร์ต · NULL = ไม่จำกัดเพดานอนุมัติ · ยอดเงินจริงและ Buying Power ของโบรกเกอร์ยังเป็นข้อจำกัด</div>';
+  const historyRes=await fetch(MARKET_BRIDGE_URL+'/admin/member-capital/history?limit=100',{headers:{authorization:'Bearer '+data.session.access_token},cache:'no-store'});
+  const historyData=await historyRes.json().catch(()=>({}));
+  if(historyRes.ok){
+   const rows=historyData.history||[];
+   el.innerHTML+='<div class="heading" style="margin-top:16px"><h4>ประวัติการเปลี่ยนวงเงิน</h4><span class="pill">AUDIT LOG · '+rows.length+'</span></div>'+(rows.length?'<div class="tablewrap"><table><thead><tr><th>เวลา</th><th>สมาชิก</th><th>พอร์ต</th><th>คำสั่ง</th><th>ก่อนหน้า</th><th>หลังเปลี่ยน</th></tr></thead><tbody>'+rows.map(x=>'<tr><td>'+esc(x.created_at?new Date(x.created_at).toLocaleString('th-TH'):'—')+'</td><td>'+esc(x.member_no)+'</td><td>'+esc(labels[x.portfolio_type]||x.portfolio_type)+'</td><td>'+esc(x.action)+'</td><td>'+money(x.previous_limit)+'</td><td>'+money(x.new_limit)+'</td></tr>').join('')+'</tbody></table></div>':'<div class="small muted">ยังไม่มีประวัติการเปลี่ยนวงเงิน</div>');
+  }
  }catch(e){el.innerHTML='<div class="notice">โหลดวงเงินไม่ได้: '+esc(e.message)+'</div>'}
 }
 async function runAdminCapitalCommand(event){
