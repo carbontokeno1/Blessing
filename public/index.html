@@ -894,10 +894,10 @@ function adminPortfolioReportView(){
  '<div class="notice">แสดงข้อมูล Paper จากฐานข้อมูลจริง ส่วนพอร์ต Live แสดง LOCKED และไม่ถือว่าวงเงินที่วางแผนไว้เป็นเงินจริง</div>'+
  '<div id="portfolioReportUpdated" class="small muted" style="margin:10px 0">กำลังโหลด...</div>'+
  '<div id="portfolioReportSummary" class="grid"></div>'+
- '<div class="card section"><div class="heading"><h3>รายงานแยก 40 พอร์ต</h3><span class="pill">OWNER · READ ONLY</span></div><div id="portfolioReportBody" class="empty">กำลังอ่านข้อมูล...</div></div>';
+ '<div class="card section"><div class="heading"><h3>รายงานแยก 40 พอร์ต</h3><span class="pill">OWNER · READ ONLY</span></div><div id="portfolioReportBody" class="empty">กำลังอ่านข้อมูล...</div></div>'+'<div class="card section"><div class="heading"><div><h3>พอร์ต Paper กลาง · รายละเอียดการลงทุน</h3><div class="small muted">แยกจาก 40 พอร์ตสมาชิก · ราคาเข้า · ราคาปัจจุบัน · P/L · Take Profit · Stop Loss · ประวัติคำสั่ง</div></div><span class="pill">PAPER ONLY</span></div><div id="dualPaperDetail" class="empty">กำลังอ่านข้อมูลพอร์ตกลาง...</div></div>';
 }
 async function loadAdminPortfolioReport(){
- const body=document.getElementById('portfolioReportBody'),summary=document.getElementById('portfolioReportSummary'),updated=document.getElementById('portfolioReportUpdated');
+ const body=document.getElementById('portfolioReportBody'),summary=document.getElementById('portfolioReportSummary'),updated=document.getElementById('portfolioReportUpdated'),detail=document.getElementById('dualPaperDetail');
  const sb=window.BLESSING_AUTH?.client;if(!body||!sb)return;
  try{
   const {data,error}=await sb.auth.getSession();if(error||!data.session?.access_token)throw Error('กรุณาเข้าสู่ระบบใหม่');
@@ -923,9 +923,15 @@ async function loadAdminPortfolioReport(){
      '<td class="'+cls(x.netPnl)+'">'+pnl(x.netPnl)+(x.returnPct==null?'':'<div class="small muted">'+Number(x.returnPct).toFixed(2)+'%</div>')+'</td>'+
      '<td>'+Number(x.openPositions||0)+'</td><td>'+Number(x.filledOrders||0)+'</td><td>'+status+(pos?'<div class="small muted">'+pos+'</div>':'')+'</td></tr>';
    }).join('')+'</tbody></table></div>';
+  if(detail){
+   const dual=j.dualPaperPortfolios;
+   if(!Array.isArray(dual)) detail.innerHTML='<div class="notice">Backend ยังไม่ส่งข้อมูลพอร์ต Paper กลาง กรุณารอการอัปเดตบริการ</div>';
+   else if(!dual.length) detail.innerHTML='<div class="notice">ยังไม่พบพอร์ต Paper กลางในฐานข้อมูล</div>';
+   else detail.innerHTML=dual.map(p=>'<div class="section"><h3>'+esc(p.memberLabel||'พอร์ต Paper กลาง')+' · '+esc(p.market||'')+'</h3><div class="grid"><div class="card metric"><label>Equity</label><strong>'+Number(p.equity||0).toFixed(2)+' '+esc(p.currency||'')+'</strong></div><div class="card metric"><label>เงินสด</label><strong>'+Number(p.cash||0).toFixed(2)+' '+esc(p.currency||'')+'</strong></div><div class="card metric"><label>มูลค่าสถานะ</label><strong>'+Number(p.marketValue||0).toFixed(2)+' '+esc(p.currency||'')+'</strong></div><div class="card metric"><label>Net P/L</label><strong>'+Number(p.netPnl||0).toFixed(2)+' '+esc(p.currency||'')+'</strong></div></div><div class="small muted">ทุน '+Number(p.capital||0).toFixed(2)+' · Realized '+Number(p.realizedPnl||0).toFixed(2)+' · Unrealized '+Number(p.unrealizedPnl||0).toFixed(2)+' · Return '+Number(p.returnPct||0).toFixed(2)+'% · Fees '+Number(p.fees||0).toFixed(2)+'</div><details><summary>ดูสถานะเปิดและประวัติคำสั่ง ('+(p.positions||[]).length+' สถานะ / '+(p.recentOrders||[]).length+' คำสั่ง)</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px">'+esc(JSON.stringify({positions:p.positions||[],recentOrders:p.recentOrders||[]},null,2))+'</pre></details></div>').join('');
+  }
   body.dataset.loaded='1';
   updated.textContent='อัปเดตล่าสุด '+new Date(j.refreshedAt).toLocaleString('th-TH')+' · ทุก 10 วินาที · '+rows.length+'/40 พอร์ต';
- }catch(e){updated.textContent='อัปเดตไม่สำเร็จ: '+e.message;if(!body.dataset.loaded)body.innerHTML='<div class="notice">'+esc(e.message)+'</div>'}
+ }catch(e){updated.textContent='อัปเดตไม่สำเร็จ: '+e.message;if(!body.dataset.loaded)body.innerHTML='<div class="notice">'+esc(e.message)+'</div>';if(detail)detail.innerHTML='<div class="notice">'+esc(e.message)+'</div>'}
 }
 function membersView(){return '<div class="heading"><div><h1>จัดการสมาชิก</h1><div class="muted">สร้างบัญชี อนุมัติ/ระงับ และดูแลสมาชิกจากหน้านี้</div></div><span class="pill">ADMIN ONLY</span></div>'+
 '<div class="card section"><div class="heading"><div><h3>สถานะโครงสร้างพอร์ต BLESSING</h3><div class="small muted">ข้อมูลสรุปจากฐานข้อมูลเดิม · สมาชิกทดลอง 10 ราย × 4 พอร์ต</div></div><span class="pill">40 PORTFOLIOS</span></div><div class="grid"><div class="card metric"><label>คริปโตทดลอง · 10 พอร์ต</label><strong>1,000,000 บาท</strong><div class="small muted">100,000 บาทต่อบัญชี</div></div><div class="card metric"><label>หุ้นทดลอง · 10 พอร์ต</label><strong>1,000,000 บาท</strong><div class="small muted">100,000 บาทต่อบัญชี</div></div><div class="card metric"><label>คริปโตเงินจริง · 10 พอร์ต</label><strong>ล็อกทั้งหมด</strong><div class="small muted">ยังไม่อนุมัติซื้อขายจริง</div></div><div class="card metric"><label>หุ้นเงินจริง · 10 พอร์ต</label><strong>ล็อกทั้งหมด</strong><div class="small muted">ยังไม่อนุมัติซื้อขายจริง</div></div></div><div class="notice">พอร์ตทั้งหมด 40 พอร์ต · พอร์ตเงินจริง 20 พอร์ตถูกล็อกไว้ · ยังไม่มีพอร์ตใดเปิดซื้อขาย · ยังไม่มีบัญชีสมาชิกจริงผูกเข้ามา · ทุนทดลองคริปโตแยกกันคนละ 100,000 บาท · ทุนทดลองหุ้นแยกกันคนละ 100,000 บาท</div><div class="small muted">หมายเหตุ: สมาชิกทดลอง 10 รายเป็นช่องบัญชีสำรอง ยังไม่ใช่บัญชีสมาชิกจริง และการแสดงวงเงินไม่ใช่การยืนยันว่าระบบส่งคำสั่งซื้อขายอัตโนมัติทำงานแล้ว</div></div>'+
