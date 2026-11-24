@@ -353,7 +353,7 @@ export default {
       const headers = new Headers(assetResponse.headers);
       headers.set("cache-control", "no-store, no-cache, must-revalidate, max-age=0");
       headers.set("pragma", "no-cache");
-      headers.set("x-blessing-build", "auth-session-cache-fix-2026-11-24");
+      headers.set("x-blessing-build", "owner-auto-trade-proxy-2026-11-24");
       return new Response(request.method === "HEAD" ? null : assetResponse.body, {
         status: assetResponse.status,
         statusText: assetResponse.statusText,
