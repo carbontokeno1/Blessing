@@ -1808,6 +1808,49 @@ def _binance_th_owner_auth(request: Request):
     return user
 
 
+@app.get("/admin/member-portfolios")
+def admin_member_portfolios(request: Request):
+    """Owner-only inventory of the four isolated portfolios reserved for each of ten demo members."""
+    _binance_th_owner_auth(request)
+    rows = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,assigned_user_id,paper_slot_id,status,enabled,live_trading_approved,created_at,updated_at",
+        "order": "member_no.asc,portfolio_type.asc",
+        "limit": "100",
+    })
+    if len(rows) != 40:
+        raise HTTPException(status_code=503, detail={
+            "code": "PORTFOLIO_REGISTRY_INCOMPLETE",
+            "expected": 40, "found": len(rows),
+            "message": "ทะเบียนพอร์ตสมาชิกยังไม่ครบ 40 พอร์ต จึงยังไม่พร้อมเปิดใช้งาน",
+        })
+    for row in rows:
+        row["paper"] = None
+        if row.get("paper_slot_id"):
+            slots = _sb_rest("blessing_paper_member_slots", {
+                "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,max_open_positions,enabled,status,assigned_user_id",
+                "id": "eq." + str(row["paper_slot_id"]),
+                "limit": "1",
+            })
+            if slots:
+                slot = slots[0]
+                open_positions = _sb_rest("blessing_paper_slot_positions", {
+                    "select": "id",
+                    "slot_id": "eq." + str(slot["id"]),
+                    "status": "eq.open",
+                    "limit": "10",
+                })
+                slot["open_positions_count"] = len(open_positions)
+                row["paper"] = slot
+    return {
+        "ok": True,
+        "memberSlots": 10,
+        "portfoliosPerMember": 4,
+        "portfolioCount": len(rows),
+        "liveTradingEnabled": False,
+        "portfolios": rows,
+    }
+
+
 @app.get("/binance-th/account")
 def binance_th_account_read(request: Request):
     """Read-only Binance TH account snapshot. No order endpoints are implemented here."""
