@@ -2544,6 +2544,62 @@ def _binance_th_signed_request(method: str, path: str, params: dict, api_key: st
     return payload
 
 
+@app.get("/binance-th/live-readiness")
+def binance_th_live_readiness(request: Request):
+    """Owner-only preflight for Binance TH Spot. Never places an order."""
+    _binance_th_owner_auth(request)
+    if not BINANCE_API_KEY or not BINANCE_API_SECRET:
+        return {"ok": False, "provider": "Binance TH", "ready": False,
+                "blockers": ["API_CREDENTIALS_MISSING"], "liveOrdersEnabled": False}
+    try:
+        account_payload = _binance_th_signed_request(
+            "GET", "/api/v1/accountV2", {}, BINANCE_API_KEY, BINANCE_API_SECRET
+        )
+        account = account_payload.get("data") if isinstance(account_payload, dict) and isinstance(account_payload.get("data"), dict) else account_payload
+        if not isinstance(account, dict):
+            raise ValueError("ACCOUNT_RESPONSE_INVALID")
+        exchange_payload = requests.get(
+            BINANCE_TH_API_BASE + "/api/v1/exchangeInfo",
+            headers={"Accept": "application/json", "X-MBX-APIKEY": BINANCE_API_KEY},
+            timeout=(5, 15),
+        )
+        exchange_payload.raise_for_status()
+        exchange = exchange_payload.json()
+        symbols = exchange.get("symbols", []) if isinstance(exchange, dict) else []
+        active_symbols = sum(1 for item in symbols if isinstance(item, dict) and item.get("status") == "TRADING")
+        can_trade = bool(account.get("canTrade", False))
+        blockers = []
+        if not can_trade:
+            blockers.append("BINANCE_ACCOUNT_TRADING_DISABLED")
+        if active_symbols <= 0:
+            blockers.append("EXCHANGE_SYMBOL_RULES_UNAVAILABLE")
+        switch_on = os.getenv("BLESSING_OWNER_LIVE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not switch_on:
+            blockers.append("OWNER_LIVE_MASTER_SWITCH_OFF")
+        balances = account.get("balances", [])
+        free_assets = [
+            {"asset": str(item.get("asset") or ""), "free": str(item.get("free") or "0"),
+             "locked": str(item.get("locked") or "0")}
+            for item in balances if isinstance(item, dict)
+            and (float(item.get("free") or 0) > 0 or float(item.get("locked") or 0) > 0)
+        ]
+        return {
+            "ok": True, "provider": "Binance TH", "accountCanTrade": can_trade,
+            "exchangeTradingSymbols": active_symbols, "assets": free_assets,
+            "ready": len(blockers) == 0, "blockers": blockers,
+            "liveOrdersEnabled": False,
+            "orderExecutionImplemented": False,
+            "checkedAt": datetime.now(timezone.utc).isoformat(),
+            "message": "ตรวจสอบความพร้อมเท่านั้น ไม่มีการส่งคำสั่งซื้อขาย"
+        }
+    except Exception as exc:
+        log.warning("Binance TH live readiness check failed (%s)", type(exc).__name__)
+        return {"ok": False, "provider": "Binance TH", "ready": False,
+                "blockers": ["BINANCE_TH_PREFLIGHT_FAILED"],
+                "liveOrdersEnabled": False,
+                "message": "ตรวจสอบบัญชีหรือกฎการซื้อขายไม่สำเร็จ จึงปิดการส่งคำสั่งไว้"}
+
+
 @app.post("/binance-th/order")
 async def binance_th_place_order(request: Request):
     """Fail closed: the legacy manual order route bypasses member THB sub-ledgers."""
