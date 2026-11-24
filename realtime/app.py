@@ -14,6 +14,7 @@ import os
 import threading
 import time
 import uuid
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
@@ -2598,6 +2599,167 @@ def binance_th_live_readiness(request: Request):
                 "blockers": ["BINANCE_TH_PREFLIGHT_FAILED"],
                 "liveOrdersEnabled": False,
                 "message": "ตรวจสอบบัญชีหรือกฎการซื้อขายไม่สำเร็จ จึงปิดการส่งคำสั่งไว้"}
+
+
+
+def _binance_th_order_decimal(value, field_name):
+    try:
+        number = Decimal(str(value))
+        if not number.is_finite() or number <= 0:
+            raise InvalidOperation()
+        return number
+    except (InvalidOperation, TypeError, ValueError):
+        raise HTTPException(status_code=422, detail=f"{field_name} ต้องเป็นตัวเลขมากกว่า 0")
+
+
+def _binance_th_step_floor(value: Decimal, step: Decimal) -> Decimal:
+    if step <= 0:
+        return value
+    return (value // step) * step
+
+
+@app.post("/binance-th/live-order/market")
+async def binance_th_owner_market_order(request: Request):
+    """Owner-only Binance TH Spot market order. Requires explicit confirmation and a server-side kill switch."""
+    owner = _binance_th_owner_auth(request)
+    if os.getenv("BLESSING_OWNER_LIVE_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        raise HTTPException(status_code=423, detail={"code":"OWNER_LIVE_MASTER_SWITCH_OFF","liveTradingEnabled":False,
+            "message":"ระบบเงินจริงยังถูกล็อกโดยสวิตช์ความปลอดภัยบนเซิร์ฟเวอร์"})
+    if not BINANCE_API_KEY or not BINANCE_API_SECRET:
+        raise HTTPException(status_code=503, detail="ยังไม่ได้ตั้งค่า API Key Binance TH")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="ข้อมูลคำสั่งไม่ถูกต้อง")
+    if body.get("confirmLiveOrder") is not True:
+        raise HTTPException(status_code=428, detail={"code":"EXPLICIT_CONFIRMATION_REQUIRED","message":"ต้องยืนยันคำสั่งเงินจริงอย่างชัดเจน"})
+    symbol = str(body.get("symbol") or "").strip().upper()
+    side = str(body.get("side") or "").strip().upper()
+    if not symbol or len(symbol) > 30 or not symbol.isalnum():
+        raise HTTPException(status_code=422, detail="รหัสคู่เหรียญไม่ถูกต้อง")
+    if side not in ("BUY","SELL"):
+        raise HTTPException(status_code=422, detail="รองรับเฉพาะ BUY หรือ SELL")
+    if body.get("type", "MARKET") != "MARKET":
+        raise HTTPException(status_code=422, detail="ระยะแรกเปิดเฉพาะคำสั่ง MARKET Spot")
+    if body.get("portfolioMode", "owner") != "owner":
+        raise HTTPException(status_code=403, detail="คำสั่งเงินจริงอนุญาตเฉพาะพอร์ตเจ้าของระบบ")
+    try:
+        account_payload = _binance_th_signed_request("GET","/api/v1/accountV2",{},BINANCE_API_KEY,BINANCE_API_SECRET)
+        account = account_payload.get("data") if isinstance(account_payload,dict) and isinstance(account_payload.get("data"),dict) else account_payload
+        if not isinstance(account,dict) or not account.get("canTrade"):
+            raise HTTPException(status_code=423, detail="บัญชี Binance TH ยังไม่อนุญาตให้ซื้อขาย")
+        exchange_payload = requests.get(BINANCE_TH_API_BASE+"/api/v1/exchangeInfo",headers={"Accept":"application/json","X-MBX-APIKEY":BINANCE_API_KEY},timeout=(5,15))
+        exchange_payload.raise_for_status()
+        exchange = exchange_payload.json()
+        if isinstance(exchange,dict) and isinstance(exchange.get("data"),dict):
+            exchange = exchange["data"]
+        symbol_info = next((x for x in exchange.get("symbols",[]) if isinstance(x,dict) and x.get("symbol")==symbol),None)
+        if not symbol_info or symbol_info.get("status") != "TRADING":
+            raise HTTPException(status_code=422, detail="คู่เหรียญนี้ไม่มีสถานะ TRADING บน Binance TH")
+        if "MARKET" not in (symbol_info.get("orderTypes") or []):
+            raise HTTPException(status_code=422, detail="คู่เหรียญนี้ไม่รองรับคำสั่ง MARKET")
+        base_asset = str(symbol_info.get("baseAsset") or "").upper()
+        quote_asset = str(symbol_info.get("quoteAsset") or "").upper()
+        if not base_asset or not quote_asset or quote_asset not in ("THB","USDT"):
+            raise HTTPException(status_code=422, detail="ระยะแรกจำกัดคู่ Spot เฉพาะตลาด THB และ USDT")
+        filters = {str(x.get("filterType")):x for x in symbol_info.get("filters",[]) if isinstance(x,dict)}
+        lot = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE") or {}
+        step = Decimal(str(lot.get("stepSize") or "0"))
+        min_qty = Decimal(str(lot.get("minQty") or "0"))
+        max_qty = Decimal(str(lot.get("maxQty") or "0"))
+        balances = {str(x.get("asset") or "").upper():Decimal(str(x.get("free") or "0")) for x in account.get("balances",[]) if isinstance(x,dict)}
+        client_order_id = "bls" + uuid.uuid4().hex[:30]
+        if side == "BUY":
+            requested_quote = _binance_th_order_decimal(body.get("quoteAmount"),"quoteAmount")
+            quote_free = balances.get(quote_asset,Decimal("0"))
+            ticker_resp = requests.get(BINANCE_TH_API_BASE+"/api/v1/ticker/price",params={"symbol":symbol},timeout=(5,12))
+            ticker_resp.raise_for_status()
+            ticker = ticker_resp.json()
+            if isinstance(ticker,dict) and isinstance(ticker.get("data"),dict): ticker=ticker["data"]
+            price = Decimal(str(ticker.get("price") or "0"))
+            if price <= 0: raise HTTPException(status_code=503,detail="ไม่สามารถยืนยันราคาตลาดล่าสุดได้")
+            estimated_qty = requested_quote / price
+            notional_filter = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+            min_notional = Decimal(str(notional_filter.get("minNotional") or "0"))
+            if requested_quote < min_notional:
+                raise HTTPException(status_code=422,detail=f"มูลค่าคำสั่งต่ำกว่าขั้นต่ำของตลาด ({min_notional} {quote_asset})")
+            if requested_quote > quote_free:
+                raise HTTPException(status_code=422,detail="ยอดเงิน Quote ที่ขอซื้อเกินยอด Free ใน Binance TH")
+            reserved_asset, reserved_amount = quote_asset, requested_quote
+            requested_qty_value, requested_quote_value = None, requested_quote
+            order_params = {"symbol":symbol,"side":"BUY","type":"MARKET","quoteOrderQty":format(requested_quote,"f"),"newClientOrderId":client_order_id,"newOrderRespType":"FULL"}
+            estimated = {"referencePrice":str(price),"estimatedBaseQuantity":str(estimated_qty),"quoteAmount":str(requested_quote)}
+        else:
+            requested_qty = _binance_th_order_decimal(body.get("quantity"),"quantity")
+            requested_qty = _binance_th_step_floor(requested_qty,step)
+            if requested_qty <= 0 or requested_qty < min_qty or (max_qty > 0 and requested_qty > max_qty):
+                raise HTTPException(status_code=422,detail="จำนวนเหรียญไม่ผ่านกฎ MARKET_LOT_SIZE/LOT_SIZE")
+            base_free = balances.get(base_asset,Decimal("0"))
+            if requested_qty > base_free:
+                raise HTTPException(status_code=422,detail="จำนวนเหรียญที่ขอขายเกินยอด Free ใน Binance TH")
+            ticker_resp = requests.get(BINANCE_TH_API_BASE+"/api/v1/ticker/price",params={"symbol":symbol},timeout=(5,12))
+            ticker_resp.raise_for_status()
+            ticker = ticker_resp.json()
+            if isinstance(ticker,dict) and isinstance(ticker.get("data"),dict): ticker=ticker["data"]
+            price = Decimal(str(ticker.get("price") or "0"))
+            if price <= 0: raise HTTPException(status_code=503,detail="ไม่สามารถยืนยันราคาตลาดล่าสุดได้")
+            notional_filter = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+            min_notional = Decimal(str(notional_filter.get("minNotional") or "0"))
+            if requested_qty * price < min_notional:
+                raise HTTPException(status_code=422,detail=f"มูลค่าคำสั่งต่ำกว่าขั้นต่ำของตลาด ({min_notional} {quote_asset})")
+            reserved_asset, reserved_amount = base_asset, requested_qty
+            requested_qty_value, requested_quote_value = requested_qty, None
+            order_params = {"symbol":symbol,"side":"SELL","type":"MARKET","quantity":format(requested_qty,"f"),"newClientOrderId":client_order_id,"newOrderRespType":"FULL"}
+            estimated = {"referencePrice":str(price),"estimatedQuoteValue":str(requested_qty*price),"baseQuantity":str(requested_qty)}
+        reservation = _sb_rpc("blessing_owner_reserve_live_order",{
+            "p_owner_user_id":owner["id"],"p_client_order_id":client_order_id,"p_symbol":symbol,"p_side":side,"p_order_type":"MARKET",
+            "p_quote_asset":quote_asset,"p_base_asset":base_asset,"p_reserved_asset":reserved_asset,
+            "p_reserved_amount":str(reserved_amount),"p_exchange_free":str(balances.get(reserved_asset,Decimal("0"))),
+            "p_requested_quantity":str(requested_qty_value) if requested_qty_value is not None else None,
+            "p_requested_quote_amount":str(requested_quote_value) if requested_quote_value is not None else None,
+            "p_limit_price":None,"p_request_payload":{"symbol":symbol,"side":side,"type":"MARKET","estimated":estimated}
+        })
+        intent = reservation[0] if isinstance(reservation,list) and reservation else reservation
+        intent_id = intent.get("id") if isinstance(intent,dict) else None
+        if not intent_id:
+            raise HTTPException(status_code=503,detail="ไม่สามารถสร้างรายการจองยอดเงินได้ จึงไม่ส่งคำสั่ง")
+        _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(intent_id)}, "PATCH", {"status":"SUBMITTING","updated_at":datetime.now(timezone.utc).isoformat()})
+        try:
+            exchange_result = _binance_th_signed_request("POST","/api/v1/order",order_params,BINANCE_API_KEY,BINANCE_API_SECRET)
+        except Exception as submit_error:
+            # Never blindly retry an order after an ambiguous submission result.
+            try:
+                lookup = _binance_th_signed_request("GET","/api/v1/order",{"symbol":symbol,"origClientOrderId":client_order_id},BINANCE_API_KEY,BINANCE_API_SECRET)
+                if isinstance(lookup,dict) and lookup.get("data") and isinstance(lookup["data"],dict): lookup=lookup["data"]
+                exchange_result = lookup
+            except Exception:
+                _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(intent_id)},"PATCH",{
+                    "status":"RECONCILIATION_REQUIRED","error_code":"SUBMIT_RESULT_AMBIGUOUS",
+                    "error_message":type(submit_error).__name__,"updated_at":datetime.now(timezone.utc).isoformat()})
+                _sb_rest("blessing_owner_live_order_events",{},"POST",{"order_intent_id":intent_id,"event_type":"RECONCILIATION_REQUIRED","event_data":{"reason":"submit_and_lookup_failed"}})
+                raise HTTPException(status_code=503,detail={"code":"RECONCILIATION_REQUIRED","clientOrderId":client_order_id,"message":"ผลการส่งคำสั่งไม่ชัดเจน ระบบไม่ส่งซ้ำและพักยอดเงินไว้รอตรวจสอบ"})
+        if isinstance(exchange_result,dict) and isinstance(exchange_result.get("data"),dict): exchange_result=exchange_result["data"]
+        exchange_status = str(exchange_result.get("status") or "UNKNOWN").upper()
+        status_map = {"NEW":"NEW","PARTIALLY_FILLED":"PARTIALLY_FILLED","FILLED":"FILLED","CANCELED":"CANCELED","REJECTED":"REJECTED","EXPIRED":"EXPIRED"}
+        stored_status = status_map.get(exchange_status,"RECONCILIATION_REQUIRED")
+        executed_qty = str(exchange_result.get("executedQty") or "0")
+        cumulative_quote = str(exchange_result.get("cummulativeQuoteQty") or exchange_result.get("cumulativeQuoteQty") or "0")
+        _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(intent_id)},"PATCH",{
+            "exchange_order_id":str(exchange_result.get("orderId") or "" ) or None,"exchange_status":exchange_status,
+            "executed_quantity":executed_qty,"cumulative_quote_quantity":cumulative_quote,"status":stored_status,
+            "exchange_response":exchange_result if isinstance(exchange_result,dict) else {},
+            "finalized_at":datetime.now(timezone.utc).isoformat() if stored_status in ("FILLED","CANCELED","REJECTED","EXPIRED") else None,
+            "updated_at":datetime.now(timezone.utc).isoformat()})
+        _sb_rest("blessing_owner_live_order_events",{},"POST",{"order_intent_id":intent_id,"event_type":stored_status,"event_data":{"exchangeStatus":exchange_status,"executedQuantity":executed_qty,"cumulativeQuoteQuantity":cumulative_quote}})
+        return {"ok":True,"provider":"Binance TH","clientOrderId":client_order_id,"symbol":symbol,"side":side,
+            "status":stored_status,"exchangeStatus":exchange_status,"executedQuantity":executed_qty,
+            "cumulativeQuoteQuantity":cumulative_quote,"estimate":estimated,"liveOrderSent":True,
+            "message":"ส่งคำสั่งไปยัง Binance TH แล้ว; ตรวจสอบสถานะและยอดจับคู่จากรายการนี้"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("Binance TH owner order failed (%s)",type(exc).__name__)
+        raise HTTPException(status_code=503,detail="ตรวจสอบหรือส่งคำสั่งไม่สำเร็จ ระบบปฏิเสธคำสั่งเพื่อความปลอดภัย")
 
 
 @app.post("/binance-th/order")
