@@ -140,48 +140,55 @@ class BinanceTHReadOnlyAdapterTests(unittest.TestCase):
         self.assertEqual(result["apiCode"], -1002)
 
 
+class AutomaticStockEntryTests(unittest.TestCase):
+    @patch.object(blessing_app, "_dual_market_price", return_value=200.0)
+    @patch.object(blessing_app, "_dual_rpc_order")
+    @patch.object(blessing_app, "_sb_rest")
+    def test_stock_worker_opens_qualified_candidate_with_fixed_sl_and_ten_percent_tp(self, sb_rest, rpc, quote):
+        portfolio = {
+            "id": "22222222-2222-4222-8222-222222222222",
+            "user_id": "11111111-1111-4111-8111-111111111111",
+            "cash_balance": 100.0,
+            "initial_capital": 100.0,
+        }
+        sb_rest.side_effect = [
+            [],
+            [portfolio],
+            [],
+        ]
+        rpc.return_value = {"ok": True, "orderId": "auto-stock-paper"}
+        result = blessing_app._dual_try_adaptive_entry(
+            {"id": "AUTO-STOCK", "config": {"stocks_take_profit_pct": 10}},
+            portfolio, {"symbol": "AAPL"}, "stocks"
+        )
+        self.assertEqual(result, {"ok": True, "orderId": "auto-stock-paper"})
+        payload = rpc.call_args.args[0]
+        self.assertAlmostEqual(payload["p_price"], 200.1)
+        self.assertAlmostEqual(payload["p_stop_loss_price"], 150.075)
+        self.assertAlmostEqual(payload["p_take_profit_price"], 220.11)
+        quote.assert_called_once_with("stocks", "AAPL")
+
+    @patch.object(blessing_app, "_dual_market_price", return_value=200.0)
+    @patch.object(blessing_app, "_dual_rpc_order")
+    @patch.object(blessing_app, "_sb_rest")
+    def test_stock_worker_never_opens_third_position(self, sb_rest, rpc, quote):
+        portfolio = {
+            "id": "22222222-2222-4222-8222-222222222222",
+            "user_id": "11111111-1111-4111-8111-111111111111",
+            "cash_balance": 100.0,
+            "initial_capital": 100.0,
+        }
+        sb_rest.return_value = [
+            [{"id":"p1","symbol":"MSFT"},{"id":"p2","symbol":"NVDA"}]
+        ][0]
+        result = blessing_app._dual_try_adaptive_entry(
+            {"id":"AUTO-STOCK","config":{"stocks_take_profit_pct":10}},
+            portfolio, {"symbol":"AAPL"}, "stocks"
+        )
+        self.assertIsNone(result)
+        rpc.assert_not_called()
+        quote.assert_called_once_with("stocks", "AAPL")
+
+
 if __name__ == "__main__":
     unittest.main()
-
-    @patch.object(blessing_app, "_dual_market_price", return_value=200.0)
-    @patch.object(blessing_app, "_dual_rpc_order")
-    @patch.object(blessing_app, "_sb_rest")
-    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
-    def test_stock_order_rejects_take_profit_outside_five_to_fifteen_percent(self, auth, sb_rest, rpc, quote):
-        sb_rest.side_effect = [
-            [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}],
-            [],
-            [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}],
-            [],
-        ]
-        for target in (4, 16):
-            response = self.client_context.post("/ai/dual-paper/order", json={
-                "market": "stocks", "symbol": "AAPL", "side": "buy", "notional": 20,
-                "takeProfitPct": target, "idempotencyKey": f"test-stock-tp-range-{target}"
-            })
-            self.assertEqual(response.status_code, 422)
-        rpc.assert_not_called()
-        quote.assert_not_called()
-
-    @patch.object(blessing_app, "_dual_market_price", return_value=200.0)
-    @patch.object(blessing_app, "_dual_rpc_order")
-    @patch.object(blessing_app, "_sb_rest")
-    @patch.object(blessing_app, "_paper_auth_user", return_value={"id": "11111111-1111-4111-8111-111111111111"})
-    def test_stock_order_rejects_third_open_position(self, auth, sb_rest, rpc, quote):
-        sb_rest.side_effect = [
-            [{"id": "22222222-2222-4222-8222-222222222222", "mode": "paper", "enabled": True}],
-            [{"id": "p1", "symbol": "AAPL"}, {"id": "p2", "symbol": "MSFT"}],
-        ]
-        response = self.client_context.post("/ai/dual-paper/order", json={
-            "market": "stocks", "symbol": "NVDA", "side": "buy", "notional": 20,
-            "takeProfitPct": 10, "idempotencyKey": "test-stock-max-two-open"
-        })
-        self.assertEqual(response.status_code, 409)
-        rpc.assert_not_called()
-        quote.assert_not_called()
-
-    def test_adaptive_worker_cannot_auto_buy_us_stocks(self):
-        with patch.object(blessing_app, "_dual_market_price") as quote:
-            result = blessing_app._dual_try_adaptive_entry({}, {}, {"symbol": "AAPL"}, "stocks")
-        self.assertIsNone(result)
-        quote.assert_not_called()
