@@ -2527,7 +2527,7 @@ def _binance_th_signed_request(method: str, path: str, params: dict, api_key: st
     signed["timestamp"] = str(int(time.time() * 1000))
     query = urllib.parse.urlencode(signed)
     signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
-    url = "https://api.binance.th" + path + "?" + query + "&signature=" + signature
+    url = BINANCE_TH_API_BASE + path + "?" + query + "&signature=" + signature
     response = requests.request(
         method, url, headers={"Accept": "application/json", "X-MBX-APIKEY": api_key},
         timeout=(5, 15),
@@ -2589,7 +2589,8 @@ def binance_th_live_readiness(request: Request):
             "exchangeTradingSymbols": active_symbols, "assets": free_assets,
             "ready": len(blockers) == 0, "blockers": blockers,
             "liveOrdersEnabled": False,
-            "orderExecutionImplemented": False,
+            "manualMarketOrderEndpointImplemented": True,
+            "automatedLiveTradingImplemented": False,
             "checkedAt": datetime.now(timezone.utc).isoformat(),
             "message": "ตรวจสอบความพร้อมเท่านั้น ไม่มีการส่งคำสั่งซื้อขาย"
         }
