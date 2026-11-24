@@ -1927,7 +1927,7 @@ async def admin_control_member_portfolios(request: Request):
         raise HTTPException(status_code=400, detail="ต้องระบุ enabled เป็น true หรือ false")
 
     registry = _sb_rest("blessing_member_portfolio_registry", {
-        "select": "id,member_no,portfolio_type,mode,paper_slot_id,live_trading_approved",
+        "select": "id,member_no,assigned_user_id,portfolio_type,market,mode,paper_slot_id,live_trading_approved",
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     })
@@ -1972,6 +1972,26 @@ async def admin_control_member_portfolios(request: Request):
         _sb_rest("blessing_stock_paper_member_slots", {
             "slot_no": "in.(" + ",".join(stock_slot_nos) + ")",
         }, method="PATCH", body={"enabled": enabled})
+
+    # Keep actual dual-paper execution portfolios in sync with member controls.
+    crypto_users = list(dict.fromkeys(
+        str(row["assigned_user_id"]) for row in targets
+        if row.get("mode") == "paper" and row.get("portfolio_type") == "crypto_paper" and row.get("assigned_user_id")
+    ))
+    stock_users = list(dict.fromkeys(
+        str(row["assigned_user_id"]) for row in targets
+        if row.get("mode") == "paper" and row.get("portfolio_type") == "stock_paper" and row.get("assigned_user_id")
+    ))
+    if crypto_users:
+        _sb_rest("blessing_dual_portfolios", {
+            "user_id": "in.(" + ",".join(crypto_users) + ")",
+            "market": "eq.crypto", "mode": "eq.paper",
+        }, method="PATCH", body={"enabled": enabled, "updated_at": datetime.now(timezone.utc).isoformat()})
+    if stock_users:
+        _sb_rest("blessing_dual_portfolios", {
+            "user_id": "in.(" + ",".join(stock_users) + ")",
+            "market": "eq.stocks", "mode": "eq.paper",
+        }, method="PATCH", body={"enabled": enabled, "updated_at": datetime.now(timezone.utc).isoformat()})
 
     updated = [{
         "memberNo": row.get("member_no"),
