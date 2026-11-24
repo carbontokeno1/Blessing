@@ -59,6 +59,7 @@ state = {
     "alpacaAuthenticatedAt": None,
     "quotes": {},
     "crypto_quotes": {},
+    "crypto_book_quotes": {},
     "cryptoConnection": "starting",
     "lastCryptoMessageAt": None,
     "barHistory": {},
@@ -311,7 +312,7 @@ def alpaca_stream_main():
 
 def binance_th_stream_main():
     """Consume Binance TH all-market ticker updates over its official public WebSocket."""
-    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!miniTicker@arr"
+    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!miniTicker@arr/!bookTicker"
     while True:
         try:
             async def run_stream():
@@ -330,15 +331,32 @@ def binance_th_stream_main():
                             if not isinstance(item, dict):
                                 continue
                             symbol = str(item.get("s") or "").upper()
+                            # The all-book-tickers stream carries best bid/ask separately
+                            # from miniTicker. Cache it and merge it into the ticker snapshot.
+                            if symbol and "c" not in item and "b" in item and "a" in item:
+                                book = {
+                                    "bid": _num(item.get("b"), 0),
+                                    "ask": _num(item.get("a"), 0),
+                                    "receivedAt": now,
+                                }
+                                state["crypto_book_quotes"][symbol] = book
+                                existing = state["crypto_quotes"].get(symbol)
+                                if isinstance(existing, dict):
+                                    existing.update({"bid": book["bid"], "ask": book["ask"],
+                                                     "bookReceivedAt": now})
+                                    changed_quotes[symbol] = dict(existing)
+                                    changed = True
+                                continue
                             price = _num(item.get("c"), 0)
                             if not symbol or price <= 0:
                                 continue
                             # Binance TH miniTicker payload uses open (o), close (c),
-                            # base volume (v), and quote volume (q); it does not include
-                            # bid/ask or the ticker percentage-change field.
+                            # base volume (v), and quote volume (q). Best bid/ask comes
+                            # from the companion !bookTicker stream.
                             open_price = _num(item.get("o"), 0)
-                            bid = _num(item.get("b"), 0)
-                            ask = _num(item.get("a"), 0)
+                            book = state["crypto_book_quotes"].get(symbol) or {}
+                            bid = _num(book.get("bid"), 0)
+                            ask = _num(book.get("ask"), 0)
                             quote_volume = _num(item.get("q"), 0)
                             change_pct = ((price / open_price) - 1) * 100 if open_price > 0 else 0
                             quote_row = {
