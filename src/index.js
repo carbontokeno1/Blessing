@@ -26,15 +26,22 @@ async function isBlessingOwner(request) {
 }
 
 async function binanceThAccount(env) {
-  if (!env.BINANCE_TH_API_KEY || !env.BINANCE_TH_API_SECRET) {
-    return json({ ok: false, configured: false, provider: "Binance TH", message: "กรุณาตั้งค่า Worker Secrets: BINANCE_TH_API_KEY และ BINANCE_TH_API_SECRET" }, 503);
+  // Binance TH GET /api/v1/accountV2 is an API-key authenticated endpoint.
+  // The official example requires X-MBX-APIKEY and timestamp; it does not require HMAC signing.
+  // Keep BINANCE_TH_API_SECRET stored as a secret for future SIGNED endpoints, but do not
+  // block this read-only account check when the secret is absent.
+  const apiKey = typeof env.BINANCE_TH_API_KEY === "string" ? env.BINANCE_TH_API_KEY.trim() : "";
+  if (!apiKey) {
+    return json({
+      ok: false, configured: false, keyConfigured: false,
+      provider: "Binance TH",
+      message: "ไม่พบ Worker Secret: BINANCE_TH_API_KEY ใน Environment ของ Worker ที่กำลังทำงาน"
+    }, 503);
   }
-  // Binance TH accountV2 documentation shows API-key authentication plus timestamp.
-  // Unlike SIGNED order endpoints, this endpoint's documented example does not require a signature.
   const params = new URLSearchParams({ timestamp: String(Date.now()) });
   const response = await fetch("https://api.binance.th/api/v1/accountV2?" + params.toString(), {
     method: "GET",
-    headers: { accept: "application/json", "X-MBX-APIKEY": env.BINANCE_TH_API_KEY },
+    headers: { accept: "application/json", "X-MBX-APIKEY": apiKey },
     signal: AbortSignal.timeout(10000)
   });
   const payload = await response.json().catch(() => ({}));
@@ -218,7 +225,7 @@ export default {
         if (!(await isBlessingOwner(request))) return json({ ok: false, message: "ต้องเข้าสู่ระบบด้วยบัญชี Super Admin ของ BLESSING" }, 403);
         return await binanceThAccount(env);
       } catch (error) {
-        return json({ ok: false, configured: !!(env.BINANCE_TH_API_KEY && env.BINANCE_TH_API_SECRET), connected: false, message: error?.message || "Binance TH connection failed" }, 502);
+        return json({ ok: false, configured: !!(env.BINANCE_TH_API_KEY && String(env.BINANCE_TH_API_KEY).trim()), connected: false, message: error?.message || "Binance TH connection failed" }, 502);
       }
     }
     if (pathname === "/admin-members" || pathname === "/member") {
