@@ -25,49 +25,34 @@ async function isBlessingOwner(request) {
   return profiles?.[0]?.role === "super_admin" && profiles?.[0]?.status === "active";
 }
 
-async function binanceThAccount(env) {
-  // Binance TH GET /api/v1/accountV2 is an API-key authenticated endpoint.
-  // The official example requires X-MBX-APIKEY and timestamp; it does not require HMAC signing.
-  // Keep BINANCE_TH_API_SECRET stored as a secret for future SIGNED endpoints, but do not
-  // block this read-only account check when the secret is absent.
-  const apiKey = typeof env.BINANCE_TH_API_KEY === "string" ? env.BINANCE_TH_API_KEY.trim() : "";
-  if (!apiKey) {
+async function binanceThAccount(request) {
+  // Forward the authenticated, read-only request to the existing Render backend.
+  // Binance credentials remain only in Render secrets; never expose them to the browser.
+  const authorization = request.headers.get("authorization") || "";
+  if (!authorization.startsWith("Bearer ")) {
+    return json({ ok: false, configured: false, connected: false, provider: "Binance TH", message: "กรุณาเข้าสู่ระบบก่อน" }, 401);
+  }
+  try {
+    const response = await fetch("https://blessing-webull-realtime-djfm.onrender.com/binance-th/account", {
+      method: "GET",
+      headers: { "accept": "application/json", "authorization": authorization },
+      signal: AbortSignal.timeout(20000),
+      cache: "no-store"
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return json({
+        ok: false, configured: false, connected: false, provider: "Binance TH",
+        message: payload.detail || payload.message || `Render backend ตอบ HTTP ${response.status}`
+      }, response.status);
+    }
+    return json(payload, payload.ok ? 200 : 502);
+  } catch (error) {
     return json({
-      ok: false, configured: false, keyConfigured: false,
-      provider: "Binance TH",
-      message: "ไม่พบ Worker Secret: BINANCE_TH_API_KEY ใน Environment ของ Worker ที่กำลังทำงาน"
-    }, 503);
+      ok: false, configured: false, connected: false, provider: "Binance TH",
+      message: "เชื่อมต่อ Render backend ไม่สำเร็จ: " + (error?.message || "network_error")
+    }, 502);
   }
-  const params = new URLSearchParams({ timestamp: String(Date.now()) });
-  const response = await fetch("https://api.binance.th/api/v1/accountV2?" + params.toString(), {
-    method: "GET",
-    headers: { accept: "application/json", "X-MBX-APIKEY": apiKey },
-    signal: AbortSignal.timeout(10000)
-  });
-  const responseText = await response.text();
-  let payload = {};
-  try { payload = responseText ? JSON.parse(responseText) : {}; } catch { payload = {}; }
-  if (!response.ok || (typeof payload?.code === "number" && payload.code !== 0)) {
-    const message = response.status === 403
-      ? "Binance TH ตอบ HTTP 403: ถูกปฏิเสธที่ชั้น WAF (Web Application Firewall) ตามเอกสาร Binance TH ไม่ใช่รหัสยืนยัน API โดยตรง กรุณาหยุดกดตรวจซ้ำถี่ ๆ และให้ตรวจสอบการอนุญาตคำขอจากต้นทางเซิร์ฟเวอร์กับ Binance TH"
-      : response.status === 429
-        ? "Binance TH ตอบ HTTP 429: มีการเรียก API ถี่เกินไป กรุณารอสักครู่ก่อนลองใหม่"
-        : response.status === 418
-          ? "Binance TH ตอบ HTTP 418: IP ต้นทางถูกระงับชั่วคราวจากการเรียกเกิน rate limit"
-          : payload?.msg || `Binance TH request failed (HTTP ${response.status}; Binance code ${payload?.code ?? "not provided"})`;
-    return json({ ok: false, configured: true, connected: false, provider: "Binance TH", httpStatus: response.status, errorCode: payload?.code ?? null, message }, 502);
-  }
-  const assets = (payload.balances || [])
-    .map(x => ({ asset: String(x.asset || ""), free: String(x.free || "0"), locked: String(x.locked || "0") }))
-    .filter(x => Number(x.free) > 0 || Number(x.locked) > 0);
-  return json({
-    ok: true, configured: true, connected: true, provider: "Binance TH",
-    accountCanTrade: !!payload.canTrade,
-    assetCount: assets.length, assets,
-    checkedAt: new Date().toISOString(),
-    tradingEnabledInBlessing: false,
-    message: "ตรวจสอบบัญชีสำเร็จ · อ่านข้อมูลบัญชีเท่านั้น · ยังไม่ส่งคำสั่งซื้อขาย"
-  });
 }
 
 const EXCHANGES = {
@@ -232,7 +217,7 @@ export default {
       if (request.method !== "GET") return json({ ok: false, message: "GET only" }, 405, { "allow": "GET" });
       try {
         if (!(await isBlessingOwner(request))) return json({ ok: false, message: "ต้องเข้าสู่ระบบด้วยบัญชี Super Admin ของ BLESSING" }, 403);
-        return await binanceThAccount(env);
+        return await binanceThAccount(request);
       } catch (error) {
         return json({ ok: false, configured: !!(env.BINANCE_TH_API_KEY && String(env.BINANCE_TH_API_KEY).trim()), connected: false, message: error?.message || "Binance TH connection failed" }, 502);
       }
