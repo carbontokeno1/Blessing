@@ -2762,6 +2762,63 @@ async def binance_th_owner_market_order(request: Request):
         raise HTTPException(status_code=503,detail="ตรวจสอบหรือส่งคำสั่งไม่สำเร็จ ระบบปฏิเสธคำสั่งเพื่อความปลอดภัย")
 
 
+
+@app.get("/binance-th/live-orders")
+def binance_th_owner_live_orders(request: Request, limit: int = 25):
+    owner = _binance_th_owner_auth(request)
+    limit = max(1,min(int(limit),100))
+    rows = _sb_rest("blessing_owner_live_order_intents",{
+        "select":"id,client_order_id,symbol,side,order_type,quote_asset,base_asset,reserved_asset,reserved_amount,requested_quantity,requested_quote_amount,exchange_order_id,exchange_status,executed_quantity,cumulative_quote_quantity,status,error_code,created_at,updated_at,finalized_at",
+        "owner_user_id":"eq."+str(owner["id"]),"order":"created_at.desc","limit":str(limit)
+    })
+    return {"ok":True,"provider":"Binance TH","orders":rows,"count":len(rows),"liveOrdersEnabled":os.getenv("BLESSING_OWNER_LIVE_ENABLED","false").strip().lower() in {"1","true","yes","on"}}
+
+
+@app.post("/binance-th/live-orders/reconcile")
+async def binance_th_owner_reconcile_order(request: Request):
+    owner = _binance_th_owner_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400,detail="ข้อมูลคำขอไม่ถูกต้อง")
+    client_order_id = str(body.get("clientOrderId") or "").strip()
+    if not client_order_id or len(client_order_id)>36:
+        raise HTTPException(status_code=422,detail="clientOrderId ไม่ถูกต้อง")
+    rows = _sb_rest("blessing_owner_live_order_intents",{
+        "select":"id,owner_user_id,client_order_id,symbol,status","owner_user_id":"eq."+str(owner["id"]),
+        "client_order_id":"eq."+client_order_id,"limit":"1"
+    })
+    if not rows:
+        raise HTTPException(status_code=404,detail="ไม่พบรายการคำสั่งของเจ้าของระบบ")
+    row=rows[0]
+    try:
+        result=_binance_th_signed_request("GET","/api/v1/order",{"symbol":row["symbol"],"origClientOrderId":client_order_id},BINANCE_API_KEY,BINANCE_API_SECRET)
+        if isinstance(result,dict) and isinstance(result.get("data"),dict): result=result["data"]
+        exchange_status=str(result.get("status") or "UNKNOWN").upper()
+        status_map={"NEW":"NEW","PARTIALLY_FILLED":"PARTIALLY_FILLED","FILLED":"FILLED","CANCELED":"CANCELED","REJECTED":"REJECTED","EXPIRED":"EXPIRED"}
+        status=status_map.get(exchange_status,"RECONCILIATION_REQUIRED")
+        executed=str(result.get("executedQty") or "0")
+        cumulative=str(result.get("cummulativeQuoteQty") or result.get("cumulativeQuoteQty") or "0")
+        now=datetime.now(timezone.utc).isoformat()
+        _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(row["id"])},"PATCH",{
+            "exchange_order_id":str(result.get("orderId") or "") or None,"exchange_status":exchange_status,
+            "executed_quantity":executed,"cumulative_quote_quantity":cumulative,"status":status,
+            "exchange_response":result,"error_code":None,"error_message":None,
+            "finalized_at":now if status in ("FILLED","CANCELED","REJECTED","EXPIRED") else None,"updated_at":now
+        })
+        _sb_rest("blessing_owner_live_order_events",{},"POST",{"order_intent_id":row["id"],"event_type":"RECONCILED_"+status,
+            "event_data":{"exchangeStatus":exchange_status,"executedQuantity":executed,"cumulativeQuoteQuantity":cumulative}})
+        return {"ok":True,"clientOrderId":client_order_id,"status":status,"exchangeStatus":exchange_status,
+            "executedQuantity":executed,"cumulativeQuoteQuantity":cumulative}
+    except Exception as exc:
+        log.warning("Binance TH order reconciliation failed (%s)",type(exc).__name__)
+        _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(row["id"])},"PATCH",{
+            "status":"RECONCILIATION_REQUIRED","error_code":"ORDER_LOOKUP_FAILED",
+            "error_message":type(exc).__name__,"updated_at":datetime.now(timezone.utc).isoformat()
+        })
+        raise HTTPException(status_code=503,detail="ตรวจสอบสถานะกับ Binance TH ไม่สำเร็จ จึงคงยอดจองไว้และไม่ส่งคำสั่งซ้ำ")
+
+
 @app.post("/binance-th/order")
 async def binance_th_place_order(request: Request):
     """Fail closed: the legacy manual order route bypasses member THB sub-ledgers."""
