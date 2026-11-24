@@ -4033,7 +4033,7 @@ def _dual_paper_worker_cycle():
                 if isinstance(result,dict) and result.get("closed"):
                     exits += 1
             except Exception as exc:
-                log.info("Dual paper monitor skipped %s/%s (%s)",position.get("market"),position.get("symbol"),type(exc).__name__)
+                log.info("Dual paper monitor skipped %s/%s (%s: %s)",position.get("market"),position.get("symbol"),type(exc).__name__,getattr(exc,"detail",str(exc))[:180])
 
         now = datetime.now(timezone.utc)
         experiments = _sb_rest("blessing_dual_experiments",{
@@ -4132,7 +4132,7 @@ def _dual_paper_worker_cycle():
                             })
                             DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key] = time.time()
                     except Exception as exc:
-                        log.info("Automatic stock entry skipped %s (%s)", symbol, type(exc).__name__)
+                        log.info("Automatic stock entry skipped %s (%s: %s)", symbol, type(exc).__name__, getattr(exc, "detail", str(exc))[:180])
                     # Re-read open positions; the entry helper enforces the two-position cap.
                     open_now = _sb_rest("blessing_dual_positions", {
                         "select":"id","portfolio_id":"eq."+str(portfolio["id"]),
@@ -4243,7 +4243,7 @@ def _dual_market_price(market: str, symbol: str) -> float:
                 if trade_price > 0 and trade_time:
                     stamp = datetime.fromisoformat(str(trade_time).replace("Z", "+00:00"))
                     age = (datetime.now(timezone.utc) - stamp).total_seconds()
-                    if 0 <= age <= 5:
+                    if 0 <= age <= 60:
                         return float(trade_price)
                 latest_quote = snap.get("latestQuote") or {}
                 bid, ask = _num(latest_quote.get("bp"), 0), _num(latest_quote.get("ap"), 0)
@@ -4251,13 +4251,13 @@ def _dual_market_price(market: str, symbol: str) -> float:
                 if bid > 0 and ask >= bid and quote_time:
                     stamp = datetime.fromisoformat(str(quote_time).replace("Z", "+00:00"))
                     age = (datetime.now(timezone.utc) - stamp).total_seconds()
-                    if 0 <= age <= 5:
+                    if 0 <= age <= 60:
                         return (bid + ask) / 2
             except Exception as exc:
                 log.info("Alpaca snapshot fallback unavailable for %s (%s)", symbol, type(exc).__name__)
         if state.get("provider") not in ("alpaca", "webull") and not (ALPACA_KEY and ALPACA_SECRET):
             raise HTTPException(status_code=503, detail="ยังไม่ได้เชื่อมต่อแหล่งราคาหุ้นสด")
-        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้น IEX/SIP ที่ยืนยันเวลาได้ภายใน 5 วินาที จึงปฏิเสธคำสั่ง")
+        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้น IEX/SIP ที่ยืนยันเวลาได้ภายใน 60 วินาที จึงปฏิเสธคำสั่ง")
     raise HTTPException(status_code=422, detail="เลือกตลาด crypto หรือ stocks เท่านั้น")
 
 
