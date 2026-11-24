@@ -1785,6 +1785,101 @@ def _paper_auth_user(request: Request):
     return user
 
 
+def _binance_th_owner_auth(request: Request):
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        raise HTTPException(status_code=503, detail="Render ยังไม่ได้ตั้งค่า Supabase")
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบก่อน")
+    token = authorization.split(" ", 1)[1].strip()
+    response = requests.get(
+        SUPABASE_URL + "/auth/v1/user",
+        headers={"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": "Bearer " + token},
+        timeout=(5, 12),
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่")
+    user = response.json()
+    profiles = _sb_rest("profiles", {
+        "select": "role,status", "user_id": "eq." + str(user.get("id")), "limit": "1"
+    })
+    if not profiles or profiles[0].get("role") != "super_admin" or profiles[0].get("status") != "active":
+        raise HTTPException(status_code=403, detail="ต้องใช้บัญชี Super Admin ที่เปิดใช้งานเท่านั้น")
+    return user
+
+
+@app.get("/binance-th/account")
+def binance_th_account_read(request: Request):
+    """Read-only Binance TH account snapshot. No order endpoints are implemented here."""
+    _binance_th_owner_auth(request)
+    api_key = os.getenv("BINANCE_TH_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "ok": False, "configured": False, "connected": False,
+            "provider": "Binance TH",
+            "message": "ยังไม่ได้ตั้งค่า BINANCE_TH_API_KEY ใน Render Environment",
+        }
+    try:
+        response = requests.get(
+            "https://api.binance.th/api/v1/accountV2",
+            params={"timestamp": str(int(time.time() * 1000))},
+            headers={"Accept": "application/json", "X-MBX-APIKEY": api_key},
+            timeout=(5, 15),
+        )
+    except requests.RequestException:
+        log.exception("Binance TH account read request failed")
+        return {
+            "ok": False, "configured": True, "connected": False,
+            "provider": "Binance TH",
+            "message": "Render ติดต่อ Binance TH ไม่สำเร็จ โปรดลองตรวจสอบเครือข่ายของบริการ",
+        }
+
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    if not response.ok or (isinstance(payload, dict) and isinstance(payload.get("code"), int) and payload.get("code") != 0):
+        status = response.status_code
+        message = (
+            "Binance TH ตอบ HTTP 403: WAF ปฏิเสธคำขอจาก IP ขาออกของ Render"
+            if status == 403 else
+            "Binance TH ตอบ HTTP 429: เรียก API ถี่เกินไป กรุณารอก่อนลองใหม่"
+            if status == 429 else
+            "Binance TH ตอบ HTTP 418: IP ต้นทางถูกระงับชั่วคราว"
+            if status == 418 else
+            str(payload.get("msg") or "Binance TH ปฏิเสธคำขอ")
+            if isinstance(payload, dict) else
+            "Binance TH ปฏิเสธคำขอ"
+        )
+        return {
+            "ok": False, "configured": True, "connected": False,
+            "provider": "Binance TH", "httpStatus": status,
+            "errorCode": payload.get("code") if isinstance(payload, dict) else None,
+            "message": message,
+        }
+
+    account = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+    balances = account.get("balances", []) if isinstance(account, dict) else []
+    assets = [
+        {
+            "asset": str(item.get("asset") or ""),
+            "free": str(item.get("free") or "0"),
+            "locked": str(item.get("locked") or "0"),
+        }
+        for item in balances if isinstance(item, dict)
+        if float(item.get("free") or 0) > 0 or float(item.get("locked") or 0) > 0
+    ]
+    return {
+        "ok": True, "configured": True, "connected": True,
+        "provider": "Binance TH",
+        "accountCanTrade": bool(account.get("canTrade", False)),
+        "assetCount": len(assets), "assets": assets,
+        "checkedAt": datetime.now(timezone.utc).isoformat(),
+        "tradingEnabledInBlessing": False,
+        "message": "ตรวจสอบบัญชีสำเร็จ · อ่านข้อมูลบัญชีเท่านั้น · ยังไม่ส่งคำสั่งซื้อขาย",
+    }
+
+
 @app.post("/paper-engine/start")
 def paper_engine_start(request: Request):
     user = _paper_auth_user(request)
