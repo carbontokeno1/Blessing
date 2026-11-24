@@ -3,6 +3,59 @@ const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(b
   headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*", ...headers }
 });
 
+
+// Binance TH private account read: credentials are Cloudflare Worker secrets only.
+const SUPABASE_URL = "https://dyzumqcqvnznlkugimxo.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ";
+
+async function isBlessingOwner(request) {
+  const auth = request.headers.get("authorization") || "";
+  if (!auth.startsWith("Bearer ")) return false;
+  const headers = { apikey: SUPABASE_ANON_KEY, authorization: auth };
+  const userRes = await fetch(SUPABASE_URL + "/auth/v1/user", { headers });
+  if (!userRes.ok) return false;
+  const user = await userRes.json();
+  if (!user?.id) return false;
+  const profileUrl = new URL(SUPABASE_URL + "/rest/v1/profiles");
+  profileUrl.searchParams.set("select", "role,status");
+  profileUrl.searchParams.set("user_id", "eq." + user.id);
+  const profileRes = await fetch(profileUrl, { headers });
+  if (!profileRes.ok) return false;
+  const profiles = await profileRes.json();
+  return profiles?.[0]?.role === "super_admin" && profiles?.[0]?.status === "active";
+}
+
+async function binanceThAccount(env) {
+  if (!env.BINANCE_TH_API_KEY || !env.BINANCE_TH_API_SECRET) {
+    return json({ ok: false, configured: false, provider: "Binance TH", message: "กรุณาตั้งค่า Worker Secrets: BINANCE_TH_API_KEY และ BINANCE_TH_API_SECRET" }, 503);
+  }
+  const params = new URLSearchParams({ recvWindow: "5000", timestamp: String(Date.now()) });
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(env.BINANCE_TH_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(params.toString()));
+  const hex = [...new Uint8Array(signature)].map(b => b.toString(16).padStart(2, "0")).join("");
+  const response = await fetch("https://api.binance.th/api/v1/accountV2?" + params.toString() + "&signature=" + hex, {
+    method: "GET",
+    headers: { accept: "application/json", "X-MBX-APIKEY": env.BINANCE_TH_API_KEY },
+    signal: AbortSignal.timeout(10000)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.code) {
+    return json({ ok: false, configured: true, connected: false, provider: "Binance TH", httpStatus: response.status, errorCode: payload?.code ?? null, message: payload?.msg || "Binance TH authentication failed" }, 502);
+  }
+  const assets = (payload.balances || [])
+    .map(x => ({ asset: String(x.asset || ""), free: String(x.free || "0"), locked: String(x.locked || "0") }))
+    .filter(x => Number(x.free) > 0 || Number(x.locked) > 0);
+  return json({
+    ok: true, configured: true, connected: true, provider: "Binance TH",
+    accountCanTrade: !!payload.canTrade,
+    assetCount: assets.length, assets,
+    checkedAt: new Date().toISOString(),
+    tradingEnabledInBlessing: false,
+    message: "เชื่อมต่อสำเร็จ · อ่านข้อมูลบัญชีเท่านั้น · ยังไม่ส่งคำสั่งซื้อขาย"
+  });
+}
+
 const EXCHANGES = {
   Binance: {
     tickers: "https://data-api.binance.vision/api/v3/ticker/24hr",
@@ -159,6 +212,15 @@ export default {
         return new Response(request.method === "HEAD" ? null : response.body, { status: response.status, headers });
       } catch (error) {
         return json({ status: "source_error", message: error?.message || "scanner_failed", candidates: [], updatedAt: new Date().toISOString() }, 502);
+      }
+    }
+    if (pathname === "/api/binance-th/account") {
+      if (request.method !== "GET") return json({ ok: false, message: "GET only" }, 405, { "allow": "GET" });
+      try {
+        if (!(await isBlessingOwner(request))) return json({ ok: false, message: "ต้องเข้าสู่ระบบด้วยบัญชี Super Admin ของ BLESSING" }, 403);
+        return await binanceThAccount(env);
+      } catch (error) {
+        return json({ ok: false, configured: !!(env.BINANCE_TH_API_KEY && env.BINANCE_TH_API_SECRET), connected: false, message: error?.message || "Binance TH connection failed" }, 502);
       }
     }
     if (pathname === "/admin-members" || pathname === "/member") {
