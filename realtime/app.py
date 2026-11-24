@@ -1813,16 +1813,29 @@ def binance_th_account_read(request: Request):
     """Read-only Binance TH account snapshot. No order endpoints are implemented here."""
     _binance_th_owner_auth(request)
     api_key = os.getenv("BINANCE_TH_API_KEY", "").strip()
-    if not api_key:
+    api_secret = os.getenv("BINANCE_TH_API_SECRET", "").strip()
+    if not api_key or not api_secret:
+        missing = "BINANCE_TH_API_KEY" if not api_key else "BINANCE_TH_API_SECRET"
         return {
             "ok": False, "configured": False, "connected": False,
             "provider": "Binance TH",
-            "message": "ยังไม่ได้ตั้งค่า BINANCE_TH_API_KEY ใน Render Environment",
+            "message": f"ยังไม่ได้ตั้งค่า {missing} ใน Render Environment",
         }
+    # Binance TH account endpoint requires a fresh HMAC-SHA256 signature.
+    signed_params = {
+        "recvWindow": "5000",
+        "timestamp": str(int(time.time() * 1000)),
+    }
+    query_string = urllib.parse.urlencode(signed_params)
+    signature = hmac.new(
+        api_secret.encode("utf-8"),
+        query_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    signed_url = "https://api.binance.th/api/v1/accountV2?" + query_string + "&signature=" + signature
     try:
         response = requests.get(
-            "https://api.binance.th/api/v1/accountV2",
-            params={"timestamp": str(int(time.time() * 1000))},
+            signed_url,
             headers={"Accept": "application/json", "X-MBX-APIKEY": api_key},
             timeout=(5, 15),
         )
