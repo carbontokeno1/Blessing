@@ -131,7 +131,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                       "quoteOrderQty": _fmt(amount), "newClientOrderId": client_id, "newOrderRespType": "FULL"}
             requested_quote, requested_qty = amount, None
         else:
-            qty = _d(quantity)
+            qty = min(_d(quantity), balances.get(base, Decimal("0")))
             if step > 0:
                 qty = (qty / step).to_integral_value(rounding=ROUND_DOWN) * step
             if qty <= 0 or qty < min_qty or (max_qty > 0 and qty > max_qty):
