@@ -1879,6 +1879,89 @@ async def admin_control_member_portfolios(request: Request):
     }
 
 
+
+def _member_portfolio_auth(request: Request):
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        raise HTTPException(status_code=503, detail="Render ยังไม่ได้ตั้งค่า Supabase")
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบก่อน")
+    token = authorization.split(" ", 1)[1].strip()
+    response = requests.get(
+        SUPABASE_URL + "/auth/v1/user",
+        headers={"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": "Bearer " + token},
+        timeout=(5, 12),
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่")
+    user = response.json()
+    profiles = _sb_rest("profiles", {
+        "select": "role,status", "user_id": "eq." + str(user.get("id")), "limit": "1"
+    })
+    if not profiles or profiles[0].get("role") != "member" or profiles[0].get("status") != "active":
+        raise HTTPException(status_code=403, detail="บัญชีนี้ไม่มีสิทธิ์ควบคุมพอร์ตสมาชิก")
+    return user
+
+
+@app.get("/member/member-portfolios")
+def member_member_portfolios(request: Request):
+    """Members can view only portfolio rows explicitly assigned to their authenticated user id."""
+    user = _member_portfolio_auth(request)
+    rows = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,allocated_capital,status,enabled,live_trading_approved",
+        "assigned_user_id": "eq." + str(user["id"]),
+        "order": "portfolio_type.asc", "limit": "4",
+    })
+    return {
+        "ok": True, "portfolioCount": len(rows), "portfolios": rows,
+        "liveTradingEnabled": False,
+    }
+
+
+@app.post("/member/member-portfolios/control")
+async def member_control_own_portfolio(request: Request):
+    """A member may toggle only a registry row assigned to their authenticated user id."""
+    user = _member_portfolio_auth(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="ข้อมูลคำสั่งไม่ถูกต้อง")
+    portfolio_id = str(payload.get("portfolioId") or "").strip()
+    enabled = payload.get("enabled")
+    if not portfolio_id or not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="ต้องระบุ portfolioId และ enabled ให้ถูกต้อง")
+    rows = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "id,member_no,portfolio_type,mode,paper_slot_id,live_trading_approved",
+        "id": "eq." + portfolio_id,
+        "assigned_user_id": "eq." + str(user["id"]),
+        "limit": "1",
+    })
+    if not rows:
+        raise HTTPException(status_code=404, detail="ไม่พบพอร์ตของคุณ หรือพอร์ตนี้ไม่ได้กำหนดให้บัญชีคุณ")
+    row = rows[0]
+    changed = _sb_rest("blessing_member_portfolio_registry", {
+        "id": "eq." + portfolio_id,
+        "assigned_user_id": "eq." + str(user["id"]),
+    }, method="PATCH", body={"enabled": enabled})
+    if not changed:
+        raise HTTPException(status_code=502, detail="บันทึกสถานะพอร์ตไม่สำเร็จ")
+    if row.get("mode") == "paper":
+        if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id"):
+            _sb_rest("blessing_paper_member_slots", {
+                "id": "eq." + str(row["paper_slot_id"]),
+            }, method="PATCH", body={"enabled": enabled})
+        elif row.get("portfolio_type") == "stock_paper":
+            _sb_rest("blessing_stock_paper_member_slots", {
+                "slot_no": "eq." + str(row["member_no"]),
+            }, method="PATCH", body={"enabled": enabled})
+    return {
+        "ok": True, "portfolioId": portfolio_id, "enabled": enabled,
+        "liveTradingApproved": bool(row.get("live_trading_approved")),
+        "liveOrdersStillLocked": row.get("mode") == "live",
+        "message": "เปลี่ยนสถานะพอร์ตของคุณแล้ว แต่ไม่ได้เป็นการอนุมัติส่งคำสั่งเงินจริง",
+    }
+
+
 @app.get("/admin/member-portfolios")
 def admin_member_portfolios(request: Request):
     """Owner-only inventory of the four isolated portfolios reserved for each of ten demo members."""
