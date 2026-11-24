@@ -4972,3 +4972,465 @@ def admin_member_slot_engine_status(request: Request):
         "recentStockOrders":stock_orders,
         "liveTradingEnabled":False
     }
+
+
+# OWNER LIVE AUTO ENGINE — owner-only Binance TH Spot automation.
+# Entries are allowed only after the Super Admin explicitly starts LIVE mode.
+# STOP blocks new entries but keeps monitoring and closing already-owned positions.
+OWNER_LIVE_ENGINE_INTERVAL = max(10, int(os.getenv("OWNER_LIVE_ENGINE_INTERVAL", "15")))
+OWNER_LIVE_ENGINE_STATE = {"status":"waiting_config","lastCycleAt":None,"lastError":None,
+                           "cycles":0,"entries":0,"exits":0,"candidates":0,"actions":[]}
+OWNER_LIVE_ENGINE_LOCK = threading.Lock()
+OWNER_LIVE_ENTRY_COOLDOWNS = {}
+OWNER_LIVE_MASTER_ON = lambda: os.getenv("BLESSING_OWNER_LIVE_ENABLED","false").strip().lower() in {"1","true","yes","on"}
+
+
+def _owner_live_control(owner_id):
+    rows = _sb_rest("blessing_owner_auto_trade_control", {
+        "select":"owner_user_id,run_state,run_mode,live_approved,live_enabled,strategy_config,control_version",
+        "owner_user_id":"eq."+str(owner_id),"limit":"1"
+    }) or []
+    return rows[0] if rows else None
+
+
+def _owner_live_account():
+    if not BINANCE_API_KEY or not BINANCE_API_SECRET:
+        raise RuntimeError("BINANCE_TH_API_CREDENTIALS_MISSING")
+    payload = _binance_th_signed_request("GET","/api/v1/accountV2",{},BINANCE_API_KEY,BINANCE_API_SECRET)
+    account = payload.get("data") if isinstance(payload,dict) and isinstance(payload.get("data"),dict) else payload
+    if not isinstance(account,dict) or not account.get("canTrade"):
+        raise RuntimeError("BINANCE_TH_ACCOUNT_CANNOT_TRADE")
+    return account
+
+
+def _owner_live_exchange_info(symbol=None):
+    response = requests.get(BINANCE_TH_API_BASE+"/api/v1/exchangeInfo",
+        headers={"Accept":"application/json","X-MBX-APIKEY":BINANCE_API_KEY},timeout=(5,15))
+    response.raise_for_status()
+    payload = response.json()
+    if isinstance(payload,dict) and isinstance(payload.get("data"),dict):
+        payload = payload["data"]
+    symbols = payload.get("symbols",[]) if isinstance(payload,dict) else []
+    if symbol:
+        return next((x for x in symbols if isinstance(x,dict) and x.get("symbol")==symbol),None)
+    return symbols
+
+
+def _owner_live_submit_market(owner_id, symbol, side, amount):
+    """Submit one market order through the reserved-funds intent ledger; never retries ambiguous submits."""
+    side = str(side).upper()
+    symbol = str(symbol).upper()
+    if side not in ("BUY","SELL") or not symbol.endswith("USDT"):
+        raise RuntimeError("OWNER_LIVE_MARKET_SCOPE_REJECTED")
+    account = _owner_live_account()
+    info = _owner_live_exchange_info(symbol)
+    if not info or info.get("status") != "TRADING" or "MARKET" not in (info.get("orderTypes") or []):
+        raise RuntimeError("SYMBOL_NOT_MARKET_TRADING")
+    base_asset = str(info.get("baseAsset") or "").upper()
+    quote_asset = str(info.get("quoteAsset") or "").upper()
+    if not base_asset or quote_asset != "USDT":
+        raise RuntimeError("ONLY_USDT_SPOT_PAIRS_ALLOWED")
+    filters = {str(x.get("filterType")):x for x in info.get("filters",[]) if isinstance(x,dict)}
+    market_lot = filters.get("MARKET_LOT_SIZE") or {}
+    lot = market_lot if Decimal(str(market_lot.get("stepSize") or "0")) > 0 else (filters.get("LOT_SIZE") or market_lot)
+    step = Decimal(str(lot.get("stepSize") or "0"))
+    min_qty = Decimal(str(lot.get("minQty") or "0"))
+    max_qty = Decimal(str(lot.get("maxQty") or "0"))
+    balances = {str(x.get("asset") or "").upper():Decimal(str(x.get("free") or "0"))
+                for x in account.get("balances",[]) if isinstance(x,dict)}
+    ticker_resp = requests.get(BINANCE_TH_API_BASE+"/api/v1/ticker/price",
+        params={"symbol":symbol},headers={"Accept":"application/json"},timeout=(5,12))
+    ticker_resp.raise_for_status()
+    ticker = ticker_resp.json()
+    if isinstance(ticker,dict) and isinstance(ticker.get("data"),dict):
+        ticker = ticker["data"]
+    price = Decimal(str(ticker.get("price") or "0"))
+    if price <= 0:
+        raise RuntimeError("MARKET_PRICE_UNAVAILABLE")
+    client_id = "blsauto" + uuid.uuid4().hex[:24]
+    if side == "BUY":
+        quote_amount = _binance_th_order_decimal(amount,"quoteAmount")
+        quote_free = balances.get("USDT",Decimal("0"))
+        notional_filter = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+        min_notional = Decimal(str(notional_filter.get("minNotional") or "0"))
+        if quote_amount < min_notional or quote_amount > quote_free:
+            raise RuntimeError("BUY_AMOUNT_OUTSIDE_FREE_BALANCE_OR_MIN_NOTIONAL")
+        reserved_asset, reserved_amount = "USDT", quote_amount
+        requested_qty, requested_quote = None, quote_amount
+        params = {"symbol":symbol,"side":"BUY","type":"MARKET","quoteOrderQty":format(quote_amount,"f"),
+                  "newClientOrderId":client_id,"newOrderRespType":"FULL"}
+    else:
+        quantity = _binance_th_step_floor(_binance_th_order_decimal(amount,"quantity"),step)
+        if quantity <= 0 or quantity < min_qty or (max_qty > 0 and quantity > max_qty):
+            raise RuntimeError("SELL_QUANTITY_OUTSIDE_MARKET_LOT")
+        base_free = balances.get(base_asset,Decimal("0"))
+        notional_filter = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+        min_notional = Decimal(str(notional_filter.get("minNotional") or "0"))
+        if quantity > base_free or quantity*price < min_notional:
+            raise RuntimeError("SELL_QUANTITY_OUTSIDE_FREE_BALANCE_OR_MIN_NOTIONAL")
+        reserved_asset, reserved_amount = base_asset, quantity
+        requested_qty, requested_quote = quantity, None
+        params = {"symbol":symbol,"side":"SELL","type":"MARKET","quantity":format(quantity,"f"),
+                  "newClientOrderId":client_id,"newOrderRespType":"FULL"}
+    reservation = _sb_rpc("blessing_owner_reserve_live_order",{
+        "p_owner_user_id":str(owner_id),"p_client_order_id":client_id,"p_symbol":symbol,"p_side":side,
+        "p_order_type":"MARKET","p_quote_asset":quote_asset,"p_base_asset":base_asset,
+        "p_reserved_asset":reserved_asset,"p_reserved_amount":str(reserved_amount),
+        "p_exchange_free":str(balances.get(reserved_asset,Decimal("0"))),
+        "p_requested_quantity":str(requested_qty) if requested_qty is not None else None,
+        "p_requested_quote_amount":str(requested_quote) if requested_quote is not None else None,
+        "p_limit_price":None,"p_request_payload":{"origin":"owner_auto_engine","symbol":symbol,"side":side}
+    })
+    intent = reservation[0] if isinstance(reservation,list) and reservation else reservation
+    intent_id = intent.get("id") if isinstance(intent,dict) else None
+    if not intent_id:
+        raise RuntimeError("LIVE_ORDER_RESERVATION_FAILED")
+    _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(intent_id)},"PATCH",
+             {"status":"SUBMITTING","updated_at":datetime.now(timezone.utc).isoformat()})
+    try:
+        result = _binance_th_signed_request("POST","/api/v1/order",params,BINANCE_API_KEY,BINANCE_API_SECRET)
+    except Exception as submit_error:
+        try:
+            result = _binance_th_signed_request("GET","/api/v1/order",
+                {"symbol":symbol,"origClientOrderId":client_id},BINANCE_API_KEY,BINANCE_API_SECRET)
+        except Exception:
+            now = datetime.now(timezone.utc).isoformat()
+            _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(intent_id)},"PATCH",{
+                "status":"RECONCILIATION_REQUIRED","error_code":"SUBMIT_RESULT_AMBIGUOUS",
+                "error_message":type(submit_error).__name__,"updated_at":now})
+            _sb_rest("blessing_owner_live_order_events",{},"POST",{
+                "order_intent_id":intent_id,"event_type":"RECONCILIATION_REQUIRED",
+                "event_data":{"origin":"owner_auto_engine","reason":"submit_and_lookup_failed"}})
+            raise RuntimeError("ORDER_RESULT_AMBIGUOUS; NO_RETRY")
+    if isinstance(result,dict) and isinstance(result.get("data"),dict):
+        result = result["data"]
+    status = str(result.get("status") or "UNKNOWN").upper()
+    executed = Decimal(str(result.get("executedQty") or "0"))
+    cumulative = Decimal(str(result.get("cummulativeQuoteQty") or result.get("cumulativeQuoteQty") or "0"))
+    mapped = status if status in {"NEW","PARTIALLY_FILLED","FILLED","CANCELED","REJECTED","EXPIRED"} else "RECONCILIATION_REQUIRED"
+    terminal = mapped in {"FILLED","CANCELED","REJECTED","EXPIRED"}
+    remaining = Decimal("0") if terminal else max(Decimal("0"),
+        (requested_quote-cumulative) if side=="BUY" else (requested_qty-executed))
+    now = datetime.now(timezone.utc).isoformat()
+    _sb_rest("blessing_owner_live_order_intents",{"id":"eq."+str(intent_id)},"PATCH",{
+        "exchange_order_id":str(result.get("orderId") or "") or None,"exchange_status":status,
+        "executed_quantity":str(executed),"cumulative_quote_quantity":str(cumulative),"status":mapped,
+        "remaining_reserved_amount":str(remaining),"exchange_response":result if isinstance(result,dict) else {},
+        "finalized_at":now if terminal else None,"updated_at":now})
+    _sb_rest("blessing_owner_live_order_events",{},"POST",{
+        "order_intent_id":intent_id,"event_type":"AUTO_"+mapped,
+        "event_data":{"symbol":symbol,"side":side,"executedQuantity":str(executed),"quoteQuantity":str(cumulative)}})
+    if mapped != "FILLED" or executed <= 0 or cumulative <= 0:
+        raise RuntimeError("LIVE_ORDER_NOT_FULLY_FILLED; CHECK_RECONCILIATION")
+    avg_price = cumulative/executed
+    fee_quote = sum((Decimal(str(fill.get("commission") or "0")) for fill in (result.get("fills") or [])
+                     if str(fill.get("commissionAsset") or "").upper()=="USDT"),Decimal("0"))
+    if fee_quote <= 0:
+        fee_quote = cumulative*Decimal("0.001")
+    return {"clientOrderId":client_id,"intentId":intent_id,"symbol":symbol,"side":side,
+            "quantity":str(executed),"quoteAmount":str(cumulative),"averagePrice":str(avg_price),
+            "feeQuote":str(fee_quote),"status":mapped}
+
+
+def _owner_live_mark_and_exit(owner_id, positions):
+    exits = 0
+    for position in positions:
+        symbol = str(position.get("symbol") or "")
+        if not symbol:
+            continue
+        response = requests.get(BINANCE_TH_API_BASE+"/api/v1/ticker/price",
+            params={"symbol":symbol},headers={"Accept":"application/json"},timeout=(4,10))
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload,dict) and isinstance(payload.get("data"),dict):
+            payload = payload["data"]
+        price = Decimal(str(payload.get("price") or "0"))
+        if price <= 0:
+            continue
+        entry = Decimal(str(position.get("entry_price") or "0"))
+        qty = Decimal(str(position.get("quantity") or "0"))
+        stop = Decimal(str(position.get("stop_loss_price") or "0"))
+        target = Decimal(str(position.get("take_profit_price") or "0"))
+        pnl = (price-entry)*qty-Decimal(str(position.get("entry_fee_quote") or "0"))
+        _sb_rest("blessing_owner_live_positions",{"id":"eq."+str(position["id"])},"PATCH",{
+            "last_price":str(price),"unrealized_pnl":str(pnl),"updated_at":datetime.now(timezone.utc).isoformat()})
+        reason = "STOP_LOSS" if stop > 0 and price <= stop else ("TAKE_PROFIT" if target > 0 and price >= target else None)
+        if not reason:
+            continue
+        _sb_rest("blessing_owner_live_positions",{"id":"eq."+str(position["id"]),"status":"eq.OPEN"},"PATCH",
+                 {"status":"CLOSING","updated_at":datetime.now(timezone.utc).isoformat()})
+        try:
+            result = _owner_live_submit_market(owner_id,symbol,"SELL",qty)
+            sold = Decimal(result["quantity"])
+            sell_value = Decimal(result["quoteAmount"])
+            fee = Decimal(result["feeQuote"])
+            realized = sell_value-(entry*sold)-Decimal(str(position.get("entry_fee_quote") or "0"))-fee
+            left = max(Decimal("0"),qty-sold)
+            _sb_rest("blessing_owner_live_positions",{"id":"eq."+str(position["id"])},"PATCH",{
+                "quantity":str(left),"exit_price":result["averagePrice"],"exit_fee_quote":str(fee),
+                "realized_pnl":str(realized),"exit_client_order_id":result["clientOrderId"],
+                "status":"CLOSED" if left==0 else "OPEN",
+                "closed_at":datetime.now(timezone.utc).isoformat() if left==0 else None,
+                "updated_at":datetime.now(timezone.utc).isoformat()})
+            exits += 1
+            _sb_rest("blessing_owner_auto_trade_events",{},"POST",{
+                "owner_user_id":str(owner_id),"event_type":reason,"run_mode":"LIVE",
+                "event_data":{"symbol":symbol,"price":str(price),"realizedPnl":str(realized),
+                              "clientOrderId":result["clientOrderId"]}})
+        except Exception:
+            _sb_rest("blessing_owner_live_positions",{"id":"eq."+str(position["id"])},"PATCH",
+                     {"status":"RECONCILIATION_REQUIRED","updated_at":datetime.now(timezone.utc).isoformat()})
+            raise
+    return exits
+
+
+def _owner_live_engine_cycle():
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        OWNER_LIVE_ENGINE_STATE.update({"status":"waiting_config","lastError":"SUPABASE_CONFIG_MISSING"})
+        return
+    if not OWNER_LIVE_ENGINE_LOCK.acquire(blocking=False):
+        return
+    try:
+        owners = _sb_rest("blessing_owner_auto_trade_control",{
+            "select":"owner_user_id,run_state,run_mode,live_approved,live_enabled,strategy_config,control_version",
+            "limit":"5","order":"updated_at.desc"
+        }) or []
+        if not owners:
+            OWNER_LIVE_ENGINE_STATE.update({"status":"waiting_owner_start","lastError":None})
+            return
+        control = owners[0]
+        owner_id = str(control["owner_user_id"])
+        live_allowed = (control.get("run_mode")=="LIVE" and bool(control.get("live_approved"))
+                        and bool(control.get("live_enabled")) and OWNER_LIVE_MASTER_ON())
+        if not live_allowed:
+            OWNER_LIVE_ENGINE_STATE.update({"status":"locked","lastError":"LIVE_MASTER_OR_OWNER_APPROVAL_OFF"})
+            return
+        account = _owner_live_account()
+        balances = {str(x.get("asset") or "").upper():Decimal(str(x.get("free") or "0"))
+                    for x in account.get("balances",[]) if isinstance(x,dict)}
+        usdt_row = next((x for x in account.get("balances",[]) if str(x.get("asset") or "").upper()=="USDT"),{})
+        free_usdt = Decimal(str(usdt_row.get("free") or "0"))
+        locked_usdt = Decimal(str(usdt_row.get("locked") or "0"))
+        positions = _sb_rest("blessing_owner_live_positions",{
+            "select":"id,symbol,base_asset,quantity,entry_price,entry_fee_quote,stop_loss_price,take_profit_price,status",
+            "owner_user_id":"eq."+owner_id,"status":"in.(OPEN,CLOSING,RECONCILIATION_REQUIRED)","limit":"100"
+        }) or []
+        if any(p.get("status") in ("CLOSING","RECONCILIATION_REQUIRED") for p in positions):
+            OWNER_LIVE_ENGINE_STATE.update({"status":"reconciliation_required","lastError":"OPEN_ORDER_REQUIRES_RECONCILIATION"})
+            return
+        exits = _owner_live_mark_and_exit(owner_id,[p for p in positions if p.get("status")=="OPEN"])
+        positions = _sb_rest("blessing_owner_live_positions",{
+            "select":"id,symbol,quantity,entry_price,last_price,status",
+            "owner_user_id":"eq."+owner_id,"status":"eq.OPEN","limit":"100"
+        }) or []
+        exposure = Decimal("0")
+        for p in positions:
+            exposure += Decimal(str(p.get("quantity") or "0"))*Decimal(str(p.get("last_price") or p.get("entry_price") or "0"))
+        equity = free_usdt+locked_usdt+exposure
+        today = datetime.now(timezone.utc).date().isoformat()
+        risk_rows = _sb_rest("blessing_owner_live_daily_risk",{
+            "select":"risk_date,start_equity_usdt,peak_equity_usdt,realized_pnl_usdt,halted",
+            "owner_user_id":"eq."+owner_id,"risk_date":"eq."+today,"limit":"1"
+        }) or []
+        if not risk_rows:
+            _sb_rest("blessing_owner_live_daily_risk",{}, "POST",{
+                "owner_user_id":owner_id,"risk_date":today,"start_equity_usdt":str(equity),
+                "peak_equity_usdt":str(equity),"realized_pnl_usdt":"0","halted":False})
+            risk = {"start_equity_usdt":str(equity),"peak_equity_usdt":str(equity),"realized_pnl_usdt":"0","halted":False}
+        else:
+            risk = risk_rows[0]
+        start_equity = Decimal(str(risk.get("start_equity_usdt") or "0"))
+        daily_loss_pct = Decimal(str((start_equity-equity)/start_equity*100 if start_equity>0 else 0))
+        cfg = control.get("strategy_config") if isinstance(control.get("strategy_config"),dict) else {}
+        daily_limit = Decimal(str(cfg.get("max_daily_loss_pct",2)))
+        halted = bool(risk.get("halted")) or daily_loss_pct >= daily_limit
+        if halted and not risk.get("halted"):
+            _sb_rest("blessing_owner_live_daily_risk",{
+                "owner_user_id":"eq."+owner_id,"risk_date":"eq."+today
+            },"PATCH",{"halted":True,"halt_reason":"MAX_DAILY_LOSS","updated_at":datetime.now(timezone.utc).isoformat()})
+            _sb_rest("blessing_owner_auto_trade_events",{},"POST",{
+                "owner_user_id":owner_id,"event_type":"DAILY_RISK_HALT","run_mode":"LIVE",
+                "event_data":{"equity":str(equity),"startEquity":str(start_equity),"lossPct":str(daily_loss_pct)}})
+        run_state = str(control.get("run_state") or "STOPPED")
+        entries = 0
+        candidates_count = 0
+        if run_state=="RUNNING" and not halted:
+            now = datetime.now(timezone.utc)
+            stamp = state.get("lastCryptoMessageAt")
+            try:
+                age = (now-datetime.fromisoformat(str(stamp).replace("Z","+00:00"))).total_seconds() if stamp else 999999
+            except Exception:
+                age = 999999
+            fresh = state.get("cryptoConnection")=="streaming" and 0<=age<=5
+            candidates = []
+            if fresh:
+                for row in _binance_th_adaptive_candidates():
+                    decision = adaptive_decision("crypto",row,fee_bps=10,slippage_bps=5)
+                    if decision.get("decision")=="PAPER_CANDIDATE" and float(decision.get("opportunityScore") or 0)>0:
+                        candidates.append((row,decision))
+            candidates.sort(key=lambda item:float(item[1].get("opportunityScore") or 0),reverse=True)
+            candidates_count = len(candidates)
+            max_positions = max(1,min(3,int(cfg.get("max_open_positions",3))))
+            if len(positions)<max_positions:
+                risk_pct = max(0.05,min(1.0,float(cfg.get("risk_per_trade_pct",0.5))))
+                stop_pct = max(0.5,min(5.0,float(cfg.get("stop_loss_pct",2))))
+                target_pct = max(stop_pct*1.25,min(8.0,float(cfg.get("take_profit_pct",3))))
+                risk_budget = equity*Decimal(str(risk_pct))/Decimal("100")
+                risk_sized_notional = risk_budget/(Decimal(str(stop_pct))/Decimal("100"))
+                allocation_room = max(Decimal("0"),equity*Decimal("0.75")-exposure)
+                notional = min(free_usdt,risk_sized_notional,equity*Decimal("0.25"),allocation_room)
+                held = {str(p.get("symbol")) for p in positions}
+                for row,decision in candidates:
+                    symbol = str(row.get("symbol") or "").upper()
+                    if symbol in held or time.time()-OWNER_LIVE_ENTRY_COOLDOWNS.get(symbol,0)<300:
+                        continue
+                    if notional <= 0:
+                        break
+                    try:
+                        result = _owner_live_submit_market(owner_id,symbol,"BUY",notional)
+                        qty = Decimal(result["quantity"])
+                        avg = Decimal(result["averagePrice"])
+                        stop = avg*(Decimal("1")-Decimal(str(stop_pct))/Decimal("100"))
+                        target = avg*(Decimal("1")+Decimal(str(target_pct))/Decimal("100"))
+                        _sb_rest("blessing_owner_live_positions",{},"POST",{
+                            "owner_user_id":owner_id,"symbol":symbol,"base_asset":symbol[:-4],"quote_asset":"USDT",
+                            "quantity":str(qty),"entry_price":str(avg),"entry_quote_amount":result["quoteAmount"],
+                            "entry_fee_quote":result["feeQuote"],"stop_loss_price":str(stop),"take_profit_price":str(target),
+                            "status":"OPEN","last_price":str(avg),"entry_client_order_id":result["clientOrderId"]})
+                        _sb_rest("blessing_owner_auto_trade_events",{},"POST",{
+                            "owner_user_id":owner_id,"event_type":"AUTO_BUY_FILLED","run_mode":"LIVE",
+                            "event_data":{"symbol":symbol,"quantity":str(qty),"entryPrice":str(avg),
+                                          "quoteAmount":result["quoteAmount"],"stopLoss":str(stop),
+                                          "takeProfit":str(target),"opportunityScore":decision.get("opportunityScore"),
+                                          "clientOrderId":result["clientOrderId"]}})
+                        OWNER_LIVE_ENTRY_COOLDOWNS[symbol]=time.time()
+                        entries += 1
+                        break
+                    except Exception as exc:
+                        log.warning("Owner live entry skipped %s (%s)",symbol,type(exc).__name__)
+                        OWNER_LIVE_ENGINE_STATE["lastError"]=type(exc).__name__
+                        break
+        now_iso = datetime.now(timezone.utc).isoformat()
+        _sb_rest("blessing_owner_auto_trade_control",{"owner_user_id":"eq."+owner_id},"PATCH",{
+            "heartbeat_at":now_iso,"updated_at":now_iso,
+            "last_error":OWNER_LIVE_ENGINE_STATE.get("lastError")})
+        OWNER_LIVE_ENGINE_STATE.update({
+            "status":"running" if run_state=="RUNNING" else "monitoring_stopped",
+            "lastCycleAt":now_iso,"lastError":None if not halted else "DAILY_RISK_HALT",
+            "cycles":OWNER_LIVE_ENGINE_STATE.get("cycles",0)+1,
+            "entries":OWNER_LIVE_ENGINE_STATE.get("entries",0)+entries,
+            "exits":OWNER_LIVE_ENGINE_STATE.get("exits",0)+exits,
+            "candidates":candidates_count,"openPositions":len(positions),
+            "dailyLossPct":float(daily_loss_pct),"dailyHalted":halted,
+            "freeUSDT":str(free_usdt),"lockedUSDT":str(locked_usdt),
+            "liveOrdersEnabled":True})
+    except Exception as exc:
+        OWNER_LIVE_ENGINE_STATE.update({"status":"error","lastError":type(exc).__name__,
+                                        "lastCycleAt":datetime.now(timezone.utc).isoformat()})
+        log.exception("Owner live auto engine cycle failed")
+    finally:
+        OWNER_LIVE_ENGINE_LOCK.release()
+
+
+def _owner_live_engine_loop():
+    while True:
+        try:
+            _owner_live_engine_cycle()
+        except Exception:
+            log.exception("Owner live engine loop failed")
+        time.sleep(OWNER_LIVE_ENGINE_INTERVAL)
+
+
+@app.on_event("startup")
+async def owner_live_engine_startup():
+    global OWNER_LIVE_ENGINE_THREAD
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        OWNER_LIVE_ENGINE_STATE["status"]="waiting_config"
+        return
+    if globals().get("OWNER_LIVE_ENGINE_THREAD") and OWNER_LIVE_ENGINE_THREAD.is_alive():
+        return
+    OWNER_LIVE_ENGINE_THREAD = threading.Thread(target=_owner_live_engine_loop,
+        name="owner-live-auto-engine",daemon=True)
+    OWNER_LIVE_ENGINE_THREAD.start()
+    log.info("Owner live auto engine worker started; interval=%ss",OWNER_LIVE_ENGINE_INTERVAL)
+
+
+@app.get("/binance-th/auto-trade/status")
+def owner_live_auto_status(request: Request):
+    owner = _binance_th_owner_auth(request)
+    control = _owner_live_control(owner["id"])
+    positions = _sb_rest("blessing_owner_live_positions",{
+        "select":"id,symbol,quantity,entry_price,last_price,stop_loss_price,take_profit_price,unrealized_pnl,status,opened_at",
+        "owner_user_id":"eq."+str(owner["id"]),"order":"opened_at.desc","limit":"100"
+    }) or []
+    return {"ok":True,"control":control,"engine":dict(OWNER_LIVE_ENGINE_STATE),
+            "positions":positions,"masterSwitch":OWNER_LIVE_MASTER_ON(),
+            "liveOrdersEnabled":OWNER_LIVE_MASTER_ON() and bool(control and control.get("live_enabled"))}
+
+
+@app.post("/binance-th/auto-trade/start")
+async def owner_live_auto_start(request: Request):
+    owner = _binance_th_owner_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400,detail="ข้อมูลคำสั่งไม่ถูกต้อง")
+    if body.get("confirmLiveTrading") is not True:
+        raise HTTPException(status_code=428,detail="ต้องยืนยันเริ่มระบบเงินจริงอย่างชัดเจน")
+    if not OWNER_LIVE_MASTER_ON():
+        raise HTTPException(status_code=423,detail="สวิตช์เงินจริงฝั่งเซิร์ฟเวอร์ยังปิดอยู่")
+    try:
+        account = _owner_live_account()
+        free_usdt = next((Decimal(str(x.get("free") or "0")) for x in account.get("balances",[])
+                          if str(x.get("asset") or "").upper()=="USDT"),Decimal("0"))
+        if free_usdt <= 0:
+            raise HTTPException(status_code=423,detail="ไม่พบยอด USDT Free สำหรับเริ่มระบบ")
+        symbols = _owner_live_exchange_info()
+        if not any(x.get("status")=="TRADING" and str(x.get("quoteAsset"))=="USDT" for x in symbols):
+            raise HTTPException(status_code=503,detail="ไม่สามารถตรวจสอบคู่ USDT Spot ที่เปิดซื้อขายได้")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503,detail="ตรวจสอบบัญชี Binance TH ไม่ผ่าน: "+type(exc).__name__)
+    uid = str(owner["id"])
+    existing = _owner_live_control(uid)
+    now = datetime.now(timezone.utc).isoformat()
+    config = {"universe":"BINANCE_TH_SPOT_USDT","max_open_positions":3,"risk_per_trade_pct":0.5,
+              "max_daily_loss_pct":2,"stop_loss_pct":2,"take_profit_pct":3,
+              "scan_interval_seconds":OWNER_LIVE_ENGINE_INTERVAL}
+    if existing:
+        _sb_rest("blessing_owner_auto_trade_control",{"owner_user_id":"eq."+uid},"PATCH",{
+            "run_state":"RUNNING","run_mode":"LIVE","live_approved":True,"live_enabled":True,
+            "strategy_config":config,"requested_by":uid,"requested_at":now,"started_at":now,
+            "stopped_at":None,"last_error":None,"control_version":int(existing.get("control_version") or 0)+1,
+            "updated_at":now})
+    else:
+        _sb_rest("blessing_owner_auto_trade_control",{},"POST",{
+            "owner_user_id":uid,"run_state":"RUNNING","run_mode":"LIVE","live_approved":True,
+            "live_enabled":True,"strategy_config":config,"requested_by":uid,
+            "requested_at":now,"started_at":now,"control_version":1})
+    _sb_rest("blessing_owner_auto_trade_events",{},"POST",{
+        "owner_user_id":uid,"event_type":"OWNER_LIVE_STARTED","run_mode":"LIVE",
+        "event_data":{"source":"owner_confirmed_start","freeUSDT":str(free_usdt)}})
+    return {"ok":True,"runState":"RUNNING","runMode":"LIVE",
+            "freeUSDT":str(free_usdt),"maxOpenPositions":3,"riskPerTradePct":0.5,
+            "maxDailyLossPct":2,"stopLossPct":2,"takeProfitPct":3,
+            "message":"ระบบเงินจริงเริ่มทำงานแล้ว; ระบบจะเปิดสถานะใหม่เมื่อพบสัญญาณผ่านตัวกรองเท่านั้น"}
+
+
+@app.post("/binance-th/auto-trade/stop")
+def owner_live_auto_stop(request: Request):
+    owner = _binance_th_owner_auth(request)
+    uid = str(owner["id"])
+    control = _owner_live_control(uid)
+    if not control:
+        raise HTTPException(status_code=404,detail="ยังไม่มีการตั้งค่าระบบ Auto Trade")
+    now = datetime.now(timezone.utc).isoformat()
+    _sb_rest("blessing_owner_auto_trade_control",{"owner_user_id":"eq."+uid},"PATCH",{
+        "run_state":"STOPPED","stopped_at":now,"requested_by":uid,"requested_at":now,
+        "control_version":int(control.get("control_version") or 0)+1,"updated_at":now})
+    _sb_rest("blessing_owner_auto_trade_events",{},"POST",{
+        "owner_user_id":uid,"event_type":"OWNER_LIVE_STOPPED","run_mode":"LIVE",
+        "event_data":{"source":"owner_confirmed_stop","openPositionsRemainMonitored":True}})
+    return {"ok":True,"runState":"STOPPED",
+            "message":"หยุดเปิดสถานะใหม่แล้ว; ระบบยังติดตามและปิดสถานะที่เปิดอยู่ตาม Stop Loss/Take Profit"}
