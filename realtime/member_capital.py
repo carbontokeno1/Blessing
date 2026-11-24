@@ -102,8 +102,11 @@ def register_member_capital_routes(app, owner_auth, sb_rest, sb_rpc):
         if any(x in lower for x in ("ไม่จำกัด", "unlimited", "ไม่มีลิมิต")):
             action, amount = "unlimited", None
         else:
-            amount_matches = re.findall(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(ล้าน|ล\.?|พัน|k)?\s*(?:บาท|thb)?", lower)
-            amount_match = amount_matches[-1] if amount_matches else None
+            cleaned = lower[:member_match.start()] + lower[member_match.end():]
+            amount_matches = re.findall(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(ล้าน|ล\.?|พัน|k)?\s*(?:บาท|thb)?", cleaned)
+            if len(amount_matches) > 1:
+                raise HTTPException(status_code=422, detail="พบจำนวนเงินมากกว่าหนึ่งค่า กรุณาระบุคำสั่งใหม่ให้มีจำนวนเดียว")
+            amount_match = amount_matches[0] if amount_matches else None
             if not amount_match:
                 raise HTTPException(status_code=422, detail="กรุณาระบุจำนวนเงิน หรือใช้คำว่าไม่จำกัด")
             amount = float(amount_match.group(1).replace(",", ""))
