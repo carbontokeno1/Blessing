@@ -350,7 +350,10 @@ export default {
         return json({ ok: false, configured: !!(env.BINANCE_TH_API_KEY && String(env.BINANCE_TH_API_KEY).trim()), connected: false, message: error?.message || "Binance TH connection failed" }, 502);
       }
     }
-    if (pathname === "/admin-members" || pathname === "/member") {
+    if (pathname === "/admin-members") {
+      return env.ASSETS.fetch(new Request(new URL("/admin-members.html", request.url), request));
+    }
+    if (pathname === "/member") {
       return Response.redirect(new URL("/", request.url), 302);
     }
     if (pathname === "/paper-reports") {
