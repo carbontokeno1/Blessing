@@ -4139,32 +4139,8 @@ def _dual_paper_worker_cycle():
                         "user_id":"eq."+uid,"status":"eq.open","limit":"6"
                     }) or []
                     # No artificial max-open-position cutoff.
-        experiment_by_user = {str(exp["user_id"]): exp for exp in experiments}
-        ranked_by_user = {}
-        for (uid,market), opportunities in ranked_by_user_market.items():
-            for item in opportunities:
-                ranked_by_user.setdefault(uid, []).append((market,item))
-        for uid, ranked in ranked_by_user.items():
-            ranked.sort(key=lambda pair: (pair[1]["rank"], pair[1]["decision"].get("netEdgeProxyPct",0), pair[1]["decision"].get("momentumProxyPct",0)), reverse=True)
-            opened_stocks_this_cycle = 0
-            for market,item in ranked:
-                if item["rank"] <= 0:
-                    continue
-                # No per-cycle stock entry cap.
-                cooldown_key = uid + ":" + market + ":" + item["symbol"]
-                if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
-                    continue
-                try:
-                    result=_dual_try_adaptive_entry(experiment_by_user[uid],item["portfolio"],{**item["raw"],**item["decision"]},market)
-                    if result:
-                        entries_opened += 1
-                        if market == "stocks":
-                            opened_stocks_this_cycle += 1
-                        selected_markets.setdefault(uid,{}).setdefault(market,[]).append({"symbol":item["symbol"],"opportunityScore":item["rank"],"netEdgeProxyPct":item["decision"].get("netEdgeProxyPct")})
-                        DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key]=time.time()
-                except Exception as exc:
-                    log.info("Adaptive entry skipped %s %s (%s)",market,item["symbol"],type(exc).__name__)
-                    continue
+        # The automatic per-portfolio crypto and stock loops above are the sole
+        # entry paths. Do not re-run the removed experiment-ranked legacy path.
         DUAL_PAPER_WORKER_STATE.update({
             "status":"running","lastCycleAt":now.isoformat(),"lastError":None,
             "cycles":DUAL_PAPER_WORKER_STATE.get("cycles",0)+1,
