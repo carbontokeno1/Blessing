@@ -26,6 +26,7 @@ from adaptive_strategy import adaptive_decision, build_binance_th_candidates, ex
 from dual_portfolio import portfolio_overview
 from fastapi.middleware.cors import CORSMiddleware
 from member_capital import register_member_capital_routes
+from owner_auto_trade import register_owner_auto_trade
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("blessing-realtime")
@@ -2543,6 +2544,13 @@ def _binance_th_signed_request(method: str, path: str, params: dict, api_key: st
     if isinstance(payload, dict) and isinstance(payload.get("code"), int) and payload.get("code") < 0:
         raise HTTPException(status_code=502, detail=str(payload.get("msg") or "Binance TH API error"))
     return payload
+
+
+register_owner_auto_trade(
+    app, _binance_th_owner_auth, _sb_rest, _sb_rpc,
+    _binance_th_signed_request, BINANCE_API_KEY, BINANCE_API_SECRET,
+    BINANCE_TH_API_BASE, lambda: altcoin_scanner(refresh=0), state,
+)
 
 
 @app.get("/binance-th/live-readiness")
