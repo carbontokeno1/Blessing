@@ -594,6 +594,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             "owner_user_id": "eq." + uid, "order": "created_at.desc", "limit": "30"
         }) or []
         return {"ok": True, "control": control, "worker": dict(_worker_state),
+                "engine": dict(_worker_state), "masterSwitch": _master_on(),
                 "positions": positions, "events": events,
                 "serverMasterSwitch": _master_on(), "liveOrdersEnabled": _master_on()}
 
@@ -614,8 +615,16 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         account = account_snapshot()
         free_usdt = sum((_d(x.get("free")) for x in account.get("balances", [])
                          if isinstance(x, dict) and str(x.get("asset") or "").upper() == "USDT"), Decimal("0"))
-        if free_usdt <= 0:
-            raise HTTPException(status_code=423, detail="ไม่พบยอด USDT Free สำหรับเปิดสถานะ")
+        protected_assets = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USDP", "DAI",
+                            "BTC", "ETH", "BNB", "SOL", "XRP"}
+        has_convertible_balance = any(
+            isinstance(x, dict)
+            and str(x.get("asset") or "").upper() not in protected_assets
+            and _d(x.get("free")) > 0
+            for x in account.get("balances", [])
+        )
+        if free_usdt <= 0 and not has_convertible_balance:
+            raise HTTPException(status_code=423, detail="ไม่พบยอด USDT Free หรือ Altcoin ที่เข้าเกณฑ์สำหรับแปลงเป็น USDT")
         control = owner_control(uid)
         if control.get("run_state") in ("RUNNING", "STARTING", "STOPPING"):
             raise HTTPException(status_code=409, detail="ระบบกำลังทำงานหรือกำลังหยุดอยู่แล้ว")
