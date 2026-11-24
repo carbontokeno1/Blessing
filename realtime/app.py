@@ -3951,15 +3951,15 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     equity += market_value
     if any(p.get("symbol")==symbol for p in positions):
         return None
-    if market == "stocks" and len(positions) >= 5:
+    if market == "stocks" and len(positions) >= min(5, max(1, int(portfolio.get("max_open_positions") or 5))):
         return None
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
     if market == "stocks":
-        # Stock automation uses a fixed -25% stop and a configured TP inside +5%..+15%.
+        # Member Stock Paper: automatic +20% take-profit / -25% stop-loss.
         stop_pct = 25.0
-        target_pct = float(strategy_config.get("stocks_take_profit_pct", 10.0))
-        if not 5.0 <= target_pct <= 15.0:
-            target_pct = 10.0
+        target_pct = float(strategy_config.get("stocks_take_profit_pct", 20.0))
+        if not 5.0 <= target_pct <= 30.0:
+            target_pct = 20.0
     else:
         stop_pct = float(strategy_config.get(market + "_stop_loss_pct", 1.5))
         target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0))
@@ -3983,7 +3983,13 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     remaining_allocation = max(0.0, total_equity * max_total_allocation_pct / 100 - total_exposure)
     # No reserve: each entry targets a 6% slice of combined crypto + stock equity.
     # Crypto has no per-cycle symbol-count cap; all entries still share one 30% allocation cap.
-    notional = min(cash_balance, remaining_allocation, total_equity * min(max_notional_pct, 100.0) / 100)
+    notional_cap = total_equity * min(max_notional_pct, 100.0) / 100
+    if market == "stocks":
+        # Split the stock portfolio's own equity across its configured concurrent slots.
+        max_positions = min(5, max(1, int(portfolio.get("max_open_positions") or 5)))
+        stock_equity = cash_balance + market_value
+        notional_cap = min(notional_cap, stock_equity / max_positions)
+    notional = min(cash_balance, remaining_allocation, notional_cap)
     if notional < 1.0:
         return None
     fill_price = market_price * 1.0005
@@ -4116,7 +4122,7 @@ def _dual_paper_worker_cycle():
             for portfolio in enabled_stock_portfolios:
                 uid = str(portfolio["user_id"])
                 stock_experiment = {"id":"AUTO-STOCK", "config":{"stocks_stop_loss_pct":25,
-                    "stocks_take_profit_pct":10,"max_notional_pct":100,"max_total_allocation_pct":100}}
+                    "stocks_take_profit_pct":20,"max_notional_pct":100,"max_total_allocation_pct":100}}
                 ranked_stock_candidates = sorted(
                     stock_candidates.items(),
                     key=lambda item: float(item[1][1].get("opportunityScore") or 0),
@@ -4145,7 +4151,8 @@ def _dual_paper_worker_cycle():
                         "select":"id","portfolio_id":"eq."+str(portfolio["id"]),
                         "user_id":"eq."+uid,"status":"eq.open","limit":"6"
                     }) or []
-                    if len(open_now) >= 5:
+                    max_stock_positions = min(5, max(1, int(portfolio.get("max_open_positions") or 5)))
+                    if len(open_now) >= max_stock_positions:
                         break
         experiment_by_user = {str(exp["user_id"]): exp for exp in experiments}
         ranked_by_user = {}
