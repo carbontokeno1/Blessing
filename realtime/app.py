@@ -1444,13 +1444,21 @@ def _binance_public_tickers():
         price = _num(item.get("price"), 0) or 0
         change_pct = _num(item.get("change24hPct"), 0) or 0
         open_price = price / (1 + change_pct / 100) if price > 0 and change_pct > -99.9 else 0
+        try:
+            book_age = now - datetime.fromisoformat(
+                str(item.get("bookReceivedAt")).replace("Z", "+00:00")
+            ).timestamp()
+        except Exception:
+            book_age = 999999
+        bid = _num(item.get("bid"), 0) or 0 if 0 <= book_age <= 30 else 0
+        ask = _num(item.get("ask"), 0) or 0 if 0 <= book_age <= 30 else 0
         if price <= 0 or open_price <= 0:
             continue
         rows.append({
             "symbol": pair, "lastPrice": price,
             "quoteVolume": _num(item.get("quoteVolume24h"), 0) or 0,
-            "openPrice": open_price, "bidPrice": _num(item.get("bid"), 0) or 0,
-            "askPrice": _num(item.get("ask"), 0) or 0,
+            "openPrice": open_price, "bidPrice": bid,
+            "askPrice": ask,
             "closeTime": int(_num(item.get("eventTime"), 0) or 0),
         })
     if not rows:
