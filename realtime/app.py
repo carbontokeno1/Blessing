@@ -4315,7 +4315,7 @@ def _member_slot_engine_cycle():
         # Heartbeat keeps owner reports visibly current even when no strategy signal qualifies.
         heartbeat = now.isoformat()
         _sb_rest("blessing_paper_member_slots", {"enabled":"eq.true","mode":"eq.paper"},
-                 method="PATCH", body={"status":"running","updated_at":heartbeat})
+                 method="PATCH", body={"updated_at":heartbeat})
         _sb_rest("blessing_stock_paper_member_slots", {"enabled":"eq.true"},
                  method="PATCH", body={"status":"running","updated_at":heartbeat})
         crypto_slots = _sb_rest("blessing_paper_member_slots", {
