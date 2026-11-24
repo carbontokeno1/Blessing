@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ema, rsi, features, evaluateSignal, chooseStrategy, positionSizing, LIMITS } from "../server.mjs";
+import { ema, rsi, features, evaluateSignal, chooseStrategy, positionSizing, positionMarkMetrics, stockPerformanceReport, LIMITS } from "../server.mjs";
 
 function sampleBars(n=180, trend=0.08) {
   const bars=[]; let price=100;
@@ -34,4 +34,26 @@ test("invalid and short-only stop levels are rejected",()=>{
 test("a trend signal can be evaluated deterministically",()=>{
   const bars=sampleBars(180,0.2); const signal=evaluateSignal(bars,"trend");
   assert.ok(signal===null || signal.strategy==="trend");
+});
+
+test("position mark metrics report entry-relative change and net paper P/L",()=>{
+  const m=positionMarkMetrics({entryPrice:100,markPrice:110,qty:1,entryCostTHB:3403.4},34,0.001,0.0005);
+  assert.equal(m.changePct,10);
+  assert.ok(m.unrealizedNetTHB>0);
+  assert.ok(m.netReturnPct>0);
+});
+test("stock performance report calculates win rate and strategy breakdown",()=>{
+  const report=stockPerformanceReport([
+    {market:"stocks",strategy:"trend",netTHB:100},
+    {market:"stocks",strategy:"trend",netTHB:-50},
+    {market:"stocks",strategy:"momentum",netTHB:25},
+    {market:"crypto",strategy:"trend",netTHB:999}
+  ],[]);
+  assert.equal(report.closedTrades,3);
+  assert.equal(report.wins,2);
+  assert.equal(report.losses,1);
+  assert.equal(report.winRatePct,66.7);
+  assert.equal(report.netProfitTHB,75);
+  assert.equal(report.profitFactor,2.5);
+  assert.equal(report.byStrategy.length,2);
 });
