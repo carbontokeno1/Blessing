@@ -4281,6 +4281,16 @@ def adaptive_paper_report(request: Request):
 # Independent automated Paper engine for the ten unassigned member slots.
 # Each slot has its own THB cash ledger, positions and order history.
 # This engine never references user portfolios and never submits live orders.
+# Leveraged/inverse ETFs are excluded from automated stock Paper entries.
+# Explicit denylist is intentionally fail-closed for known daily-reset products.
+STOCK_PAPER_BLOCKED_LEVERAGED_ETFS = {
+    "SOXL", "SOXS", "TQQQ", "SQQQ", "UPRO", "SPXU", "TECL", "TECS",
+    "FAS", "FAZ", "LABU", "LABD", "NUGT", "DUST", "JNUG", "JDST",
+    "DRN", "DRV", "CURE", "SDOW", "UDOW", "TNA", "TZA", "URTY", "SRTY",
+    "UCO", "SCO", "BOIL", "KOLD", "GUSH", "DRIP", "UVXY", "SVXY",
+    "VXX", "AGQ", "ZSL", "YINN", "YANG", "BITX", "CONL", "MSTU", "MSTZ"
+}
+
 MEMBER_SLOT_ENGINE_INTERVAL = max(20, int(os.getenv("MEMBER_SLOT_ENGINE_INTERVAL", "30")))
 MEMBER_SLOT_ENGINE_THREAD = None
 MEMBER_SLOT_ENGINE_LOCK = threading.Lock()
@@ -4360,9 +4370,11 @@ def _member_slot_engine_cycle():
         stock_candidates = {}
         if stock_fresh:
             for raw in (stock_scan.get("candidates") or []):
-                symbol = str(raw.get("symbol") or "").upper()
+                symbol = str(raw.get("symbol") or "").upper().strip()
                 price = _num(raw.get("price"), 0)
-                if not symbol or not price:
+                # Keep leveraged and inverse ETFs out of member-slot stock Paper.
+                # These products amplify daily moves and can create outsized losses.
+                if not symbol or not price or symbol in STOCK_PAPER_BLOCKED_LEVERAGED_ETFS:
                     continue
                 normalized = dict(raw)
                 normalized["rvol"] = normalized.get("relativeVolume")
