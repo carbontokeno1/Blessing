@@ -55,6 +55,27 @@ async function binanceThAccount(request) {
   }
 }
 
+async function binanceThPlaceOrder(request) {
+  const authorization = request.headers.get("authorization") || "";
+  if (!authorization.startsWith("Bearer ")) {
+    return json({ ok: false, message: "กรุณาเข้าสู่ระบบก่อน" }, 401);
+  }
+  try {
+    const body = await request.json();
+    const response = await fetch("https://blessing-webull-realtime-djfm.onrender.com/binance-th/order", {
+      method: "POST",
+      headers: { "accept": "application/json", "content-type": "application/json", "authorization": authorization },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(25000),
+      cache: "no-store"
+    });
+    const payload = await response.json().catch(() => ({}));
+    return json(payload, response.status);
+  } catch (error) {
+    return json({ ok: false, message: "ส่งคำขอไป Render ไม่สำเร็จ: " + (error?.message || "network_error") }, 502);
+  }
+}
+
 const EXCHANGES = {
   Binance: {
     tickers: "https://data-api.binance.vision/api/v3/ticker/24hr",
@@ -211,6 +232,15 @@ export default {
         return new Response(request.method === "HEAD" ? null : response.body, { status: response.status, headers });
       } catch (error) {
         return json({ status: "source_error", message: error?.message || "scanner_failed", candidates: [], updatedAt: new Date().toISOString() }, 502);
+      }
+    }
+    if (pathname === "/api/binance-th/order") {
+      if (request.method !== "POST") return json({ ok: false, message: "POST only" }, 405, { "allow": "POST" });
+      try {
+        if (!(await isBlessingOwner(request))) return json({ ok: false, message: "ต้องเข้าสู่ระบบด้วยบัญชี Super Admin ของ BLESSING" }, 403);
+        return await binanceThPlaceOrder(request);
+      } catch (error) {
+        return json({ ok: false, message: error?.message || "Binance TH live order failed" }, 502);
       }
     }
     if (pathname === "/api/binance-th/account") {
