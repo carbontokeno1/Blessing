@@ -1825,6 +1825,23 @@ def admin_member_portfolios(request: Request):
         })
     for row in rows:
         row["paper"] = None
+        row["stock_paper"] = None
+        if row.get("portfolio_type") == "stock_paper":
+            stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
+                "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,max_open_positions,enabled,status,assigned_user_id",
+                "slot_no": "eq." + str(row["member_no"]),
+                "limit": "1",
+            })
+            if stock_slots:
+                stock_slot = stock_slots[0]
+                open_positions = _sb_rest("blessing_stock_paper_slot_positions", {
+                    "select": "id",
+                    "slot_id": "eq." + str(stock_slot["id"]),
+                    "status": "eq.open",
+                    "limit": "10",
+                })
+                stock_slot["open_positions_count"] = len(open_positions)
+                row["stock_paper"] = stock_slot
         if row.get("paper_slot_id"):
             slots = _sb_rest("blessing_paper_member_slots", {
                 "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,max_open_positions,enabled,status,assigned_user_id",
