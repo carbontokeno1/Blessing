@@ -472,6 +472,12 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                 item["unrealizedPnl"] = None
                 item["marketValue"] = None
             priced_positions.append(item)
+        unrealized_total = sum((_d(x.get("unrealizedPnl")) for x in priced_positions), Decimal("0"))
+        closed_positions = sb_rest("blessing_owner_live_positions", {
+            "select": "realized_pnl", "owner_user_id": "eq." + uid,
+            "status": "eq.CLOSED", "limit": "1000"
+        }) or []
+        realized_total = sum((_d(x.get("realized_pnl")) for x in closed_positions), Decimal("0"))
         orders = sb_rest("blessing_owner_live_order_intents", {
             "select": "client_order_id,symbol,side,status,executed_quantity,cumulative_quote_quantity,updated_at",
             "owner_user_id": "eq." + uid, "order": "created_at.desc", "limit": "20"
@@ -482,6 +488,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             "totalValueTHB": _fmt(total_usdt * usdt_thb) if usdt_thb is not None else None,
             "usdtThb": _fmt(usdt_thb) if usdt_thb is not None else None,
             "assets": assets, "positions": priced_positions, "orders": orders,
+            "unrealizedPnlUSDT": _fmt(unrealized_total), "realizedPnlUSDT": _fmt(realized_total),
             "reservedByAsset": {k: _fmt(v) for k, v in reserved.items()},
             "unpricedAssets": unpriced,
             "valuationNote": "มูลค่าประเมินจากคู่ USDT ที่มีราคา; สินทรัพย์ที่ไม่มีคู่ตรงจะแสดงเป็นยังไม่ประเมิน"
