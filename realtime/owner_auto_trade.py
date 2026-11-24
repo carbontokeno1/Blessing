@@ -388,6 +388,105 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             threading.Thread(target=worker_loop, name="blessing-owner-live-auto-trade", daemon=True).start()
             _worker_started = True
 
+
+    @app.get("/binance-th/auto-trade/portfolio")
+    def owner_auto_trade_portfolio(request: Request):
+        owner = owner_auth(request)
+        uid = str(owner["id"])
+        if uid != OWNER_ID:
+            raise HTTPException(status_code=403, detail="เฉพาะเจ้าของระบบเท่านั้น")
+        account = account_snapshot()
+        now = datetime.now(timezone.utc).isoformat()
+        balances = [x for x in account.get("balances", []) if isinstance(x, dict)]
+        active = sb_rest("blessing_owner_live_order_intents", {
+            "select": "client_order_id,symbol,side,status,reserved_asset,remaining_reserved_amount",
+            "owner_user_id": "eq." + uid,
+            "status": "in.(RESERVED,SUBMITTING,NEW,PARTIALLY_FILLED,UNKNOWN,RECONCILIATION_REQUIRED)",
+            "limit": "1000"
+        }) or []
+        reserved = {}
+        for row in active:
+            asset = str(row.get("reserved_asset") or "").upper()
+            if asset:
+                reserved[asset] = reserved.get(asset, Decimal("0")) + _d(row.get("remaining_reserved_amount"))
+        positions = sb_rest("blessing_owner_live_positions", {
+            "select": "*", "owner_user_id": "eq." + uid,
+            "status": "in.(OPEN,CLOSING,RECONCILIATION_REQUIRED)",
+            "order": "opened_at.desc", "limit": "100"
+        }) or []
+        held_bases = {str(p.get("base_asset") or "").upper() for p in positions}
+        import requests
+        assets = []
+        total_usdt = Decimal("0")
+        unpriced = []
+        stable = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USDP"}
+        for row in balances:
+            asset = str(row.get("asset") or "").upper()
+            free = _d(row.get("free"))
+            locked = _d(row.get("locked"))
+            amount = free + locked
+            if not asset or amount <= 0:
+                continue
+            price_usdt = None
+            price_source = None
+            if asset in stable:
+                price_usdt = Decimal("1")
+                price_source = "stablecoin_estimate"
+            else:
+                try:
+                    price_usdt = fresh_price(asset + "USDT")
+                    price_source = asset + "USDT"
+                except Exception:
+                    price_usdt = None
+            value_usdt = amount * price_usdt if price_usdt is not None else None
+            if value_usdt is not None:
+                total_usdt += value_usdt
+            else:
+                unpriced.append(asset)
+            reserved_amount = reserved.get(asset, Decimal("0"))
+            available = max(Decimal("0"), free - reserved_amount)
+            assets.append({
+                "asset": asset, "free": _fmt(free), "locked": _fmt(locked),
+                "reserved": _fmt(reserved_amount), "available": _fmt(available),
+                "total": _fmt(amount), "priceUSDT": _fmt(price_usdt) if price_usdt is not None else None,
+                "valueUSDT": _fmt(value_usdt) if value_usdt is not None else None,
+                "priceSource": price_source, "inOpenPosition": asset in held_bases
+            })
+        usdt_thb = None
+        try:
+            usdt_thb = fresh_price("USDTTHB")
+        except Exception:
+            pass
+        priced_positions = []
+        for pos in positions:
+            item = dict(pos)
+            try:
+                px = fresh_price(str(pos.get("symbol") or ""))
+                qty = _d(pos.get("quantity"))
+                entry = _d(pos.get("average_entry_price"))
+                item["markPrice"] = _fmt(px)
+                item["unrealizedPnl"] = _fmt((px - entry) * qty)
+                item["marketValue"] = _fmt(px * qty)
+            except Exception:
+                item["markPrice"] = None
+                item["unrealizedPnl"] = None
+                item["marketValue"] = None
+            priced_positions.append(item)
+        orders = sb_rest("blessing_owner_live_order_intents", {
+            "select": "client_order_id,symbol,side,status,executed_quantity,cumulative_quote_quantity,updated_at",
+            "owner_user_id": "eq." + uid, "order": "created_at.desc", "limit": "20"
+        }) or []
+        return {
+            "ok": True, "asOf": now, "quoteAsset": "USDT",
+            "totalValueUSDT": _fmt(total_usdt),
+            "totalValueTHB": _fmt(total_usdt * usdt_thb) if usdt_thb is not None else None,
+            "usdtThb": _fmt(usdt_thb) if usdt_thb is not None else None,
+            "assets": assets, "positions": priced_positions, "orders": orders,
+            "reservedByAsset": {k: _fmt(v) for k, v in reserved.items()},
+            "unpricedAssets": unpriced,
+            "valuationNote": "มูลค่าประเมินจากคู่ USDT ที่มีราคา; สินทรัพย์ที่ไม่มีคู่ตรงจะแสดงเป็นยังไม่ประเมิน"
+        }
+
     @app.get("/binance-th/auto-trade/status")
     def owner_auto_trade_status(request: Request):
         owner = owner_auth(request)
