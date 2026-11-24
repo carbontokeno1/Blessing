@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import urllib.parse
 import requests
+from requests.adapters import HTTPAdapter
 import json
 import websockets
 import logging
@@ -1749,19 +1750,27 @@ def _sb_headers(prefer=None):
     return headers
 
 
+# Reuse pooled HTTP connections for Supabase REST calls. This avoids a new TLS
+# handshake for every small query, especially on the admin/member dashboards.
+_SB_HTTP = requests.Session()
+_SB_ADAPTER = HTTPAdapter(pool_connections=32, pool_maxsize=64, max_retries=0)
+_SB_HTTP.mount("https://", _SB_ADAPTER)
+_SB_HTTP.mount("http://", _SB_ADAPTER)
+
+
 def _sb_rest(table, params=None, method="GET", body=None):
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         raise RuntimeError("SUPABASE_WORKER_CONFIG_MISSING")
-    response = requests.request(method, SUPABASE_URL + "/rest/v1/" + table,
+    response = _SB_HTTP.request(method, SUPABASE_URL + "/rest/v1/" + table,
                                 params=params or {}, json=body, headers=_sb_headers("return=representation"),
-                                timeout=(5, 15))
+                                timeout=(3, 10))
     response.raise_for_status()
     return response.json() if response.content else []
 
 
 def _sb_rpc(name, payload):
-    response = requests.post(SUPABASE_URL + "/rest/v1/rpc/" + name, json=payload,
-                             headers=_sb_headers(), timeout=(5, 15))
+    response = _SB_HTTP.post(SUPABASE_URL + "/rest/v1/rpc/" + name, json=payload,
+                             headers=_sb_headers(), timeout=(3, 10))
     response.raise_for_status()
     return response.json()
 
@@ -1964,7 +1973,7 @@ async def member_control_own_portfolio(request: Request):
 
 @app.get("/admin/member-portfolios")
 def admin_member_portfolios(request: Request):
-    """Owner-only inventory of the four isolated portfolios reserved for each of ten demo members."""
+    """Owner-only portfolio inventory. Bulk reads keep the 40-portfolio screen fast."""
     _binance_th_owner_auth(request)
     rows = _sb_rest("blessing_member_portfolio_registry", {
         "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,assigned_user_id,paper_slot_id,allocated_capital,status,enabled,live_trading_approved,created_at,updated_at",
@@ -1977,41 +1986,52 @@ def admin_member_portfolios(request: Request):
             "expected": 40, "found": len(rows),
             "message": "ทะเบียนพอร์ตสมาชิกยังไม่ครบ 40 พอร์ต จึงยังไม่พร้อมเปิดใช้งาน",
         })
+
+    # Fetch all paper slots and open-position counts in batches instead of
+    # issuing two additional REST requests for each member (40+ requests -> 5).
+    stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
+        "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,max_open_positions,enabled,status,assigned_user_id",
+        "slot_no": "in.(" + ",".join(str(n) for n in range(1, 11)) + ")",
+        "limit": "20",
+    })
+    stock_ids = [str(x["id"]) for x in stock_slots if x.get("id")]
+    stock_positions = _sb_rest("blessing_stock_paper_slot_positions", {
+        "select": "slot_id,id", "slot_id": "in.(" + ",".join(stock_ids) + ")",
+        "status": "eq.open", "limit": "1000",
+    }) if stock_ids else []
+    stock_counts = {}
+    for pos in stock_positions:
+        key = str(pos.get("slot_id"))
+        stock_counts[key] = stock_counts.get(key, 0) + 1
+    stock_by_member = {}
+    for slot in stock_slots:
+        slot["open_positions_count"] = stock_counts.get(str(slot.get("id")), 0)
+        stock_by_member[str(slot.get("slot_no"))] = slot
+
+    crypto_ids = list(dict.fromkeys(str(x["paper_slot_id"]) for x in rows if x.get("paper_slot_id")))
+    crypto_slots = _sb_rest("blessing_paper_member_slots", {
+        "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,max_open_positions,enabled,status,assigned_user_id",
+        "id": "in.(" + ",".join(crypto_ids) + ")",
+        "limit": "20",
+    }) if crypto_ids else []
+    crypto_slot_ids = [str(x["id"]) for x in crypto_slots if x.get("id")]
+    crypto_positions = _sb_rest("blessing_paper_slot_positions", {
+        "select": "slot_id,id", "slot_id": "in.(" + ",".join(crypto_slot_ids) + ")",
+        "status": "eq.open", "limit": "1000",
+    }) if crypto_slot_ids else []
+    crypto_counts = {}
+    for pos in crypto_positions:
+        key = str(pos.get("slot_id"))
+        crypto_counts[key] = crypto_counts.get(key, 0) + 1
+    crypto_by_id = {}
+    for slot in crypto_slots:
+        slot["open_positions_count"] = crypto_counts.get(str(slot.get("id")), 0)
+        crypto_by_id[str(slot.get("id"))] = slot
+
     for row in rows:
-        row["paper"] = None
-        row["stock_paper"] = None
-        if row.get("portfolio_type") == "stock_paper":
-            stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
-                "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,max_open_positions,enabled,status,assigned_user_id",
-                "slot_no": "eq." + str(row["member_no"]),
-                "limit": "1",
-            })
-            if stock_slots:
-                stock_slot = stock_slots[0]
-                open_positions = _sb_rest("blessing_stock_paper_slot_positions", {
-                    "select": "id",
-                    "slot_id": "eq." + str(stock_slot["id"]),
-                    "status": "eq.open",
-                    "limit": "10",
-                })
-                stock_slot["open_positions_count"] = len(open_positions)
-                row["stock_paper"] = stock_slot
-        if row.get("paper_slot_id"):
-            slots = _sb_rest("blessing_paper_member_slots", {
-                "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,max_open_positions,enabled,status,assigned_user_id",
-                "id": "eq." + str(row["paper_slot_id"]),
-                "limit": "1",
-            })
-            if slots:
-                slot = slots[0]
-                open_positions = _sb_rest("blessing_paper_slot_positions", {
-                    "select": "id",
-                    "slot_id": "eq." + str(slot["id"]),
-                    "status": "eq.open",
-                    "limit": "10",
-                })
-                slot["open_positions_count"] = len(open_positions)
-                row["paper"] = slot
+        row["paper"] = crypto_by_id.get(str(row.get("paper_slot_id"))) if row.get("paper_slot_id") else None
+        row["stock_paper"] = stock_by_member.get(str(row.get("member_no"))) if row.get("portfolio_type") == "stock_paper" else None
+
     return {
         "ok": True,
         "memberSlots": 10,
