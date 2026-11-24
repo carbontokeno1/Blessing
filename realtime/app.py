@@ -4317,7 +4317,7 @@ def _member_slot_engine_cycle():
         _sb_rest("blessing_paper_member_slots", {"enabled":"eq.true","mode":"eq.paper"},
                  method="PATCH", body={"updated_at":heartbeat})
         _sb_rest("blessing_stock_paper_member_slots", {"enabled":"eq.true"},
-                 method="PATCH", body={"status":"running","updated_at":heartbeat})
+                 method="PATCH", body={"updated_at":heartbeat})
         crypto_slots = _sb_rest("blessing_paper_member_slots", {
             "select":"id,slot_no,initial_capital,cash_balance,max_open_positions,enabled,status",
             "enabled":"eq.true", "mode":"eq.paper", "limit":"20"
