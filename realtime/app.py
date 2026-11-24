@@ -36,7 +36,8 @@ ALPACA_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET = os.getenv("ALPACA_API_SECRET", "")
 ALPACA_FEED = os.getenv("ALPACA_FEED", "iex").lower()
 BINANCE_TH_API_BASE = os.getenv("BINANCE_TH_API_BASE", "https://api.binance.th").rstrip("/")
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
+BINANCE_API_KEY = (os.getenv("BINANCE_TH_API_KEY", "") or os.getenv("BINANCE_API_KEY", "")).strip()
+BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")).strip()
 # REST-only by default avoids exhausting Alpaca Basic single-stream connection limits.
 ALPACA_STREAM_ENABLED = os.getenv("ALPACA_STREAM_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 REGION = os.getenv("WEBULL_REGION", "us")
@@ -1454,49 +1455,6 @@ def _binance_1m_klines(symbol: str):
     return bars
 
 
-def _binance_1m_klines(symbol: str):
-    last_error = None
-    rows = None
-    for host in ("https://data-api.binance.vision", "https://api.binance.com"):
-        try:
-            response = requests.get(
-                host + "/api/v3/klines",
-                params={"symbol": symbol, "interval": "1m", "limit": 65},
-                timeout=(4, 10),
-                headers={"User-Agent": "BlessingTrade-MarketScanner/1.0"},
-            )
-            response.raise_for_status()
-            rows = response.json()
-            if isinstance(rows, list):
-                break
-            raise RuntimeError("BINANCE_INVALID_KLINE_RESPONSE")
-        except Exception as exc:
-            last_error = exc
-    if not isinstance(rows, list):
-        raise RuntimeError("BINANCE_KLINE_ALL_HOSTS_FAILED:" + type(last_error).__name__)
-    now_ms = int(time.time() * 1000)
-    bars = []
-    for row in rows:
-        if not isinstance(row, list) or len(row) < 8:
-            continue
-        try:
-            close_time = int(row[6])
-            if close_time >= now_ms:
-                continue
-            bars.append({
-                "openTime": int(row[0]),
-                "open": float(row[1]),
-                "high": float(row[2]),
-                "low": float(row[3]),
-                "close": float(row[4]),
-                "volume": float(row[5]),
-                "closeTime": close_time,
-                "quoteVolume": float(row[7]),
-            })
-        except (TypeError, ValueError, IndexError):
-            continue
-    return bars
-
 
 def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     price = float(row.get("price") or row.get("lastPrice") or 0)
@@ -2368,8 +2326,8 @@ def admin_member_portfolios_report(request: Request):
 def binance_th_account_read(request: Request):
     """Read-only Binance TH account snapshot. No order endpoints are implemented here."""
     _binance_th_owner_auth(request)
-    api_key = os.getenv("BINANCE_TH_API_KEY", "").strip()
-    api_secret = os.getenv("BINANCE_TH_API_SECRET", "").strip()
+    api_key = BINANCE_API_KEY
+    api_secret = BINANCE_API_SECRET
     if not api_key or not api_secret:
         missing = "BINANCE_TH_API_KEY" if not api_key else "BINANCE_TH_API_SECRET"
         return {
