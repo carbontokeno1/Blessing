@@ -3868,22 +3868,17 @@ def _dual_stock_buy_lock(user_id: str):
 
 
 def _binance_th_adaptive_candidates():
-    """Use the same Binance TH live-ticker + official REST-candle scanner as the dashboard."""
-    payload = altcoin_scanner(refresh=0)
-    if not isinstance(payload, dict) or payload.get("status") != "ok" or payload.get("provider") != "Binance TH Spot API":
-        return []
-    output = []
-    for row in payload.get("candidates") or []:
-        if not isinstance(row, dict) or row.get("candleError"):
-            continue
-        symbol = str(row.get("symbol") or "").upper()
-        price = _num(row.get("price"), 0) or 0
-        if not symbol.endswith("USDT") or price <= 0:
-            continue
-        output.append({**row, "symbol": symbol, "price": price,
-                       "source": "Binance TH Spot API + live WebSocket",
-                       "relativeVolume": row.get("rvol")})
-    return output
+    """Build candidates from Binance TH's live WebSocket history; fail closed on stale/incomplete data."""
+    with CRYPTO_TICKER_HISTORY_LOCK:
+        history = {symbol: list(rows) for symbol, rows in CRYPTO_TICKER_HISTORY.items()}
+    output = build_binance_th_candidates(history)
+    return [{
+        **row, "symbol": str(row.get("symbol") or "").upper(),
+        "price": float(row.get("price") or 0),
+        "source": "Binance TH live WebSocket · 60-minute history",
+        "relativeVolume": row.get("rvol"),
+    } for row in output if str(row.get("symbol") or "").upper().endswith("USDT")
+       and float(row.get("price") or 0) > 0]
 
 def _dual_equity_snapshot(experiment: dict, portfolio: dict, positions: list):
     """Persist a net-of-fees-and-estimated-slippage equity point for the 14-day run."""
