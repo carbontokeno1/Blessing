@@ -73,7 +73,7 @@ def register_member_capital_routes(app, owner_auth, sb_rest, sb_rpc):
         raw = str(command or "").strip()
         if not raw or len(raw) > 500:
             raise HTTPException(status_code=400, detail="กรุณาพิมพ์คำสั่งไม่เกิน 500 ตัวอักษร")
-        member_match = re.search(r"(?:สมาชิก\s*)?(70[1-9]|710)\\b", raw)
+        member_match = re.search(r"(?:สมาชิก\s*)?(70[1-9]|710)\b", raw)
         if not member_match:
             raise HTTPException(status_code=422, detail="กรุณาระบุหมายเลขสมาชิก 701–710")
         member_no = int(member_match.group(1))
