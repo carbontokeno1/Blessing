@@ -913,16 +913,32 @@ async function loadAdminPortfolioReport(){
    '<div class="card metric"><label>กำไร/ขาดทุนสุทธิ</label><strong class="'+cls(t.paperNetPnl)+'">'+pnl(t.paperNetPnl)+'</strong><div class="small muted">Realized '+pnl(t.paperRealizedPnl)+' · Unrealized '+pnl(t.paperUnrealizedPnl)+'</div></div>'+
    '<div class="card metric"><label>สถานะเปิด / คำสั่ง Fill</label><strong>'+Number(t.openPositions||0)+' / '+Number(t.filledOrders||0)+'</strong><div class="small muted">Paper '+Number(t.paperPortfolios||0)+' · Live LOCKED '+Number(t.liveLocked||0)+'</div></div>';
   const labels={crypto_paper:'คริปโต Paper',crypto_live:'คริปโต Live',stock_paper:'หุ้น Paper',stock_live:'หุ้น Live'};
-  body.innerHTML='<div class="tablewrap"><table><thead><tr><th>สมาชิก</th><th>พอร์ต</th><th>ทุน</th><th>เงินสด</th><th>Equity</th><th>P/L สุทธิ</th><th>สถานะเปิด</th><th>คำสั่ง Fill</th><th>สถานะ</th></tr></thead><tbody>'+
-   rows.map(x=>{
+  const grouped={};
+  rows.forEach(x=>{
+   const key=String(x.member_no??'unknown');
+   if(!grouped[key])grouped[key]={memberNo:x.member_no,memberLabel:x.member_label||('สมาชิก '+x.member_no),items:[]};
+   grouped[key].items.push(x);
+  });
+  const portfolioLabels={crypto_paper:'คริปโต Paper',crypto_live:'คริปโต Live',stock_paper:'หุ้น Paper',stock_live:'หุ้น Live'};
+  const memberGroups=Object.values(grouped).sort((a,b)=>Number(a.memberNo)-Number(b.memberNo));
+  body.innerHTML=memberGroups.map(g=>{
+   const cards=g.items.map(x=>{
     const live=x.mode==='live',available=x.dataAvailable===true;
-    const pos=(x.positions||[]).map(p=>esc(p.symbol)+' '+Number(p.quantity||0).toLocaleString('en-US',{maximumFractionDigits:6})+' · '+pnl(p.unrealizedPnl)).join('<br>');
-    const status=live?'<span class="negative">LOCKED · ยังไม่อนุมัติ</span>':available?(x.enabled?'<span class="positive">เปิดใช้งาน</span>':'ปิดใช้งาน'):'ไม่พบข้อมูล Slot';
-    return '<tr><td><b>'+esc(x.member_label||('สมาชิก '+x.member_no))+'</b><div class="small muted">#'+esc(x.member_no)+' · '+(x.assigned_user_id?'ผูกบัญชีแล้ว':'ยังไม่ผูกบัญชี')+'</div></td>'+
-     '<td>'+esc(labels[x.portfolio_type]||x.portfolio_type)+'</td><td>'+money(x.capital)+'</td><td>'+money(x.cash)+'</td><td>'+money(x.equity)+'</td>'+
-     '<td class="'+cls(x.netPnl)+'">'+pnl(x.netPnl)+(x.returnPct==null?'':'<div class="small muted">'+Number(x.returnPct).toFixed(2)+'%</div>')+'</td>'+
-     '<td>'+Number(x.openPositions||0)+'</td><td>'+Number(x.filledOrders||0)+'</td><td>'+status+(pos?'<div class="small muted">'+pos+'</div>':'')+'</td></tr>';
-   }).join('')+'</tbody></table></div>';
+    const status=live?'<span class="negative">LOCKED · ยังไม่อนุมัติซื้อขายจริง</span>':available?(x.enabled?'<span class="positive">Paper เปิดใช้งาน</span>':'<span class="muted">Paper ปิดใช้งาน</span>'):'<span class="muted">ยังไม่มีข้อมูลพอร์ต</span>';
+    const positions=(x.positions||[]).length?(x.positions||[]).map(p=>'<div class="small">'+esc(p.symbol)+' · จำนวน '+Number(p.quantity||0).toLocaleString('en-US',{maximumFractionDigits:6})+' · P/L '+pnl(p.unrealizedPnl)+'</div>').join(''):'<div class="small muted">ไม่มีสถานะเปิดที่บันทึกไว้</div>';
+    const capitalLabel=available?'ทุนเริ่มต้น':'วงเงินจัดสรร (ไม่ใช่ยอดเงินจริง)';
+    return '<div class="card metric" style="min-width:0"><div class="heading"><b>'+esc(portfolioLabels[x.portfolio_type]||x.portfolio_type)+'</b><span class="pill">'+(live?'LIVE LOCKED':'PAPER')+'</span></div>'+
+     '<div class="small muted">'+capitalLabel+'</div><strong>'+money(x.capital)+'</strong>'+
+     '<div class="small muted">เงินสด '+money(x.cash)+' · Equity '+money(x.equity)+'</div>'+
+     '<div class="'+cls(x.netPnl)+'" style="margin-top:6px">กำไร/ขาดทุน '+pnl(x.netPnl)+(x.returnPct==null?'':' · '+Number(x.returnPct).toFixed(2)+'%')+'</div>'+
+     '<div class="small muted">สถานะเปิด '+Number(x.openPositions||0)+' · คำสั่ง Fill '+Number(x.filledOrders||0)+'</div>'+
+     '<div style="margin-top:8px">'+status+'</div><div style="margin-top:8px">'+positions+'</div>'+
+     (x.assigned_user_id?'<div class="small muted" style="margin-top:6px">บัญชีสมาชิกผูกแล้ว</div>':'<div class="small muted" style="margin-top:6px">ยังไม่ผูกบัญชีสมาชิก</div>')+
+     '</div>';
+   }).join('');
+   return '<section class="card section" style="margin-bottom:14px"><div class="heading"><div><h3>'+esc(g.memberLabel)+'</h3><div class="small muted">สมาชิก #'+esc(g.memberNo)+' · แสดงเฉพาะ 4 พอร์ตของสมาชิกคนนี้</div></div><span class="pill">'+g.items.length+'/4 พอร์ต</span></div>'+
+    '<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">'+cards+'</div></section>';
+  }).join('')||'<div class="notice">ยังไม่มีรายการสมาชิกในทะเบียนพอร์ต</div>';
   if(detail){
    const dual=j.dualPaperPortfolios;
    if(!Array.isArray(dual)) detail.innerHTML='<div class="notice">Backend ยังไม่ส่งข้อมูลพอร์ต Paper กลาง กรุณารอการอัปเดตบริการ</div>';
