@@ -2192,7 +2192,8 @@ def admin_member_portfolios_report(request: Request):
                 totals["liveLocked"] += 1
         reports.append(report)
 
-    # Also include the separate central dual-paper engine. It is deliberately
+    # Owner report v2: central Paper positions remain isolated from the 40 member slots.
+# Also include the separate central dual-paper engine. It is deliberately
     # kept separate from the 40 member slots unless its user is explicitly assigned.
     dual_portfolios = _sb_rest("blessing_dual_portfolios", {
         "select": "id,user_id,market,broker,currency,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,updated_at",
