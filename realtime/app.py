@@ -1430,9 +1430,25 @@ def _binance_1m_klines(symbol: str):
         params={"symbol": symbol, "interval": "1m", "limit": 65},
         timeout=(4, 12), headers=_binance_th_market_headers(),
     )
-    response.raise_for_status()
-    rows = response.json()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError:
+        log.warning("Binance TH klines HTTP error symbol=%s status=%s", symbol, response.status_code)
+        raise
+    payload = response.json()
+    # Binance TH wraps successful REST payloads in {code: 0, data: ...}.
+    # Some endpoints/edge responses may still return the raw array.
+    if isinstance(payload, dict):
+        code = payload.get("code")
+        if code not in (None, 0, "0"):
+            raise RuntimeError("BINANCE_TH_KLINE_API_ERROR:" + str(code))
+        rows = payload.get("data")
+    else:
+        rows = payload
     if not isinstance(rows, list):
+        log.warning("Binance TH klines invalid payload symbol=%s type=%s keys=%s",
+                    symbol, type(payload).__name__,
+                    sorted(payload.keys()) if isinstance(payload, dict) else None)
         raise RuntimeError("BINANCE_TH_INVALID_KLINE_RESPONSE")
     now_ms = int(time.time() * 1000)
     bars = []
