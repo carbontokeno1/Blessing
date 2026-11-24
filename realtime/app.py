@@ -3951,8 +3951,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     equity += market_value
     if any(p.get("symbol")==symbol for p in positions):
         return None
-    if market == "stocks" and len(positions) >= min(5, max(1, int(portfolio.get("max_open_positions") or 5))):
-        return None
+    # No artificial open-position count limit; available cash and risk controls apply.
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
     if market == "stocks":
         # Member Stock Paper: automatic +20% take-profit / -25% stop-loss.
@@ -3985,10 +3984,9 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     # Crypto has no per-cycle symbol-count cap; all entries still share one 30% allocation cap.
     notional_cap = total_equity * min(max_notional_pct, 100.0) / 100
     if market == "stocks":
-        # Split the stock portfolio's own equity across its configured concurrent slots.
-        max_positions = min(5, max(1, int(portfolio.get("max_open_positions") or 5)))
+        # No fixed position-count cap; size orders against remaining stock cash.
         stock_equity = cash_balance + market_value
-        notional_cap = min(notional_cap, stock_equity / max_positions)
+        notional_cap = min(notional_cap, stock_equity)
     notional = min(cash_balance, remaining_allocation, notional_cap)
     if notional < 1.0:
         return None
@@ -4021,7 +4019,7 @@ def _dual_paper_worker_cycle():
     try:
         # Always manage existing positions, even if an experiment is stopped.
         open_rows = _sb_rest("blessing_dual_positions", {
-            "select":"id,user_id,market,symbol","status":"eq.open","order":"opened_at.asc","limit":"100"
+            "select":"id,user_id,market,symbol","status":"eq.open","order":"opened_at.asc","limit":"1000"
         }) or []
         checked, exits = 0, 0
         for position in open_rows:
@@ -4070,44 +4068,33 @@ def _dual_paper_worker_cycle():
                     decision=adaptive_decision("stocks",normalized,fee_bps=10,slippage_bps=5)
                     if decision["decision"]=="PAPER_CANDIDATE":
                         stock_candidates[row["symbol"]]=(row,decision)
-        ranked_by_user_market = {}
-        for exp in experiments:
-            uid=str(exp["user_id"])
-            for market, candidates, fresh in (
-                ("crypto",crypto_candidates,crypto_fresh),
-                ("stocks",stock_candidates,stock_fresh)
-            ):
-                if market not in (exp.get("markets") or ["crypto","stocks"]):
-                    continue
-                portfolios=_sb_rest("blessing_dual_portfolios",{
-                    "select":"id,user_id,market,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity",
-                    "user_id":"eq."+uid,"market":"eq."+market,"mode":"eq.paper","limit":"1"
-                }) or []
-                if not portfolios:
-                    continue
-                portfolio=portfolios[0]
-                if not portfolio.get("enabled"):
-                    continue
-                positions=_sb_rest("blessing_dual_positions",{
-                    "select":"id,symbol,quantity,entry_price,current_price,unrealized_pnl",
-                    "portfolio_id":"eq."+str(portfolio["id"]),"user_id":"eq."+uid,
-                    "status":"eq.open","limit":"100"
-                }) or []
-                _dual_equity_snapshot(exp,portfolio,positions)
-                if market == "stocks":
-                    # Keep stock equity reporting, but all stock entries require an explicit BUY from the user.
-                    continue
-                if not fresh or not candidates:
-                    continue
-                held={p["symbol"] for p in positions}
-                for symbol,(raw,decision) in candidates.items():
-                    if symbol in held:
+        # All enabled member portfolios run independently; no experiment-row gate.
+            # Crypto Paper: every enabled member portfolio runs automatically without an experiment gate.
+        enabled_crypto_portfolios = _sb_rest("blessing_dual_portfolios", {
+            "select":"id,user_id,market,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity",
+            "market":"eq.crypto","mode":"eq.paper","enabled":"eq.true","limit":"1000"
+        }) or []
+        if crypto_fresh and crypto_candidates:
+            ranked_crypto_candidates = sorted(crypto_candidates.items(),
+                key=lambda item: float(item[1][1].get("opportunityScore") or 0), reverse=True)
+            for portfolio in enabled_crypto_portfolios:
+                uid = str(portfolio["user_id"])
+                crypto_experiment = {"id":"AUTO-CRYPTO", "config":{"crypto_stop_loss_pct":1.5,
+                    "crypto_take_profit_pct":3,"max_notional_pct":100,"max_total_allocation_pct":100}}
+                for symbol,(raw,decision) in ranked_crypto_candidates:
+                    cooldown_key = uid + ":crypto:" + symbol
+                    if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
                         continue
-                    ranked_by_user_market.setdefault((uid,market),[]).append({
-                        "market":market,"symbol":symbol,"raw":raw,"decision":decision,
-                        "portfolio":portfolio,
-                        "rank":float(decision.get("opportunityScore") or 0),
-                    })
+                    try:
+                        result = _dual_try_adaptive_entry(crypto_experiment, portfolio, {**raw, **decision}, "crypto")
+                        if result:
+                            entries_opened += 1
+                            selected_markets.setdefault(uid, {}).setdefault("crypto", []).append({
+                                "symbol":symbol,"opportunityScore":float(decision.get("opportunityScore") or 0),
+                                "netEdgeProxyPct":decision.get("netEdgeProxyPct")})
+                            DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key] = time.time()
+                    except Exception as exc:
+                        log.info("Automatic crypto entry skipped %s (%s)", symbol, type(exc).__name__)
 
         # Stock Paper automation is controlled only by the user's portfolio START/STOP button.
         # The worker keeps scanning while enabled, enters only qualifying candidates, and
@@ -4151,9 +4138,7 @@ def _dual_paper_worker_cycle():
                         "select":"id","portfolio_id":"eq."+str(portfolio["id"]),
                         "user_id":"eq."+uid,"status":"eq.open","limit":"6"
                     }) or []
-                    max_stock_positions = min(5, max(1, int(portfolio.get("max_open_positions") or 5)))
-                    if len(open_now) >= max_stock_positions:
-                        break
+                    # No artificial max-open-position cutoff.
         experiment_by_user = {str(exp["user_id"]): exp for exp in experiments}
         ranked_by_user = {}
         for (uid,market), opportunities in ranked_by_user_market.items():
@@ -4165,8 +4150,7 @@ def _dual_paper_worker_cycle():
             for market,item in ranked:
                 if item["rank"] <= 0:
                     continue
-                if market == "stocks" and opened_stocks_this_cycle >= 5:
-                    continue
+                # No per-cycle stock entry cap.
                 cooldown_key = uid + ":" + market + ":" + item["symbol"]
                 if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
                     continue
