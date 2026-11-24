@@ -303,6 +303,21 @@ export default {
       const reportUrl = new URL("/paper-reports.html", request.url);
       return env.ASSETS.fetch(new Request(reportUrl, request));
     }
-    return env.ASSETS.fetch(request);
+    const assetResponse = await env.ASSETS.fetch(request);
+    // Always serve the app shell fresh. A stale cached index.html can load an older
+    // classic script without configureBlessingSession while the newer auth module
+    // still calls it after login.
+    if (pathname === "/" || pathname === "/index.html") {
+      const headers = new Headers(assetResponse.headers);
+      headers.set("cache-control", "no-store, no-cache, must-revalidate, max-age=0");
+      headers.set("pragma", "no-cache");
+      headers.set("x-blessing-build", "auth-session-cache-fix-2026-11-24");
+      return new Response(request.method === "HEAD" ? null : assetResponse.body, {
+        status: assetResponse.status,
+        statusText: assetResponse.statusText,
+        headers
+      });
+    }
+    return assetResponse;
   }
 };
