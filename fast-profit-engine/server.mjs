@@ -274,6 +274,7 @@ function managePositions(marketRows) {
     const row=byKey.get(p.symbol);
     if (!row || !(row.price>0)) continue;
     p.markPrice=row.price;
+    p.markUpdatedAt=nowIso();
     if (row.price<=p.stopPrice) closePosition(p,Math.min(row.price,p.stopPrice),"STOP_LOSS");
     else if (row.price>=p.targetPrice) closePosition(p,p.targetPrice,"TAKE_PROFIT");
     else if (Date.now()-Date.parse(p.openedAt)>24*60*60*1000) closePosition(p,row.price,"TIME_EXIT_24H");
@@ -300,7 +301,7 @@ function maybeOpen(market, candidate, selectedStrategy) {
   if (risk>LIMITS.maxRiskTHB) return null;
   const position={
     id:newId(),market,symbol:candidate.symbol,side:"LONG",strategy:selectedStrategy,
-    entryPrice:round(fill,8),markPrice:candidate.price,stopPrice:round(stop,8),
+    entryPrice:round(fill,8),markPrice:candidate.price,markUpdatedAt:nowIso(),stopPrice:round(stop,8),
     targetPrice:round(fill+(fill-stop)*strategy.rewardRisk,8),qty:size.qty,
     notionalTHB:round(notional,2),riskTHB:risk,entryFeeTHB:round(fee,2),
     entryCostTHB:round(notional+fee,2),openedAt:nowIso()
@@ -361,6 +362,61 @@ function startLoop() {
 }
 function stopLoop() { if(loop) clearInterval(loop); loop=null; }
 
+export function positionMarkMetrics(position, fx = USD_THB_FX, feeRate = LIMITS.feeRate, slippageRate = LIMITS.slippageRate) {
+  const entry = safeNumber(position.entryPrice);
+  const mark = safeNumber(position.markPrice);
+  const qty = safeNumber(position.qty);
+  const entryCost = safeNumber(position.entryCostTHB);
+  if (!(entry > 0 && mark > 0 && qty > 0 && fx > 0)) {
+    return { changePct: null, unrealizedNetTHB: null, netReturnPct: null };
+  }
+  const estimatedExit = mark * (1 - slippageRate);
+  const exitNotional = qty * estimatedExit * fx;
+  const estimatedProceeds = exitNotional - exitNotional * feeRate;
+  const unrealizedNetTHB = round(estimatedProceeds - entryCost, 2);
+  return {
+    changePct: round((mark / entry - 1) * 100, 3),
+    unrealizedNetTHB,
+    netReturnPct: entryCost > 0 ? round(unrealizedNetTHB / entryCost * 100, 3) : null
+  };
+}
+
+export function stockPerformanceReport(trades = [], positions = []) {
+  const closed = trades.filter(t => t.market === "stocks" && Number.isFinite(Number(t.netTHB)));
+  const wins = closed.filter(t => Number(t.netTHB) > 0);
+  const losses = closed.filter(t => Number(t.netTHB) < 0);
+  const grossProfit = wins.reduce((sum, t) => sum + Number(t.netTHB), 0);
+  const grossLoss = Math.abs(losses.reduce((sum, t) => sum + Number(t.netTHB), 0));
+  const netProfitTHB = closed.reduce((sum, t) => sum + Number(t.netTHB), 0);
+  const byStrategy = Object.entries(closed.reduce((acc, t) => {
+    const key = t.strategy || "ไม่ระบุกลยุทธ์";
+    (acc[key] ||= []).push(t);
+    return acc;
+  }, {})).map(([strategy, rows]) => {
+    const strategyWins = rows.filter(t => Number(t.netTHB) > 0);
+    const total = rows.reduce((sum, t) => sum + Number(t.netTHB), 0);
+    return {
+      strategy, closedTrades: rows.length, wins: strategyWins.length,
+      losses: rows.filter(t => Number(t.netTHB) < 0).length,
+      winRatePct: round(strategyWins.length / rows.length * 100, 1),
+      netProfitTHB: round(total, 2)
+    };
+  }).sort((a, b) => b.netProfitTHB - a.netProfitTHB);
+  const openMetrics = positions.filter(p => p.market === "stocks").map(p => positionMarkMetrics(p));
+  const unrealizedNetTHB = round(openMetrics.reduce((sum, x) => sum + (x.unrealizedNetTHB || 0), 0), 2);
+  return {
+    closedTrades: closed.length, wins: wins.length, losses: losses.length,
+    winRatePct: closed.length ? round(wins.length / closed.length * 100, 1) : null,
+    netProfitTHB: round(netProfitTHB, 2), grossProfitTHB: round(grossProfit, 2),
+    grossLossTHB: round(grossLoss, 2),
+    profitFactor: grossLoss > 0 ? round(grossProfit / grossLoss, 2) : (grossProfit > 0 ? null : 0),
+    averageWinTHB: wins.length ? round(grossProfit / wins.length, 2) : 0,
+    averageLossTHB: losses.length ? round(-grossLoss / losses.length, 2) : 0,
+    openPositions: openMetrics.length, unrealizedNetTHB,
+    byStrategy
+  };
+}
+
 function snapshot() {
   const portfolios={};
   for(const market of ["stocks","crypto"]) {
@@ -371,7 +427,8 @@ function snapshot() {
     p.maxDrawdownTHB=Math.max(p.maxDrawdownTHB,p.peakEquityTHB-equity);
     portfolios[market]={...p,equityTHB:equity,unrealizedTHB:round(equity-p.cashTHB-open.reduce((s,x)=>s+x.entryCostTHB,0),2),openCount:open.length,openRiskTHB:round(openRisk(market),2),dailyRealizedLossTHB:round(dailyRealizedLoss(market),2),lossStreak:lossStreak(market)};
   }
-  return { mode:"PAPER_ONLY", liveTradingEnabled:false, running:state.running, startedAt:state.startedAt, lastScanAt:state.lastScanAt, lastError:state.lastError, scanCount:state.scanCount, scanIntervalSeconds:SCAN_INTERVAL_MS/1000, fxUsdThb:USD_THB_FX, limits:LIMITS, portfolios, positions:state.positions, trades:state.trades.slice(0,100), scans:state.scans.slice(0,20), strategyByMarket:state.strategyByMarket };
+  const positions = state.positions.map(p => ({ ...p, ...positionMarkMetrics(p) }));
+  return { mode:"PAPER_ONLY", liveTradingEnabled:false, running:state.running, startedAt:state.startedAt, lastScanAt:state.lastScanAt, lastError:state.lastError, scanCount:state.scanCount, scanIntervalSeconds:SCAN_INTERVAL_MS/1000, fxUsdThb:USD_THB_FX, limits:LIMITS, portfolios, positions, stockReport:stockPerformanceReport(state.trades, state.positions), trades:state.trades.slice(0,100), scans:state.scans.slice(0,20), strategyByMarket:state.strategyByMarket };
 }
 
 function authorized(req) {
