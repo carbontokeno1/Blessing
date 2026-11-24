@@ -284,6 +284,15 @@ export default {
         return json({ status: "source_error", message: error?.message || "scanner_failed", candidates: [], updatedAt: new Date().toISOString() }, 502);
       }
     }
+    if (pathname === "/api/admin/member-portfolios") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      return binanceThLiveProxy(request,"/admin/member-portfolios","GET");
+    }
+    if (pathname === "/api/admin/member-portfolios/control") {
+      if (request.method !== "POST") return json({ok:false,message:"POST only"},405,{allow:"POST"});
+      try { return binanceThLiveProxy(request,"/admin/member-portfolios/control","POST",await request.json()); }
+      catch(error) { return json({ok:false,message:"ข้อมูลคำสั่งไม่ถูกต้อง"},400); }
+    }
     if (pathname === "/api/binance-th/auto-trade/portfolio") {
       return binanceThLiveProxy(request,"/binance-th/auto-trade/portfolio","GET");
     }
