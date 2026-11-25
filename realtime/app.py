@@ -3405,6 +3405,13 @@ def _paper_worker_loop():
 @app.on_event("startup")
 async def start_paper_worker():
     global PAPER_WORKER_THREAD
+    # Pause background crypto/stock Paper polling by default to protect Supabase.
+    # This does not affect the owner LIVE auto-trading engine.
+    if os.getenv("PAPER_WORKER_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        PAPER_WORKER_STATE.update({"status":"paused","lastError":"DISABLED_TO_PROTECT_DATABASE"})
+        STOCK_PAPER_WORKER_STATE.update({"status":"paused","lastError":"DISABLED_TO_PROTECT_DATABASE"})
+        log.warning("Crypto/Stock Paper worker paused; set PAPER_WORKER_ENABLED=true to re-enable")
+        return
     if PAPER_WORKER_THREAD is None or not PAPER_WORKER_THREAD.is_alive():
         PAPER_WORKER_THREAD = threading.Thread(target=_paper_worker_loop, name="paper-trading-worker", daemon=True)
         PAPER_WORKER_THREAD.start()
@@ -4193,6 +4200,11 @@ def _dual_paper_worker_loop():
 @app.on_event("startup")
 async def dual_paper_worker_startup():
     global DUAL_PAPER_WORKER_THREAD
+    # Pause the dual-market Paper monitor until its database load is optimized.
+    if os.getenv("DUAL_PAPER_WORKER_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        DUAL_PAPER_WORKER_STATE.update({"status":"paused","lastError":"DISABLED_TO_PROTECT_DATABASE"})
+        log.warning("Dual Paper monitor paused; set DUAL_PAPER_WORKER_ENABLED=true to re-enable")
+        return
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         DUAL_PAPER_WORKER_STATE["status"] = "waiting_config"
         return
