@@ -2272,8 +2272,14 @@ def member_member_portfolios_daily_trades(request: Request, day: str = ""):
     reports = []
     for slot in slots:
         table = "blessing_stock_paper_slot_orders" if slot["portfolio_type"] == "stock_paper" else "blessing_paper_slot_orders"
+        stock_order = slot["portfolio_type"] == "stock_paper"
+        fields = (
+            "slot_id,side,symbol,status,reason,quantity,price_usd,fx_thb_per_usd,notional_thb,fee_thb,realized_pnl_thb,created_at"
+            if stock_order else
+            "slot_id,side,symbol,status,reason,quantity,price_thb,notional_thb,fee_thb,realized_pnl_thb,created_at"
+        )
         orders = _sb_rest(table, {
-            "select": "slot_id,side,symbol,status,reason,realized_pnl_thb,created_at",
+            "select": fields,
             "slot_id": "eq." + slot["slot_id"],
             "created_at": "gte." + start_utc,
             "and": "(created_at.lt." + end_utc + ")",
@@ -2284,6 +2290,12 @@ def member_member_portfolios_daily_trades(request: Request, day: str = ""):
             "orders": [{
                 "side": order.get("side"), "symbol": order.get("symbol"),
                 "status": order.get("status"), "reason": order.get("reason"),
+                "quantity": order.get("quantity"),
+                "price": order.get("price_usd") if stock_order else order.get("price_thb"),
+                "priceCurrency": "USD" if stock_order else "THB",
+                "fxThbPerUsd": order.get("fx_thb_per_usd") if stock_order else None,
+                "notionalThb": order.get("notional_thb"),
+                "feeThb": order.get("fee_thb"),
                 "realizedPnlThb": order.get("realized_pnl_thb"),
                 "createdAt": order.get("created_at"),
             } for order in orders],
@@ -2333,23 +2345,29 @@ def admin_member_portfolios_daily_trades(request: Request, day: str = ""):
     crypto_ids = list(dict.fromkeys(slot_id for row, slot_id in slot_rows if row.get("portfolio_type") == "crypto_paper"))
     stock_ids = list(dict.fromkeys(slot_id for row, slot_id in slot_rows if row.get("portfolio_type") == "stock_paper"))
     crypto_orders = _sb_rest("blessing_paper_slot_orders", {
-        "select": "slot_id,side,symbol,status,reason,realized_pnl_thb,created_at",
+        "select": "slot_id,side,symbol,status,reason,quantity,price_thb,notional_thb,fee_thb,realized_pnl_thb,created_at",
         "slot_id": "in.(" + ",".join(crypto_ids) + ")",
         "created_at": "gte." + start_utc, "and": "(created_at.lt." + end_utc + ")",
         "order": "created_at.desc", "limit": "5000",
     }) if crypto_ids else []
     stock_orders = _sb_rest("blessing_stock_paper_slot_orders", {
-        "select": "slot_id,side,symbol,status,reason,realized_pnl_thb,created_at",
+        "select": "slot_id,side,symbol,status,reason,quantity,price_usd,fx_thb_per_usd,notional_thb,fee_thb,realized_pnl_thb,created_at",
         "slot_id": "in.(" + ",".join(stock_ids) + ")",
         "created_at": "gte." + start_utc, "and": "(created_at.lt." + end_utc + ")",
         "order": "created_at.desc", "limit": "5000",
     }) if stock_ids else []
     orders_by_key = {}
     for ptype, orders in (("crypto_paper", crypto_orders or []), ("stock_paper", stock_orders or [])):
+        stock_order = ptype == "stock_paper"
         for order in orders:
             orders_by_key.setdefault((ptype, str(order.get("slot_id"))), []).append({
                 "side": order.get("side"), "symbol": order.get("symbol"),
                 "status": order.get("status"), "reason": order.get("reason"),
+                "quantity": order.get("quantity"),
+                "price": order.get("price_usd") if stock_order else order.get("price_thb"),
+                "priceCurrency": "USD" if stock_order else "THB",
+                "fxThbPerUsd": order.get("fx_thb_per_usd") if stock_order else None,
+                "notionalThb": order.get("notional_thb"), "feeThb": order.get("fee_thb"),
                 "realizedPnlThb": order.get("realized_pnl_thb"), "createdAt": order.get("created_at"),
             })
     portfolios = []
