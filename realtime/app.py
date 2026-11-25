@@ -32,8 +32,8 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("blessing-realtime")
 
 SYMBOLS = [s.strip().upper() for s in os.getenv("WEBULL_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD").split(",") if s.strip()]
-APP_KEY = os.getenv("WEBULL_APP_KEY", "")
-APP_SECRET = os.getenv("WEBULL_APP_SECRET", "")
+APP_KEY = (os.getenv("WEBULL_APP_KEY") or "").strip()
+APP_SECRET = (os.getenv("WEBULL_APP_SECRET") or "").strip()
 # Webull is the only permitted stock provider. Ignore legacy Alpaca credentials.
 ALPACA_KEY = ""
 ALPACA_SECRET = ""
@@ -534,7 +534,9 @@ async def startup():
     else:
         state["connection"] = "waiting_credentials"
         state["webullConnection"] = "waiting_credentials"
-        log.warning("Webull credentials are missing; stock market data is unavailable. No alternate stock provider will be used.")
+        present = sorted(k for k in os.environ if k.startswith("WEBULL_"))
+        log.warning("Webull credentials missing after environment read; detected variable names=%s; app_key_present=%s app_secret_present=%s", present, bool(APP_KEY), bool(APP_SECRET))
+        log.warning("Stock market data is unavailable. No alternate stock provider will be used.")
 
 
 
