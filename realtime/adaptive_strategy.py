@@ -51,7 +51,8 @@ def build_binance_th_candidates(history_by_symbol: dict, now: float | None = Non
     """Derive multi-horizon momentum, relative volume and breakout from Binance TH ticker history.
 
     Each history row is (unix_time, price, cumulative_quote_volume, bid, ask).
-    At least 60 minutes of recent live observations are required; incomplete data fails closed.
+    At least 15 minutes of recent live observations are required; m60 is optional
+    during warm-up. This supports Paper evaluation without waiting a full hour.
     """
     import time
     now = time.time() if now is None else float(now)
@@ -73,14 +74,15 @@ def build_binance_th_candidates(history_by_symbol: dict, now: float | None = Non
         if now - current[0] > 5 or current[1] <= 0:
             continue
         points = {seconds: at_or_before(rows, now - seconds)
-                  for seconds in (60, 300, 900, 3600, 1200, 360)}
-        if any(points[seconds] is None for seconds in (60, 300, 900, 3600, 1200, 360)):
+                  for seconds in (60, 300, 900, 3600, 360)}
+        if any(points[seconds] is None for seconds in (60, 300, 900, 360)):
             continue
         price = current[1]
         m1 = (price / points[60][1] - 1) * 100 if points[60][1] else 0
         m5 = (price / points[300][1] - 1) * 100 if points[300][1] else 0
         m15 = (price / points[900][1] - 1) * 100 if points[900][1] else 0
-        m60 = (price / points[3600][1] - 1) * 100 if points[3600][1] else 0
+        m60 = ((price / points[3600][1] - 1) * 100
+               if points.get(3600) and points[3600][1] else None)
         latest_volume = max(0, current[2] - points[60][2])
         previous = []
         for end_seconds in (120, 180, 240, 300, 360):
