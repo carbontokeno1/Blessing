@@ -142,6 +142,58 @@ def adaptive_decision(market: str, candidate: dict, fee_bps: float = 10.0,
     }
 
 
+
+def paper_opportunity_decision(candidate: dict, fee_bps: float = 10.0,
+                               slippage_bps: float = 5.0) -> dict:
+    """Wider, paper-only crypto entry gate; never used by the owner LIVE engine.
+
+    Requires fresh Binance TH history upstream, positive 5m/15m structure,
+    minimum relative volume, a tight executable spread, and a confirmation.
+    """
+    symbol = str(candidate.get("symbol") or "").upper()
+    m1 = _n(candidate.get("m1"), -999.0)
+    m5 = _n(candidate.get("m5"), -999.0)
+    m15 = _n(candidate.get("m15"), -999.0)
+    rvol = _n(candidate.get("rvol"), _n(candidate.get("relativeVolume"), 0.0))
+    spread = _n(candidate.get("spreadPct"), 999.0)
+    price = _n(candidate.get("price"), 0.0)
+
+    trend_ok = m5 > 0 and m15 > 0 and m1 > -0.15
+    volume_ok = rvol >= 1.0
+    spread_ok = 0 < spread <= 0.35
+    confirmation_ok = bool(candidate.get("breakout")) or (m1 > 0 and m5 > 0)
+    round_trip_cost_pct = (2 * max(0.0, fee_bps) + 2 * max(0.0, slippage_bps)) / 100
+    round_trip_cost_pct += spread if spread < 999 else 0
+    momentum_proxy = max(0.0, m5) + max(0.0, m15)
+    cost_ok = momentum_proxy > round_trip_cost_pct * 1.25
+    allowed = bool(symbol.endswith("USDT") and price > 0 and trend_ok
+                   and volume_ok and spread_ok and confirmation_ok and cost_ok)
+
+    score = (
+        (25 if trend_ok else 0)
+        + (20 if confirmation_ok else 0)
+        + (20 if volume_ok else 0)
+        + (20 if spread_ok else 0)
+        + (15 if cost_ok else 0)
+    )
+    return {
+        "decision": "PAPER_CANDIDATE" if allowed else "PAPER_WATCH",
+        "market": "crypto",
+        "symbol": symbol,
+        "opportunityScore": float(score if allowed else 0),
+        "trendOk": trend_ok,
+        "volumeOk": volume_ok,
+        "spreadOk": spread_ok,
+        "confirmationOk": confirmation_ok,
+        "costFilterPassed": cost_ok,
+        "estimatedRoundTripCostPct": round(round_trip_cost_pct, 4),
+        "momentumProxyPct": round(momentum_proxy, 4),
+        "netEdgeProxyPct": round(momentum_proxy - round_trip_cost_pct, 4),
+        "entryAllowed": False,
+        "note": "Paper-only opportunity filter; does not authorize or alter LIVE orders.",
+    }
+
+
 def experiment_window(days: int = 14, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
