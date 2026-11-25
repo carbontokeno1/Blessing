@@ -4922,6 +4922,13 @@ def _member_slot_engine_loop():
 @app.on_event("startup")
 async def member_slot_engine_startup():
     global MEMBER_SLOT_ENGINE_THREAD
+    # Keep the always-on member Paper worker disabled by default. It repeatedly
+    # polls Supabase for every slot and can exhaust the shared connection pool.
+    # Re-enable explicitly with MEMBER_SLOT_ENGINE_ENABLED=true after load testing.
+    if os.getenv("MEMBER_SLOT_ENGINE_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        MEMBER_SLOT_ENGINE_STATE.update({"status":"paused","lastError":"DISABLED_TO_PROTECT_DATABASE"})
+        log.warning("Member slot Paper engine is paused; set MEMBER_SLOT_ENGINE_ENABLED=true to re-enable")
+        return
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         MEMBER_SLOT_ENGINE_STATE["status"] = "waiting_config"
         return
