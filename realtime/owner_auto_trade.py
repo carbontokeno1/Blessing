@@ -17,7 +17,7 @@ from fastapi import HTTPException, Request
 log = logging.getLogger("blessing-owner-auto-trade")
 OWNER_ID = "62835b65-13eb-4d99-9647-c4b22bd61ef3"
 # Temporary owner-approved pause during authentication/database recovery.
-OWNER_LIVE_ENGINE_PAUSED = True
+OWNER_LIVE_ENGINE_PAUSED = False
 ACTIVE_STATES = {"RUNNING", "STOPPING"}
 TERMINAL = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
 _worker_lock = threading.Lock()
