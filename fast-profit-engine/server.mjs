@@ -1,12 +1,12 @@
 import http from "node:http";
-import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 10000);
-const STATE_FILE = process.env.STATE_FILE || "/var/data/fast-profit-state.json";
+const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 const CONTROL_TOKEN = process.env.FAST_PROFIT_CONTROL_TOKEN || "";
 const DASHBOARD_ORIGIN = process.env.DASHBOARD_ORIGIN || "https://blessing.carbontokeno1.workers.dev";
 const USD_THB_FX = Number(process.env.USD_THB_FX || 34);
@@ -156,19 +156,37 @@ function emptyState() {
 let state = emptyState();
 let scanBusy = false, loop = null, server;
 
-async function loadState() {
-  try {
-    const raw = JSON.parse(await fs.readFile(STATE_FILE, "utf8"));
-    if (raw?.version === 1 && raw.portfolios && Array.isArray(raw.positions) && Array.isArray(raw.trades)) state = raw;
-  } catch (e) {
-    if (e.code !== "ENOENT") console.error("STATE_READ_ERROR", e.message);
+async function stateRpc(name, args) {
+  const response = await fetch(SUPABASE_URL + "/rest/v1/rpc/" + name, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      authorization: "Bearer " + SUPABASE_ANON_KEY,
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify(args),
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 500);
+    throw new Error("SUPABASE_STATE_" + response.status + ": " + detail);
   }
+  return response.json();
+}
+async function loadState() {
+  const saved = await stateRpc("fast_profit_state_get", { p_token: CONTROL_TOKEN });
+  if (saved === null) return false;
+  if (saved?.version !== 1 || saved?.mode !== "PAPER_ONLY" || !saved.portfolios ||
+      !Array.isArray(saved.positions) || !Array.isArray(saved.trades)) {
+    throw new Error("SUPABASE_STATE_INVALID");
+  }
+  state = saved;
+  return true;
 }
 async function persist() {
-  await fs.mkdir(path.dirname(STATE_FILE), { recursive: true });
-  const tmp = STATE_FILE + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
-  await fs.rename(tmp, STATE_FILE);
+  const ok = await stateRpc("fast_profit_state_put", { p_token: CONTROL_TOKEN, p_state: state });
+  if (ok !== true) throw new Error("SUPABASE_STATE_WRITE_NOT_CONFIRMED");
 }
 function dayTrades(market) { const today = dayKey(); return [...state.trades, ...state.positions].filter(t => t.market === market && openedDayKey(t.openedAt) === today); }
 function dailyRealizedLoss(market) { return dayTrades(market).filter(t=>t.closedAt).reduce((s,t)=>s+Math.max(0,-safeNumber(t.netTHB)),0); }
@@ -415,12 +433,14 @@ async function route(req,res) {
 }
 
 async function main() {
-  if(!CONTROL_TOKEN) throw new Error("FAST_PROFIT_CONTROL_TOKEN is required. Set a long random secret in the service environment.");
-  await loadState();
+  if(!CONTROL_TOKEN) throw new Error("FAST_PROFIT_CONTROL_TOKEN is required.");
+  if(!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("SUPABASE_URL and SUPABASE_ANON_KEY are required for persistent state.");
+  const loaded = await loadState();
+  if (!loaded) await persist();
   server=http.createServer((req,res)=>route(req,res).catch(e=>{console.error("API_ERROR",e);send(res,500,{error:"INTERNAL_ERROR"});}));
-  server.listen(PORT,"0.0.0.0",()=>console.log("FAST PROFIT PAPER ENGINE listening on",PORT));
+  server.listen(PORT,"0.0.0.0",()=>console.log("FAST PROFIT PAPER ENGINE listening on",PORT,"with Supabase persistent state"));
   if(state.running) startLoop();
-  const shutdown=async()=>{state.running=false;stopLoop();await persist();server.close(()=>process.exit(0));setTimeout(()=>process.exit(1),10000).unref();};
+  const shutdown=async()=>{state.running=false;stopLoop();try{await persist();}catch(e){console.error("STATE_SHUTDOWN_SAVE_ERROR",e.message);}server.close(()=>process.exit(0));setTimeout(()=>process.exit(1),10000).unref();};
   process.on("SIGTERM",shutdown);process.on("SIGINT",shutdown);
 }
 if (process.argv[1] && path.resolve(process.argv[1])===path.resolve(fileURLToPath(import.meta.url))) main().catch(e=>{console.error(e);process.exit(1);});
