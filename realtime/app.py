@@ -5584,7 +5584,7 @@ async def owner_live_auto_start(request: Request):
             "requested_at":now,"started_at":now,"control_version":1})
     _sb_rest("blessing_owner_auto_trade_events",{},"POST",{
         "owner_user_id":uid,"event_type":"OWNER_LIVE_STARTED","run_mode":"LIVE",
-        "event_data":{"source":"owner_confirmed_start","freeUSDT":str(free_usdt)}})
+        "event_data":{"source":"owner_confirmed_start","freeUSDT":str(usdt_free)}})
     return {"ok":True,"runState":"RUNNING","runMode":"LIVE",
             "freeUSDT":str(usdt_free),"maxOpenPositions":4,"riskPerTradePct":0.5,
             "maxDailyLossPct":2,"stopLossPct":2,"takeProfitPct":3,
