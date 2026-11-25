@@ -1787,24 +1787,26 @@ def altcoin_scanner(refresh: int = 0):
         x.get("fastEntry", False), x.get("score", 0),
         x.get("rvol") or 0, x["change24h"], x["quoteVolume24h"]
     ), reverse=True)
-    # Transparent diagnostics: a non-entry candidate is retained with its specific reason.
+    # Balanced diagnostics mirror the exact predicates used by the live owner engine.
     for row in selected:
-        if row.get("fastEntry"):
+        if row.get("balancedEntry") is True:
             row["rejectReason"] = None
         elif row.get("candleError"):
             row["rejectReason"] = "CANDLE_DATA_UNAVAILABLE"
-        elif row.get("m1") is None or row.get("m5") is None:
-            row["rejectReason"] = "MOMENTUM_DATA_MISSING"
-        elif row.get("m1", 0) <= 0 or row.get("m5", 0) <= 0:
-            row["rejectReason"] = "MOMENTUM_NOT_POSITIVE"
-        elif (row.get("rvol") or 0) < 2:
-            row["rejectReason"] = "RVOL_BELOW_2"
-        elif not row.get("breakout"):
-            row["rejectReason"] = "NO_20_BAR_BREAKOUT"
+        elif not row.get("trendAligned"):
+            row["rejectReason"] = "EMA_TREND_NOT_ALIGNED"
+        elif not row.get("pullbackReclaim"):
+            row["rejectReason"] = "PULLBACK_RECLAIM_NOT_CONFIRMED"
+        elif any(row.get(key) is None or row.get(key, 0) <= 0 for key in ("m1", "m5", "m15")):
+            row["rejectReason"] = "MULTI_TIMEFRAME_MOMENTUM_NOT_POSITIVE"
+        elif (row.get("rvol") or 0) < 1.3:
+            row["rejectReason"] = "RVOL_BELOW_1_3"
         elif not row.get("spreadPct") or row["spreadPct"] <= 0 or row["spreadPct"] > 0.5:
             row["rejectReason"] = "SPREAD_OUT_OF_RANGE"
+        elif row.get("atrStopPct") is None:
+            row["rejectReason"] = "ATR_STOP_UNAVAILABLE"
         else:
-            row["rejectReason"] = "SCORE_BELOW_60"
+            row["rejectReason"] = "BALANCED_SCORE_NOT_QUALIFIED"
 
     reject_signals = {}
     for row in selected:
@@ -1820,6 +1822,7 @@ def altcoin_scanner(refresh: int = 0):
         "evaluated": len(selected),
         "candidateCount": len(selected),
         "fastEntryCount": sum(1 for x in selected if x.get("fastEntry")),
+        "balancedEntryCount": sum(1 for x in selected if x.get("balancedEntry") is True),
         "candleErrors": candle_errors,
         "filterCounts": reject,
         "signalDiagnostics": reject_signals,
@@ -1829,14 +1832,14 @@ def altcoin_scanner(refresh: int = 0):
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "coverage": provider + " Spot USDT pairs; all eligible pairs counted; top 100 by 24h quote volume evaluated; minimum 250,000 USDT",
         "metricsNote": (
-            "FAST_ENTRY requires positive 1m/5m momentum, RVOL >= 2, 20-bar breakout, spread > 0 and <= 0.5%, and score >= 60. "
-            "Non-entry candidates include rejectReason for diagnostics."
+            "BALANCED_EMA_PULLBACK_ATR requires EMA20/EMA50 trend alignment, pullback reclaim, positive 1m/5m/15m momentum, RVOL >= 1.3, spread <= 0.5%, and a valid ATR stop. Non-entry candidates include balanced rejectReason diagnostics."
             if provider == "Binance TH Spot API" else
             "Fallback feed is display-only; no Paper entries are allowed without Binance candle data."
         ),
     }
-    log.info("Altcoin scan provider=%s eligible=%s evaluated=%s fast_entries=%s candle_errors=%s rejects=%s",
-             provider, len(eligible), len(selected), payload["fastEntryCount"], candle_errors, reject_signals)
+    log.info("Altcoin scan provider=%s eligible=%s evaluated=%s balanced_entries=%s fast_entries_legacy=%s candle_errors=%s balanced_rejects=%s",
+             provider, len(eligible), len(selected), payload["balancedEntryCount"],
+             payload["fastEntryCount"], candle_errors, reject_signals)
     with ALTCOIN_CACHE_LOCK:
         ALTCOIN_CACHE.update({"at": time.time(), "payload": payload})
     return payload
@@ -2638,6 +2641,7 @@ register_owner_auto_trade(
     app, _binance_th_owner_auth, _sb_rest, _sb_rpc,
     _binance_th_signed_request, BINANCE_API_KEY, BINANCE_API_SECRET,
     BINANCE_TH_API_BASE, lambda: altcoin_scanner(refresh=0), state,
+    start_worker=False,
 )
 
 
@@ -5457,26 +5461,51 @@ def _owner_live_engine_cycle():
                 age = (now-datetime.fromisoformat(str(stamp).replace("Z","+00:00"))).total_seconds() if stamp else 999999
             except Exception:
                 age = 999999
-            fresh = state.get("cryptoConnection")=="streaming" and 0<=age<=5
+            scan = altcoin_scanner(refresh=0)
+            scan_age = 999999
+            try:
+                scan_stamp = scan.get("updatedAt")
+                scan_age = (now-datetime.fromisoformat(str(scan_stamp).replace("Z","+00:00"))).total_seconds() if scan_stamp else 999999
+            except Exception:
+                scan_age = 999999
+            scan_fresh = (scan.get("provider")=="Binance TH Spot API" and scan.get("status")=="ok"
+                          and 0<=scan_age<=90)
             candidates = []
-            if fresh:
-                for row in _binance_th_adaptive_candidates():
-                    decision = adaptive_decision("crypto",row,fee_bps=10,slippage_bps=5)
-                    if decision.get("decision")=="PAPER_CANDIDATE" and float(decision.get("opportunityScore") or 0)>0:
-                        candidates.append((row,decision))
-            candidates.sort(key=lambda item:float(item[1].get("opportunityScore") or 0),reverse=True)
+            if scan_fresh:
+                for row in (scan.get("candidates") or []):
+                    symbol = str(row.get("symbol") or "").upper()
+                    stop_value = Decimal(str(row.get("atrStopPct") or "0"))
+                    spread_value = Decimal(str(row.get("spreadPct") or "999"))
+                    if (row.get("balancedEntry") is True and symbol.endswith("USDT")
+                            and row.get("exchangeSymbol")==symbol
+                            and Decimal(str(row.get("price") or "0"))>0
+                            and Decimal("0.8")<=stop_value<=Decimal("2.0")
+                            and Decimal("0")<spread_value<=Decimal("0.5")
+                            and symbol not in {str(p.get("symbol") or "").upper() for p in positions}):
+                        candidates.append(dict(row))
+            candidates.sort(key=lambda row:(float(row.get("balancedScore") or 0),
+                                             float(row.get("rvol") or 0)),reverse=True)
             candidates_count = len(candidates)
-            max_positions = max(1,min(4,int(cfg.get("max_open_positions",4))))
-            if len(positions)<max_positions:
-                risk_pct = max(0.05,min(1.0,float(cfg.get("risk_per_trade_pct",0.5))))
-                stop_pct = max(0.5,min(5.0,float(cfg.get("stop_loss_pct",2))))
-                target_pct = max(stop_pct*1.25,min(8.0,float(cfg.get("take_profit_pct",3))))
+            reject_counts = scan.get("signalDiagnostics") or {}
+            log.info("Owner live balanced scan fresh=%s provider=%s evaluated=%s balanced_candidates=%s rejects=%s",
+                     scan_fresh, scan.get("provider"), scan.get("evaluated"),
+                     candidates_count, reject_counts)
+
+            cfg = control.get("strategy_config") if isinstance(control.get("strategy_config"),dict) else {}
+            max_positions = max(1,min(2,int(cfg.get("max_open_positions",2))))
+            if len(positions)<max_positions and candidates:
+                row = candidates[0]
+                symbol = str(row["symbol"]).upper()
+                risk_pct = max(0.05,min(1.0,float(cfg.get("risk_per_trade_pct",1.0))))
+                stop_pct = max(0.8,min(2.0,float(row.get("atrStopPct") or 0)))
+                target_pct = stop_pct*1.8
+                cap_pct = max(1.0,min(50.0,float(cfg.get("max_position_pct",50))))
                 risk_budget = equity*Decimal(str(risk_pct))/Decimal("100")
                 risk_sized_notional = risk_budget/(Decimal(str(stop_pct))/Decimal("100"))
                 allocation_room = max(Decimal("0"),equity*Decimal("0.95")-exposure)
-                target_notional = min(risk_sized_notional,equity*Decimal("0.25"),allocation_room)
+                target_notional = min(risk_sized_notional,equity*Decimal(str(cap_pct))/Decimal("100"),allocation_room)
                 notional = min(free_usdt,target_notional)
-                if notional < target_notional and cfg.get("auto_convert_to_usdt") is True:
+                if notional<target_notional and cfg.get("auto_convert_to_usdt") is True:
                     converted = _owner_live_convert_one_asset_to_usdt(owner_id,account,positions)
                     if converted:
                         account = _owner_live_account()
@@ -5484,13 +5513,7 @@ def _owner_live_engine_cycle():
                                     for x in account.get("balances",[]) if isinstance(x,dict)}
                         free_usdt = balances.get("USDT",Decimal("0"))
                         notional = min(free_usdt,target_notional)
-                held = {str(p.get("symbol")) for p in positions}
-                for row,decision in candidates:
-                    symbol = str(row.get("symbol") or "").upper()
-                    if symbol in held or time.time()-OWNER_LIVE_ENTRY_COOLDOWNS.get(symbol,0)<300:
-                        continue
-                    if notional <= 0:
-                        break
+                if notional>0 and time.time()-OWNER_LIVE_ENTRY_COOLDOWNS.get(symbol,0)>=300:
                     try:
                         result = _owner_live_submit_market(owner_id,symbol,"BUY",notional)
                         qty = Decimal(result["quantity"])
@@ -5501,20 +5524,24 @@ def _owner_live_engine_cycle():
                             "owner_user_id":owner_id,"symbol":symbol,"base_asset":symbol[:-4],"quote_asset":"USDT",
                             "quantity":str(qty),"entry_price":str(avg),"entry_quote_amount":result["quoteAmount"],
                             "entry_fee_quote":result["feeQuote"],"stop_loss_price":str(stop),"take_profit_price":str(target),
-                            "status":"OPEN","last_price":str(avg),"entry_client_order_id":result["clientOrderId"]})
+                            "status":"OPEN","last_price":str(avg),"entry_client_order_id":result["clientOrderId"],
+                            "metadata":{"strategy":"BALANCED_EMA_PULLBACK_ATR","balancedScore":row.get("balancedScore"),
+                                        "ema20":row.get("ema20"),"ema50":row.get("ema50"),
+                                        "atrStopPct":row.get("atrStopPct"),"rvol":row.get("rvol"),
+                                        "spreadPct":row.get("spreadPct"),"initialRiskPct":str(stop_pct)}})
                         _sb_rest("blessing_owner_auto_trade_events",{},"POST",{
                             "owner_user_id":owner_id,"event_type":"AUTO_BUY_FILLED","run_mode":"LIVE",
                             "event_data":{"symbol":symbol,"quantity":str(qty),"entryPrice":str(avg),
                                           "quoteAmount":result["quoteAmount"],"stopLoss":str(stop),
-                                          "takeProfit":str(target),"opportunityScore":decision.get("opportunityScore"),
+                                          "takeProfit":str(target),"strategy":"BALANCED_EMA_PULLBACK_ATR",
+                                          "balancedScore":row.get("balancedScore"),
+                                          "riskPerTradePct":risk_pct,"atrStopPct":stop_pct,
                                           "clientOrderId":result["clientOrderId"]}})
                         OWNER_LIVE_ENTRY_COOLDOWNS[symbol]=time.time()
                         entries += 1
-                        break
                     except Exception as exc:
-                        log.warning("Owner live entry skipped %s (%s)",symbol,type(exc).__name__)
+                        log.warning("Owner live balanced entry skipped %s (%s)",symbol,type(exc).__name__)
                         OWNER_LIVE_ENGINE_STATE["lastError"]=type(exc).__name__
-                        break
         now_iso = datetime.now(timezone.utc).isoformat()
         _sb_rest("blessing_owner_auto_trade_control",{"owner_user_id":"eq."+owner_id},"PATCH",{
             "heartbeat_at":now_iso,"updated_at":now_iso,
@@ -5623,8 +5650,9 @@ async def owner_live_auto_start(request: Request):
     uid = str(owner["id"])
     existing = _owner_live_control(uid)
     now = datetime.now(timezone.utc).isoformat()
-    config = {"universe":"BINANCE_TH_SPOT_USDT","max_open_positions":4,"risk_per_trade_pct":0.5,
-              "max_daily_loss_pct":2,"stop_loss_pct":2,"take_profit_pct":3,
+    config = {"strategy_model":"BALANCED_EMA_PULLBACK_ATR","universe":"BINANCE_TH_SPOT_USDT",
+              "max_open_positions":2,"risk_per_trade_pct":1.0,"max_position_pct":50,
+              "max_daily_loss_pct":2,"stop_loss_pct":1.2,"take_profit_pct":2.16,
               "auto_convert_to_usdt":True,"min_usdt_reserve":0,
               "scan_interval_seconds":OWNER_LIVE_ENGINE_INTERVAL}
     if existing:
@@ -5642,8 +5670,9 @@ async def owner_live_auto_start(request: Request):
         "owner_user_id":uid,"event_type":"OWNER_LIVE_STARTED","run_mode":"LIVE",
         "event_data":{"source":"owner_confirmed_start","freeUSDT":str(usdt_free)}})
     return {"ok":True,"runState":"RUNNING","runMode":"LIVE",
-            "freeUSDT":str(usdt_free),"maxOpenPositions":4,"riskPerTradePct":0.5,
-            "maxDailyLossPct":2,"stopLossPct":2,"takeProfitPct":3,
+            "freeUSDT":str(usdt_free),"strategyModel":"BALANCED_EMA_PULLBACK_ATR",
+            "maxOpenPositions":2,"riskPerTradePct":1.0,"maxPositionPct":50,
+            "maxDailyLossPct":2,"stopLossPct":"ATR 0.8-2.0%","takeProfitR":1.8,
             "autoConvertToUSDT":True,
             "message":"ระบบเงินจริงเริ่มทำงานแล้ว; ระบบจะแปลงเฉพาะยอด Free ที่มีคู่ USDT และเปิดสถานะเมื่อพบสัญญาณผ่านตัวกรองเท่านั้น"}
 
