@@ -42,7 +42,8 @@ BINANCE_TH_API_BASE = os.getenv("BINANCE_TH_API_BASE", "https://api.binance.th")
 BINANCE_API_KEY = (os.getenv("BINANCE_TH_API_KEY", "") or os.getenv("BINANCE_API_KEY", "")).strip()
 BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")).strip()
 # REST-only by default avoids exhausting Alpaca Basic single-stream connection limits.
-ALPACA_STREAM_ENABLED = os.getenv("ALPACA_STREAM_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+ALPACA_DISABLED = True
+ALPACA_STREAM_ENABLED = False
 REGION = os.getenv("WEBULL_REGION", "th")
 HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.co.th")
 MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.co.th")
@@ -231,7 +232,9 @@ def stream_main():
 
 
 def alpaca_stream_main():
-    """Connect to Alpaca's real-time stock stream (IEX on the free Basic plan)."""
+    """Alpaca is permanently disabled; never open a socket."""
+    log.info("Alpaca stream disabled by configuration")
+    return
     feed = ALPACA_FEED if ALPACA_FEED in {"iex", "sip", "delayed_sip"} else "iex"
     url = f"wss://stream.data.alpaca.markets/v2/{feed}"
     while True:
@@ -683,7 +686,7 @@ def scanner(rank_type: str = "DAY_1", direction: str = "DESC"):
             sort_key = lambda x: _num(x.get("m5"), -999) or -999
         candidates.sort(key=sort_key, reverse=(direction == "DESC"))
         return {
-            "provider": scan.get("provider", "Alpaca Basic · IEX"),
+            "provider": "none",
             "status": scan.get("status", "waiting_scan"),
             "message": (
                 "จัดอันดับจากข้อมูล IEX ในรอบสแกนล่าสุด · ไม่ใช่ข้อมูลครบทุกตลาด"
@@ -1028,7 +1031,7 @@ UNIVERSE_BATCH_SIZE = 100
 UNIVERSE_CANDIDATE_LIMIT = 150
 UNIVERSE_CACHE_SECONDS = 6 * 60 * 60
 UNIVERSE_STATE: dict[str, Any] = {
-    "status": "waiting_credentials", "provider": "Alpaca IEX",
+    "status": "disabled", "provider": "none", "disabledProvider": "Alpaca",
     "universeCount": 0, "scanned": 0, "evaluated": 0,
     "candidateCount": 0, "candidates": [], "updatedAt": None,
     "lastError": None, "cycleSeconds": None, "feed": "iex",
@@ -1046,6 +1049,8 @@ def _alpaca_headers():
 
 
 def _load_active_universe(force: bool = False) -> list[dict]:
+    # Alpaca universe discovery is disabled. Do not make network requests.
+    return []
     global UNIVERSE_ASSETS, UNIVERSE_ASSETS_AT
     if UNIVERSE_ASSETS and not force and time.time() - UNIVERSE_ASSETS_AT < UNIVERSE_CACHE_SECONDS:
         return UNIVERSE_ASSETS
@@ -1070,6 +1075,8 @@ def _load_active_universe(force: bool = False) -> list[dict]:
 
 
 def _alpaca_snapshots(symbols: list[str]) -> dict:
+    # Hard stop: Alpaca market-data API calls are disabled.
+    return {}
     if not symbols:
         return {}
     response = requests.get(
@@ -1083,6 +1090,8 @@ def _alpaca_snapshots(symbols: list[str]) -> dict:
 
 
 def _alpaca_recent_bars(symbols: list[str]) -> dict:
+    # Hard stop: Alpaca market-data API calls are disabled.
+    return {}
     if not symbols:
         return {}
     end = datetime.now(timezone.utc)
@@ -1383,10 +1392,9 @@ def _universe_scan_cycle():
 
 def _universe_scanner_loop():
     while True:
-        if not (ALPACA_KEY and ALPACA_SECRET):
-            UNIVERSE_STATE.update({"status": "waiting_credentials", "lastError": "ALPACA_CREDENTIALS_MISSING"})
-            time.sleep(30)
-            continue
+        UNIVERSE_STATE.update({"status": "disabled", "provider": "none", "lastError": "ALPACA_DISABLED"})
+        time.sleep(300)
+        continue
         try:
             _universe_scan_cycle()
         except Exception as exc:
@@ -1415,7 +1423,7 @@ def universe_scanner():
         result["status"] = "stale"
     result["limitations"] = [
         "ราคาหุ้นและปริมาณซื้อขายมาจาก IEX เท่านั้น ไม่ใช่ consolidated SIP ทุกตลาด",
-        "Universe เป็นสินทรัพย์ US equity ที่ Alpaca ระบุว่า active/tradable; อาจรวม ETF",
+        "Alpaca provider disabled; no Alpaca market data is requested",
         "สแกนเป็นรอบด้วย REST batch ไม่ใช่ real-time stream สำหรับหุ้นทุกตัว",
         "หุ้นที่ไม่มีข้อมูล IEX ในรอบนั้นอาจไม่ถูกประเมินหรือไม่ปรากฏในรายการ",
         "Basic จำกัด historical data ไว้ในช่วง 15 นาทีล่าสุด และ API 200 requests/minute",
@@ -3656,10 +3664,12 @@ def stock_paper_engine_status(request: Request):
             "account": accounts[0] if accounts else None, "openPositions": positions,
             "worker": dict(STOCK_PAPER_WORKER_STATE),
             "scanner": {"status":UNIVERSE_STATE.get("status"), "updatedAt":UNIVERSE_STATE.get("updatedAt"),
-                        "candidateCount":UNIVERSE_STATE.get("candidateCount"), "feed":"Alpaca IEX"}}
+                        "candidateCount":0, "feed":"disabled", "disabledProvider":"Alpaca"}}
 
 
 def _stock_snapshot_price(symbol: str):
+    # Stock Paper quotes are unavailable until a non-Alpaca provider is wired in.
+    return None, None
     snapshots = _alpaca_snapshots([symbol])
     snap = snapshots.get(symbol) or {}
     trade = snap.get("latestTrade") or {}
@@ -4671,7 +4681,7 @@ def adaptive_paper_preview(request: Request):
             "adaptiveRegimeSelection": True,
             "markets": ["crypto", "stocks"],
             "cryptoSource": "Binance TH scanner/candles; Binance-only candidates",
-            "stockSource": "Alpaca IEX universe scanner",
+            "stockSource": "disabled_pending_Webull_stock_scanner",
             "staleOrFallbackData": "block new entries",
             "costModel": "estimated round-trip fees, slippage and quoted spread; verify actual fills in reports",
             "stockStopLossPct": -25, "stockTakeProfitMinPct": 5, "stockTakeProfitMaxPct": 15,
