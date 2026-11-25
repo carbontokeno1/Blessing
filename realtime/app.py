@@ -42,7 +42,7 @@ BINANCE_API_KEY = (os.getenv("BINANCE_TH_API_KEY", "") or os.getenv("BINANCE_API
 BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")).strip()
 # REST-only by default avoids exhausting Alpaca Basic single-stream connection limits.
 ALPACA_STREAM_ENABLED = os.getenv("ALPACA_STREAM_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-REGION = os.getenv("WEBULL_REGION", "us")
+REGION = os.getenv("WEBULL_REGION", "th")
 HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.com")
 MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.com")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://blessing.carbontokeno1.workers.dev").split(",")
@@ -504,13 +504,22 @@ async def startup():
     crypto_book_stream_thread = threading.Thread(target=binance_th_book_stream_main, name="binance-th-book-ticker", daemon=True)
     crypto_book_stream_thread.start()
     if ALPACA_KEY and ALPACA_SECRET:
-        state["provider"] = "alpaca"
-        if ALPACA_STREAM_ENABLED:
+        # Keep the existing Alpaca REST scanner available, while allowing the
+        # Webull production stream to run independently when its credentials exist.
+        if APP_KEY and APP_SECRET:
+            state["provider"] = "webull"
+            state["connection"] = "connecting"
+            stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
+            stream_thread.start()
+            log.info("Webull market stream enabled alongside the existing Alpaca REST scanner.")
+        else:
+            state["provider"] = "alpaca"
+        if ALPACA_STREAM_ENABLED and not (APP_KEY and APP_SECRET):
             state["connection"] = "connecting"
             stream_thread = threading.Thread(target=alpaca_stream_main, name="alpaca-websocket", daemon=True)
             stream_thread.start()
             log.warning("Alpaca WebSocket enabled by ALPACA_STREAM_ENABLED; ensure no other service uses the same account stream.")
-        else:
+        elif not (APP_KEY and APP_SECRET):
             state["connection"] = "rest_only"
             state["marketDataEntitlement"] = "Alpaca Basic IEX via REST snapshots and minute bars; WebSocket disabled to avoid connection-limit conflicts"
             log.info("Alpaca WebSocket disabled; running Universe Scanner via REST snapshots/bars only.")
