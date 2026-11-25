@@ -222,8 +222,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         for row in active:
             asset = str(row.get("reserved_asset") or "").upper()
             reserved[asset] = reserved.get(asset, Decimal("0")) + _d(row.get("remaining_reserved_amount"))
-        protected = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USDP", "DAI",
-                     "BTC", "ETH", "BNB", "SOL", "XRP"}
+        protected = {"USDT"}  # Keep USDT as quote cash; other eligible free assets may be converted.
         import requests
         choices = []
         for row in account.get("balances", []):
@@ -352,7 +351,8 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                 })
                 record_event(uid, "STOPPED", "LIVE", {"reason": "all_positions_closed"})
             return
-        if control.get("run_state") != "STOPPING" and config.get("auto_convert_to_usdt") is True and free_usdt <= _d(config.get("min_usdt_reserve", 0)):
+        if control.get("run_state") != "STOPPING" and config.get("auto_convert_to_usdt") is True:
+            # Convert one eligible free non-USDT asset per cycle, even when some USDT is already available.
             conversion = convert_best_asset_to_usdt(uid, account, positions, config)
             if conversion:
                 account = account_snapshot()
@@ -400,16 +400,17 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         candidates.sort(key=lambda x: (_d(x.get("score")), _d(x.get("rvol"))), reverse=True)
         if not candidates:
             return
-        risk_pct = _d(config.get("risk_per_trade_pct", 0.5))
+        risk_pct = _d(config.get("risk_per_trade_pct", 2.0))
         stop_pct = _d(config.get("stop_loss_pct", 2))
-        cap_pct = _d(config.get("max_position_pct", 20))
+        cap_pct = _d(config.get("max_position_pct", 100))
         if stop_pct <= 0 or risk_pct <= 0:
             raise RuntimeError("INVALID_RISK_CONFIGURATION")
         risk_budget = free_usdt * risk_pct / Decimal("100")
         notional = min(risk_budget / (stop_pct / Decimal("100")), free_usdt * cap_pct / Decimal("100"))
-        # Do not deploy all free funds; cap all simultaneous exposure to 60% of available USDT.
+        # Owner requested no idle USDT reserve: allow exposure up to 100% of current free USDT.
+        # Exchange fees, lot sizes, locked funds, and active reservations can still leave unavoidable dust.
         used = sum((_d(x.get("entry_quote_amount")) for x in positions if x.get("status") in ("OPEN", "CLOSING")), Decimal("0"))
-        exposure_cap = free_usdt * Decimal("0.60")
+        exposure_cap = free_usdt
         notional = min(notional, max(Decimal("0"), exposure_cap - used))
         if notional <= 0:
             return
