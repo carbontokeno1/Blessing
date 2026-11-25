@@ -5524,11 +5524,7 @@ def _owner_live_engine_cycle():
                             "owner_user_id":owner_id,"symbol":symbol,"base_asset":symbol[:-4],"quote_asset":"USDT",
                             "quantity":str(qty),"entry_price":str(avg),"entry_quote_amount":result["quoteAmount"],
                             "entry_fee_quote":result["feeQuote"],"stop_loss_price":str(stop),"take_profit_price":str(target),
-                            "status":"OPEN","last_price":str(avg),"entry_client_order_id":result["clientOrderId"],
-                            "metadata":{"strategy":"BALANCED_EMA_PULLBACK_ATR","balancedScore":row.get("balancedScore"),
-                                        "ema20":row.get("ema20"),"ema50":row.get("ema50"),
-                                        "atrStopPct":row.get("atrStopPct"),"rvol":row.get("rvol"),
-                                        "spreadPct":row.get("spreadPct"),"initialRiskPct":str(stop_pct)}})
+                            "status":"OPEN","last_price":str(avg),"entry_client_order_id":result["clientOrderId"]})
                         _sb_rest("blessing_owner_auto_trade_events",{},"POST",{
                             "owner_user_id":owner_id,"event_type":"AUTO_BUY_FILLED","run_mode":"LIVE",
                             "event_data":{"symbol":symbol,"quantity":str(qty),"entryPrice":str(avg),
