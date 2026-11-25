@@ -34,15 +34,18 @@ log = logging.getLogger("blessing-realtime")
 SYMBOLS = [s.strip().upper() for s in os.getenv("WEBULL_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD").split(",") if s.strip()]
 APP_KEY = (os.getenv("WEBULL_APP_KEY") or "").strip()
 APP_SECRET = (os.getenv("WEBULL_APP_SECRET") or "").strip()
-# Webull is the only permitted stock provider. Ignore legacy Alpaca credentials.
-ALPACA_KEY = ""
-ALPACA_SECRET = ""
-ALPACA_FEED = "disabled"
+# Alpaca IEX REST market data powers the stock universe scanner and Paper engine.
+# Accept standard Alpaca dashboard variable names plus legacy aliases.
+ALPACA_KEY = (os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_KEY") or "").strip()
+ALPACA_SECRET = (os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET") or os.getenv("ALPACA_SECRET") or "").strip()
+ALPACA_FEED = (os.getenv("ALPACA_DATA_FEED") or "iex").strip().lower()
+if ALPACA_FEED not in {"iex", "sip", "delayed_sip"}:
+    ALPACA_FEED = "iex"
 BINANCE_TH_API_BASE = os.getenv("BINANCE_TH_API_BASE", "https://api.binance.th").rstrip("/")
 BINANCE_API_KEY = (os.getenv("BINANCE_TH_API_KEY", "") or os.getenv("BINANCE_API_KEY", "")).strip()
 BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")).strip()
-# REST-only by default avoids exhausting Alpaca Basic single-stream connection limits.
-ALPACA_DISABLED = True
+# REST batch scanning avoids Alpaca Basic websocket symbol limits.
+ALPACA_DISABLED = not bool(ALPACA_KEY and ALPACA_SECRET)
 ALPACA_STREAM_ENABLED = False
 REGION = os.getenv("WEBULL_REGION", "th")
 HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.co.th")
@@ -454,13 +457,13 @@ def public_status() -> dict:
         "lastMessageAt": state["lastMessageAt"],
         "lastMarketDataAt": state["lastMessageAt"],
         "lastError": state["lastError"],
-        "alpacaConfigured": False,
-        "alpacaKeyConfigured": False,
-        "alpacaSecretConfigured": False,
-        "alpacaAuthenticated": False,
-        "alpacaAuthenticatedAt": None,
-        "alpacaConnected": False,
-        "stockProvider": "Webull OpenAPI only",
+        "alpacaConfigured": bool(ALPACA_KEY and ALPACA_SECRET),
+        "alpacaKeyConfigured": bool(ALPACA_KEY),
+        "alpacaSecretConfigured": bool(ALPACA_SECRET),
+        "alpacaAuthenticated": bool(state.get("alpacaAuthenticated")),
+        "alpacaAuthenticatedAt": state.get("alpacaAuthenticatedAt"),
+        "alpacaConnected": UNIVERSE_STATE.get("status") == "ok",
+        "stockProvider": "Alpaca " + ALPACA_FEED.upper() + " REST scanner" if ALPACA_KEY and ALPACA_SECRET else "waiting for Alpaca credentials",
         "webullConfigured": bool(APP_KEY and APP_SECRET),
         "webullRegion": REGION,
         "webullConnection": state.get("webullConnection"),
@@ -545,13 +548,22 @@ async def startup():
         state["webullConnection"] = "connecting"
         stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
         stream_thread.start()
-        log.info("Webull is the sole stock market-data provider; Alpaca is disabled.")
+        log.info("Webull stream enabled as an additional quote source.")
     else:
         state["connection"] = "waiting_credentials"
         state["webullConnection"] = "waiting_credentials"
         present = sorted(k for k in os.environ if k.startswith("WEBULL_"))
         log.warning("Webull credentials missing after environment read; detected variable names=%s; app_key_present=%s app_secret_present=%s", present, bool(APP_KEY), bool(APP_SECRET))
-        log.warning("Stock market data is unavailable. No alternate stock provider will be used.")
+    global UNIVERSE_THREAD
+    if ALPACA_KEY and ALPACA_SECRET:
+        if UNIVERSE_THREAD is None or not UNIVERSE_THREAD.is_alive():
+            UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="alpaca-iex-universe-scanner", daemon=True)
+            UNIVERSE_THREAD.start()
+        log.info("Alpaca %s REST universe scanner started; interval=%ss", ALPACA_FEED.upper(), UNIVERSE_SCAN_INTERVAL)
+    else:
+        with UNIVERSE_LOCK:
+            UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"alpaca","lastError":"ALPACA_CREDENTIALS_MISSING"})
+        log.warning("Alpaca stock scanner waiting for APCA_API_KEY_ID/APCA_API_SECRET_KEY.")
 
 
 
@@ -1049,8 +1061,6 @@ def _alpaca_headers():
 
 
 def _load_active_universe(force: bool = False) -> list[dict]:
-    # Alpaca universe discovery is disabled. Do not make network requests.
-    return []
     global UNIVERSE_ASSETS, UNIVERSE_ASSETS_AT
     if UNIVERSE_ASSETS and not force and time.time() - UNIVERSE_ASSETS_AT < UNIVERSE_CACHE_SECONDS:
         return UNIVERSE_ASSETS
@@ -1075,13 +1085,11 @@ def _load_active_universe(force: bool = False) -> list[dict]:
 
 
 def _alpaca_snapshots(symbols: list[str]) -> dict:
-    # Hard stop: Alpaca market-data API calls are disabled.
-    return {}
     if not symbols:
         return {}
     response = requests.get(
         "https://data.alpaca.markets/v2/stocks/snapshots",
-        params={"symbols": ",".join(symbols), "feed": "iex"},
+        params={"symbols": ",".join(symbols), "feed": ALPACA_FEED},
         headers=_alpaca_headers(), timeout=(5, 20),
     )
     response.raise_for_status()
@@ -1090,8 +1098,6 @@ def _alpaca_snapshots(symbols: list[str]) -> dict:
 
 
 def _alpaca_recent_bars(symbols: list[str]) -> dict:
-    # Hard stop: Alpaca market-data API calls are disabled.
-    return {}
     if not symbols:
         return {}
     end = datetime.now(timezone.utc)
@@ -1103,7 +1109,7 @@ def _alpaca_recent_bars(symbols: list[str]) -> dict:
             "timeframe": "1Min",
             "start": datetime.fromtimestamp(start, timezone.utc).isoformat(),
             "end": end.isoformat(),
-            "feed": "iex",
+            "feed": ALPACA_FEED,
             "limit": 10000,
             "sort": "asc",
         },
@@ -1392,18 +1398,20 @@ def _universe_scan_cycle():
 
 def _universe_scanner_loop():
     while True:
-        UNIVERSE_STATE.update({"status": "disabled", "provider": "none", "lastError": "ALPACA_DISABLED"})
-        time.sleep(300)
-        continue
+        if not (ALPACA_KEY and ALPACA_SECRET):
+            with UNIVERSE_LOCK:
+                UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"alpaca","lastError":"ALPACA_CREDENTIALS_MISSING"})
+            time.sleep(60)
+            continue
         try:
             _universe_scan_cycle()
+            state["alpacaAuthenticated"] = True
+            state["alpacaAuthenticatedAt"] = datetime.now(timezone.utc).isoformat()
         except Exception as exc:
+            state["alpacaAuthenticated"] = False
             log.exception("Alpaca IEX universe scan failed")
             with UNIVERSE_LOCK:
-                UNIVERSE_STATE.update({
-                    "status": "source_error", "lastError": type(exc).__name__,
-                    "updatedAt": datetime.now(timezone.utc).isoformat(),
-                })
+                UNIVERSE_STATE.update({"status":"source_error","provider":"alpaca","lastError":type(exc).__name__,"updatedAt":datetime.now(timezone.utc).isoformat()})
         time.sleep(UNIVERSE_SCAN_INTERVAL)
 
 
@@ -1423,7 +1431,7 @@ def universe_scanner():
         result["status"] = "stale"
     result["limitations"] = [
         "ราคาหุ้นและปริมาณซื้อขายมาจาก IEX เท่านั้น ไม่ใช่ consolidated SIP ทุกตลาด",
-        "Alpaca provider disabled; no Alpaca market data is requested",
+        "Alpaca REST market data is enabled; IEX coverage depends on the account subscription",
         "สแกนเป็นรอบด้วย REST batch ไม่ใช่ real-time stream สำหรับหุ้นทุกตัว",
         "หุ้นที่ไม่มีข้อมูล IEX ในรอบนั้นอาจไม่ถูกประเมินหรือไม่ปรากฏในรายการ",
         "Basic จำกัด historical data ไว้ในช่วง 15 นาทีล่าสุด และ API 200 requests/minute",
