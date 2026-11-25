@@ -1810,7 +1810,7 @@ def altcoin_scanner(refresh: int = 0):
 
     reject_signals = {}
     for row in selected:
-        reason = row.get("rejectReason") or "FAST_ENTRY"
+        reason = row.get("rejectReason") or "BALANCED_ENTRY"
         reject_signals[reason] = reject_signals.get(reason, 0) + 1
 
     payload = {
