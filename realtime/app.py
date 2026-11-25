@@ -43,8 +43,8 @@ BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINAN
 # REST-only by default avoids exhausting Alpaca Basic single-stream connection limits.
 ALPACA_STREAM_ENABLED = os.getenv("ALPACA_STREAM_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 REGION = os.getenv("WEBULL_REGION", "th")
-HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.com")
-MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.com")
+HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.co.th")
+MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.co.th")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://blessing.carbontokeno1.workers.dev").split(",")
 
 app = FastAPI(title="Blessing Market Data Bridge", version="0.2.0")
@@ -57,6 +57,9 @@ state = {
     "symbols": SYMBOLS,
     "lastMessageAt": None,
     "lastError": None,
+    "webullConnection": "waiting_credentials",
+    "webullLastError": None,
+    "webullLastMessageAt": None,
     "alpacaAuthenticated": False,
     "alpacaAuthenticatedAt": None,
     "quotes": {},
@@ -76,6 +79,7 @@ CRYPTO_TICKER_HISTORY_SYMBOL_LIMIT = 150
 clients: set[WebSocket] = set()
 loop: asyncio.AbstractEventLoop | None = None
 stream_thread: threading.Thread | None = None
+webull_stream_thread: threading.Thread | None = None
 
 
 def plain(value: Any, depth: int = 0) -> Any:
@@ -144,8 +148,12 @@ def publish_quote(topic: str, payload: Any) -> None:
             "symbol": symbol,
             "topic": topic,
             "receivedAt": now,
+            "source": "Webull OpenAPI real-time stream",
             "raw": item,
         }
+        state["webullLastMessageAt"] = now
+        state["webullConnection"] = "streaming"
+        state["webullLastError"] = None
         changed = True
     if changed:
         state["lastMessageAt"] = now
@@ -173,6 +181,8 @@ def on_message(client, topic, quotes):
 def on_connect(client, api_client, session_id):
     log.info("Webull market stream connected")
     state["connection"] = "connected"
+    state["webullConnection"] = "connected"
+    state["webullLastError"] = None
     state["lastError"] = None
     try:
         from webull.data.common.category import Category
@@ -181,6 +191,8 @@ def on_connect(client, api_client, session_id):
         log.info("Requested subscriptions for %d symbols", len(SYMBOLS))
     except Exception as exc:
         state["connection"] = "subscription_error"
+        state["webullConnection"] = "subscription_error"
+        state["webullLastError"] = type(exc).__name__
         state["lastError"] = type(exc).__name__
         log.exception("Webull subscription failed")
 
@@ -194,10 +206,13 @@ def stream_main():
         )
         client.on_connect_success = on_connect
         client.on_quotes_message = on_message
-        log.info("Starting Webull MQTT stream for %s", ",".join(SYMBOLS))
+        log.info("Starting Webull MQTT stream for %s in region %s", ",".join(SYMBOLS), REGION)
+        state["webullConnection"] = "connecting"
         client.connect_and_loop_forever()
     except Exception as exc:
         state["connection"] = "error"
+        state["webullConnection"] = "error"
+        state["webullLastError"] = type(exc).__name__
         state["lastError"] = type(exc).__name__
         log.exception("Webull stream stopped")
 
@@ -431,6 +446,12 @@ def public_status() -> dict:
         "alpacaAuthenticatedAt": state["alpacaAuthenticatedAt"],
         "alpacaConnected": bool(state["provider"] == "alpaca" and state["connection"] in {"connected", "streaming"}),
         "alpacaFeed": ALPACA_FEED if ALPACA_FEED in {"iex", "sip", "delayed_sip"} else "iex",
+        "webullConfigured": bool(APP_KEY and APP_SECRET),
+        "webullRegion": REGION,
+        "webullConnection": state.get("webullConnection"),
+        "webullLastError": state.get("webullLastError"),
+        "webullLastMessageAt": state.get("webullLastMessageAt"),
+        "webullQuoteCount": sum(1 for q in state["quotes"].values() if isinstance(q, dict) and q.get("source") == "Webull OpenAPI real-time stream"),
         "universeScanner": {
             "status": UNIVERSE_STATE.get("status"),
             "universeCount": UNIVERSE_STATE.get("universeCount"),
@@ -531,6 +552,14 @@ async def startup():
         else:
             UNIVERSE_STATE.update({"status": "paused", "lastError": "TEMPORARY_AUTH_RECOVERY_PAUSE"})
             log.warning("Alpaca IEX Universe Scanner startup skipped: UNIVERSE_SCANNER_ENABLED=false")
+        if APP_KEY and APP_SECRET:
+            global webull_stream_thread
+            state["webullConnection"] = "connecting"
+            webull_stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
+            webull_stream_thread.start()
+            log.info("Webull TH market-data stream started alongside existing Alpaca/Universe services.")
+        else:
+            state["webullConnection"] = "waiting_credentials"
         return
     if APP_KEY and APP_SECRET:
         state["provider"] = "webull"
