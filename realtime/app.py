@@ -2081,8 +2081,8 @@ async def admin_control_member_portfolios(request: Request):
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     })
-    if len(registry) != 40:
-        raise HTTPException(status_code=503, detail="ทะเบียนพอร์ตต้องครบ 40 พอร์ตก่อนจึงควบคุมได้")
+    if len(registry) != 20:
+        raise HTTPException(status_code=503, detail="ทะเบียน Paper ต้องครบ 20 พอร์ตก่อนจึงควบคุมได้")
 
     if portfolio_id:
         targets = [row for row in registry if str(row.get("id")) == str(portfolio_id)]
@@ -2259,11 +2259,11 @@ def admin_member_portfolios(request: Request):
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     })
-    if len(rows) != 40:
+    if len(rows) != 20:
         raise HTTPException(status_code=503, detail={
             "code": "PORTFOLIO_REGISTRY_INCOMPLETE",
-            "expected": 40, "found": len(rows),
-            "message": "ทะเบียนพอร์ตสมาชิกยังไม่ครบ 40 พอร์ต จึงยังไม่พร้อมเปิดใช้งาน",
+            "expected": 20, "found": len(rows),
+            "message": "ทะเบียน Paper สมาชิกยังไม่ครบ 20 พอร์ต จึงยังไม่พร้อมเปิดใช้งาน",
         })
 
     # Fetch all paper slots and open-position counts in batches instead of
@@ -2314,7 +2314,7 @@ def admin_member_portfolios(request: Request):
     return {
         "ok": True,
         "memberSlots": 10,
-        "portfoliosPerMember": 4,
+        "portfoliosPerMember": 2,
         "portfolioCount": len(rows),
         "liveTradingEnabled": False,
         "portfolios": rows,
@@ -2333,8 +2333,8 @@ def admin_member_portfolios_report(request: Request):
     if len(registry) != 40:
         raise HTTPException(status_code=503, detail={
             "code": "PORTFOLIO_REGISTRY_INCOMPLETE",
-            "expected": 40, "found": len(registry),
-            "message": "ทะเบียนพอร์ตสมาชิกยังไม่ครบ 40 พอร์ต",
+            "expected": 20, "found": len(registry),
+            "message": "ทะเบียน Paper สมาชิกยังไม่ครบ 20 พอร์ต",
         })
 
     def num(value):
