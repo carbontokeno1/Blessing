@@ -588,7 +588,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             "valuationNote": "มูลค่าประเมินจากคู่ USDT ที่มีราคา; สินทรัพย์ที่ไม่มีคู่ตรงจะแสดงเป็นยังไม่ประเมิน"
         }
 
-    @app.get("/binance-th/auto-trade/status")
+    @app.get("/binance-th/auto-trade/legacy-status")
     def owner_auto_trade_status(request: Request):
         owner = owner_auth(request)
         uid = str(owner["id"])
@@ -606,7 +606,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                 "positions": positions, "events": events,
                 "serverMasterSwitch": _master_on(), "liveOrdersEnabled": _master_on()}
 
-    @app.post("/binance-th/auto-trade/start")
+    @app.post("/binance-th/auto-trade/legacy-start")
     async def owner_auto_trade_start(request: Request):
         if OWNER_LIVE_ENGINE_PAUSED:
             raise HTTPException(status_code=423, detail="ระบบ Owner Live Engine ถูกพักชั่วคราวเพื่อซ่อมระบบฐานข้อมูลและล็อกอิน")
@@ -666,7 +666,7 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                 "freeUSDT": _fmt(free_usdt), "strategyConfig": cfg,
                 "message": "เริ่ม Auto Trading จริงแล้ว; จะเปิดสถานะเมื่อสัญญาณผ่านเกณฑ์และความเสี่ยงอนุญาต"}
 
-    @app.post("/binance-th/auto-trade/stop")
+    @app.post("/binance-th/auto-trade/legacy-stop")
     async def owner_auto_trade_stop(request: Request):
         owner = owner_auth(request)
         uid = str(owner["id"])
