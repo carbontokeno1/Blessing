@@ -5517,7 +5517,7 @@ def owner_live_auto_status(request: Request):
         "owner_user_id":"eq."+str(owner["id"]),"order":"opened_at.desc","limit":"100"
     }) or []
     return {"ok":True,"control":control,"engine":dict(OWNER_LIVE_ENGINE_STATE),
-            "positions":positions,"masterSwitch":OWNER_LIVE_MASTER_ON(),
+            "worker":dict(OWNER_LIVE_ENGINE_STATE),"positions":positions,"masterSwitch":OWNER_LIVE_MASTER_ON(),
             "liveOrdersEnabled":(not OWNER_LIVE_ENGINE_PAUSED) and OWNER_LIVE_MASTER_ON() and bool(control and control.get("live_enabled"))}
 
 
@@ -5586,7 +5586,7 @@ async def owner_live_auto_start(request: Request):
         "owner_user_id":uid,"event_type":"OWNER_LIVE_STARTED","run_mode":"LIVE",
         "event_data":{"source":"owner_confirmed_start","freeUSDT":str(free_usdt)}})
     return {"ok":True,"runState":"RUNNING","runMode":"LIVE",
-            "maxOpenPositions":4,"riskPerTradePct":0.5,
+            "freeUSDT":str(usdt_free),"maxOpenPositions":4,"riskPerTradePct":0.5,
             "maxDailyLossPct":2,"stopLossPct":2,"takeProfitPct":3,
             "autoConvertToUSDT":True,
             "message":"ระบบเงินจริงเริ่มทำงานแล้ว; ระบบจะแปลงเฉพาะยอด Free ที่มีคู่ USDT และเปิดสถานะเมื่อพบสัญญาณผ่านตัวกรองเท่านั้น"}
