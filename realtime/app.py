@@ -5000,7 +5000,7 @@ def admin_member_slot_engine_status(request: Request):
 # Entries are allowed only after the Super Admin explicitly starts LIVE mode.
 # STOP blocks new entries but keeps monitoring and closing already-owned positions.
 # TEMPORARY SAFETY PAUSE approved by the owner while database authentication is repaired.
-OWNER_LIVE_ENGINE_PAUSED = True
+OWNER_LIVE_ENGINE_PAUSED = False
 OWNER_LIVE_ENGINE_INTERVAL = max(10, int(os.getenv("OWNER_LIVE_ENGINE_INTERVAL", "15")))
 OWNER_LIVE_ENGINE_STATE = {"status":"waiting_config","lastCycleAt":None,"lastError":None,
                            "cycles":0,"entries":0,"exits":0,"candidates":0,"actions":[]}
@@ -5208,6 +5208,89 @@ def _owner_live_mark_and_exit(owner_id, positions):
     return exits
 
 
+def _owner_live_convert_one_asset_to_usdt(owner_id, account, positions):
+    """Convert one unreserved free asset with a liquid direct USDT market; never touch locked or held funds."""
+    held_bases = {str(p.get("base_asset") or "").upper() for p in positions
+                  if p.get("status") in ("OPEN", "CLOSING", "RECONCILIATION_REQUIRED")}
+    active_intents = _sb_rest("blessing_owner_live_order_intents", {
+        "select": "reserved_asset,remaining_reserved_amount,status",
+        "owner_user_id": "eq." + str(owner_id),
+        "status": "in.(RESERVED,SUBMITTING,NEW,PARTIALLY_FILLED,UNKNOWN,RECONCILIATION_REQUIRED)",
+        "limit": "1000"
+    }) or []
+    reserved = {}
+    for row in active_intents:
+        asset = str(row.get("reserved_asset") or "").upper()
+        if asset:
+            reserved[asset] = reserved.get(asset, Decimal("0")) + Decimal(str(row.get("remaining_reserved_amount") or "0"))
+    symbols = _owner_live_exchange_info()
+    by_symbol = {str(x.get("symbol") or "").upper(): x for x in symbols if isinstance(x, dict)}
+    choices = []
+    for row in account.get("balances", []):
+        if not isinstance(row, dict):
+            continue
+        asset = str(row.get("asset") or "").upper()
+        free = Decimal(str(row.get("free") or "0"))
+        available = max(Decimal("0"), free - reserved.get(asset, Decimal("0")))
+        if not asset or asset == "USDT" or asset in held_bases or available <= 0:
+            continue
+        symbol = asset + "USDT"
+        info = by_symbol.get(symbol)
+        if not info or info.get("status") != "TRADING" or "MARKET" not in (info.get("orderTypes") or []):
+            continue
+        if str(info.get("baseAsset") or "").upper() != asset or str(info.get("quoteAsset") or "").upper() != "USDT":
+            continue
+        filters = {str(x.get("filterType")): x for x in info.get("filters", []) if isinstance(x, dict)}
+        lot = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE") or {}
+        step = Decimal(str(lot.get("stepSize") or "0"))
+        qty = _binance_th_step_floor(available, step) if step > 0 else available
+        min_qty = Decimal(str(lot.get("minQty") or "0"))
+        max_qty = Decimal(str(lot.get("maxQty") or "0"))
+        notional_filter = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+        min_notional = Decimal(str(notional_filter.get("minNotional") or "0"))
+        if qty <= 0 or qty < min_qty or (max_qty > 0 and qty > max_qty):
+            continue
+        try:
+            ticker_resp = requests.get(BINANCE_TH_API_BASE + "/api/v1/ticker/24hr",
+                params={"symbol": symbol}, timeout=(4, 8))
+            ticker_resp.raise_for_status()
+            ticker = ticker_resp.json()
+            if isinstance(ticker, dict) and isinstance(ticker.get("data"), dict):
+                ticker = ticker["data"]
+            book_resp = requests.get(BINANCE_TH_API_BASE + "/api/v1/ticker/bookTicker",
+                params={"symbol": symbol}, timeout=(4, 8))
+            book_resp.raise_for_status()
+            book = book_resp.json()
+            if isinstance(book, dict) and isinstance(book.get("data"), dict):
+                book = book["data"]
+            bid = Decimal(str(book.get("bidPrice") or "0"))
+            ask = Decimal(str(book.get("askPrice") or "0"))
+            volume = Decimal(str(ticker.get("quoteVolume") or "0"))
+            if bid <= 0 or ask < bid or volume < Decimal("100000"):
+                continue
+            spread_pct = (ask - bid) / bid * Decimal("100")
+            value = qty * bid
+            if spread_pct > Decimal("0.30") or value < min_notional:
+                continue
+            choices.append((value, -spread_pct, volume, asset, symbol, qty))
+        except Exception:
+            continue
+    choices.sort(reverse=True)
+    for value, neg_spread, volume, asset, symbol, qty in choices:
+        try:
+            result = _owner_live_submit_market(owner_id, symbol, "SELL", qty)
+            _sb_rest("blessing_owner_auto_trade_events", {}, "POST", {
+                "owner_user_id": str(owner_id), "event_type": "AUTO_CONVERT_TO_USDT", "run_mode": "LIVE",
+                "event_data": {"asset": asset, "symbol": symbol, "soldQuantity": result["quantity"],
+                               "receivedUSDT": result["quoteAmount"], "spreadPct": str(-neg_spread),
+                               "clientOrderId": result["clientOrderId"]}
+            })
+            return result
+        except Exception as exc:
+            log.warning("Owner live conversion skipped %s (%s)", symbol, type(exc).__name__)
+    return None
+
+
 def _owner_live_engine_cycle():
     if OWNER_LIVE_ENGINE_PAUSED:
         OWNER_LIVE_ENGINE_STATE.update({"status":"paused","lastError":"TEMPORARY_OWNER_APPROVED_PAUSE","liveOrdersEnabled":False})
@@ -5254,6 +5337,28 @@ def _owner_live_engine_cycle():
         for p in positions:
             exposure += Decimal(str(p.get("quantity") or "0"))*Decimal(str(p.get("last_price") or p.get("entry_price") or "0"))
         equity = free_usdt+locked_usdt+exposure
+        held_bases = {str(p.get("base_asset") or "").upper() for p in positions}
+        for balance in account.get("balances", []):
+            if not isinstance(balance, dict):
+                continue
+            asset = str(balance.get("asset") or "").upper()
+            free_amount = Decimal(str(balance.get("free") or "0"))
+            if not asset or asset == "USDT" or asset in held_bases or free_amount <= 0:
+                continue
+            try:
+                price_response = requests.get(
+                    BINANCE_TH_API_BASE + "/api/v1/ticker/price", params={"symbol": asset + "USDT"},
+                    headers={"Accept": "application/json"}, timeout=(4, 8)
+                )
+                price_response.raise_for_status()
+                price_payload = price_response.json()
+                if isinstance(price_payload, dict) and isinstance(price_payload.get("data"), dict):
+                    price_payload = price_payload["data"]
+                asset_price = Decimal(str(price_payload.get("price") or "0"))
+                if asset_price > 0:
+                    equity += free_amount * asset_price
+            except Exception:
+                pass
         today = datetime.now(timezone.utc).date().isoformat()
         risk_rows = _sb_rest("blessing_owner_live_daily_risk",{
             "select":"risk_date,start_equity_usdt,peak_equity_usdt,realized_pnl_usdt,halted",
@@ -5297,15 +5402,24 @@ def _owner_live_engine_cycle():
                         candidates.append((row,decision))
             candidates.sort(key=lambda item:float(item[1].get("opportunityScore") or 0),reverse=True)
             candidates_count = len(candidates)
-            max_positions = max(1,min(3,int(cfg.get("max_open_positions",3))))
+            max_positions = max(1,min(4,int(cfg.get("max_open_positions",4))))
             if len(positions)<max_positions:
                 risk_pct = max(0.05,min(1.0,float(cfg.get("risk_per_trade_pct",0.5))))
                 stop_pct = max(0.5,min(5.0,float(cfg.get("stop_loss_pct",2))))
                 target_pct = max(stop_pct*1.25,min(8.0,float(cfg.get("take_profit_pct",3))))
                 risk_budget = equity*Decimal(str(risk_pct))/Decimal("100")
                 risk_sized_notional = risk_budget/(Decimal(str(stop_pct))/Decimal("100"))
-                allocation_room = max(Decimal("0"),equity*Decimal("0.75")-exposure)
-                notional = min(free_usdt,risk_sized_notional,equity*Decimal("0.25"),allocation_room)
+                allocation_room = max(Decimal("0"),equity*Decimal("0.95")-exposure)
+                target_notional = min(risk_sized_notional,equity*Decimal("0.25"),allocation_room)
+                notional = min(free_usdt,target_notional)
+                if notional < target_notional and cfg.get("auto_convert_to_usdt") is True:
+                    converted = _owner_live_convert_one_asset_to_usdt(owner_id,account,positions)
+                    if converted:
+                        account = _owner_live_account()
+                        balances = {str(x.get("asset") or "").upper():Decimal(str(x.get("free") or "0"))
+                                    for x in account.get("balances",[]) if isinstance(x,dict)}
+                        free_usdt = balances.get("USDT",Decimal("0"))
+                        notional = min(free_usdt,target_notional)
                 held = {str(p.get("symbol")) for p in positions}
                 for row,decision in candidates:
                     symbol = str(row.get("symbol") or "").upper()
@@ -5414,13 +5528,30 @@ async def owner_live_auto_start(request: Request):
         raise HTTPException(status_code=423,detail="สวิตช์เงินจริงฝั่งเซิร์ฟเวอร์ยังปิดอยู่")
     try:
         account = _owner_live_account()
-        free_usdt = next((Decimal(str(x.get("free") or "0")) for x in account.get("balances",[])
-                          if str(x.get("asset") or "").upper()=="USDT"),Decimal("0"))
-        if free_usdt <= 0:
-            raise HTTPException(status_code=423,detail="ไม่พบยอด USDT Free สำหรับเริ่มระบบ")
         symbols = _owner_live_exchange_info()
-        if not any(x.get("status")=="TRADING" and str(x.get("quoteAsset"))=="USDT" for x in symbols):
-            raise HTTPException(status_code=503,detail="ไม่สามารถตรวจสอบคู่ USDT Spot ที่เปิดซื้อขายได้")
+        usdt_free = next((Decimal(str(x.get("free") or "0")) for x in account.get("balances",[])
+                          if str(x.get("asset") or "").upper()=="USDT"),Decimal("0"))
+        convertible_bases = {str(x.get("baseAsset") or "").upper() for x in symbols
+                             if isinstance(x,dict) and x.get("status")=="TRADING"
+                             and str(x.get("quoteAsset") or "").upper()=="USDT"
+                             and "MARKET" in (x.get("orderTypes") or [])}
+        has_convertible_asset = any(
+            isinstance(x,dict) and str(x.get("asset") or "").upper() in convertible_bases
+            and Decimal(str(x.get("free") or "0")) > 0
+            for x in account.get("balances",[])
+        )
+        if usdt_free <= 0 and not has_convertible_asset:
+            raise HTTPException(status_code=423,detail="ไม่พบ USDT Free หรือสินทรัพย์ Free ที่มีคู่ USDT Spot สำหรับแปลง")
+        if not any(x.get("status")=="TRADING" and str(x.get("quoteAsset"))=="USDT"
+                   and "MARKET" in (x.get("orderTypes") or []) for x in symbols if isinstance(x,dict)):
+            raise HTTPException(status_code=503,detail="ไม่พบคู่ USDT Spot ที่รองรับ Market Order")
+        active_intents = _sb_rest("blessing_owner_live_order_intents", {
+            "select":"id,status", "owner_user_id":"eq."+str(owner["id"]),
+            "status":"in.(RESERVED,SUBMITTING,NEW,PARTIALLY_FILLED,UNKNOWN,RECONCILIATION_REQUIRED)",
+            "limit":"100"
+        }) or []
+        if active_intents:
+            raise HTTPException(status_code=423,detail="มีคำสั่งซื้อขายเดิมที่ยังต้องตรวจสอบหรือรอปิดรายการ กรุณาเคลียร์ก่อนเริ่ม")
     except HTTPException:
         raise
     except Exception as exc:
@@ -5428,8 +5559,9 @@ async def owner_live_auto_start(request: Request):
     uid = str(owner["id"])
     existing = _owner_live_control(uid)
     now = datetime.now(timezone.utc).isoformat()
-    config = {"universe":"BINANCE_TH_SPOT_USDT","max_open_positions":3,"risk_per_trade_pct":0.5,
+    config = {"universe":"BINANCE_TH_SPOT_USDT","max_open_positions":4,"risk_per_trade_pct":0.5,
               "max_daily_loss_pct":2,"stop_loss_pct":2,"take_profit_pct":3,
+              "auto_convert_to_usdt":True,"min_usdt_reserve":0,
               "scan_interval_seconds":OWNER_LIVE_ENGINE_INTERVAL}
     if existing:
         _sb_rest("blessing_owner_auto_trade_control",{"owner_user_id":"eq."+uid},"PATCH",{
@@ -5446,9 +5578,10 @@ async def owner_live_auto_start(request: Request):
         "owner_user_id":uid,"event_type":"OWNER_LIVE_STARTED","run_mode":"LIVE",
         "event_data":{"source":"owner_confirmed_start","freeUSDT":str(free_usdt)}})
     return {"ok":True,"runState":"RUNNING","runMode":"LIVE",
-            "freeUSDT":str(free_usdt),"maxOpenPositions":3,"riskPerTradePct":0.5,
+            "maxOpenPositions":4,"riskPerTradePct":0.5,
             "maxDailyLossPct":2,"stopLossPct":2,"takeProfitPct":3,
-            "message":"ระบบเงินจริงเริ่มทำงานแล้ว; ระบบจะเปิดสถานะใหม่เมื่อพบสัญญาณผ่านตัวกรองเท่านั้น"}
+            "autoConvertToUSDT":True,
+            "message":"ระบบเงินจริงเริ่มทำงานแล้ว; ระบบจะแปลงเฉพาะยอด Free ที่มีคู่ USDT และเปิดสถานะเมื่อพบสัญญาณผ่านตัวกรองเท่านั้น"}
 
 
 @app.post("/binance-th/auto-trade/stop")
