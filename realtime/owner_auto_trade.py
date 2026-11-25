@@ -510,6 +510,13 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         total_usdt = Decimal("0")
         unpriced = []
         stable = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USDP"}
+        # Fetch the THB/USDT conversion once so THB balances and THB-quoted
+        # assets are included in the estimated portfolio total.
+        usdt_thb = None
+        try:
+            usdt_thb = fresh_price("USDTTHB")
+        except Exception:
+            pass
         for row in balances:
             asset = str(row.get("asset") or "").upper()
             free = _d(row.get("free"))
@@ -522,12 +529,23 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             if asset in stable:
                 price_usdt = Decimal("1")
                 price_source = "stablecoin_estimate"
+            elif asset == "THB" and usdt_thb is not None and usdt_thb > 0:
+                price_usdt = Decimal("1") / usdt_thb
+                price_source = "THB_USDT_inverse"
             else:
                 try:
                     price_usdt = fresh_price(asset + "USDT")
                     price_source = asset + "USDT"
                 except Exception:
-                    price_usdt = None
+                    # Binance TH may list an asset against THB but not USDT.
+                    # Convert that quote through the live USDTTHB market rate.
+                    if usdt_thb is not None and usdt_thb > 0:
+                        try:
+                            price_thb = fresh_price(asset + "THB")
+                            price_usdt = price_thb / usdt_thb
+                            price_source = asset + "THB / USDTTHB"
+                        except Exception:
+                            price_usdt = None
             value_usdt = amount * price_usdt if price_usdt is not None else None
             if value_usdt is not None:
                 total_usdt += value_usdt
@@ -542,11 +560,6 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
                 "valueUSDT": _fmt(value_usdt) if value_usdt is not None else None,
                 "priceSource": price_source, "inOpenPosition": asset in held_bases
             })
-        usdt_thb = None
-        try:
-            usdt_thb = fresh_price("USDTTHB")
-        except Exception:
-            pass
         priced_positions = []
         for pos in positions:
             item = dict(pos)
