@@ -1039,6 +1039,7 @@ function membersView(){return '<div class="heading"><div><h1>จัดการ�
 ''+
 '<div class="card section"><h3>สร้างบัญชีสมาชิกใหม่</h3><div class="grid"><div class="field"><label>ชื่อสมาชิก</label><input id="newMemberName" maxlength="80" placeholder="ชื่อ-นามสกุล"></div><div class="field"><label>อีเมล</label><input id="newMemberEmail" type="email" placeholder="member@example.com"></div><div class="field"><label>รหัสผ่านเริ่มต้น (อย่างน้อย 12 ตัว)</label><div class="password-wrap"><input id="newMemberPassword" type="password" minlength="12" maxlength="128" autocomplete="new-password" placeholder="อย่างน้อย 12 ตัวอักษร"><button class="eye-btn" type="button" data-toggle-password="newMemberPassword" aria-label="แสดงรหัสผ่าน" aria-pressed="false">แสดง</button></div></div><div class="field"><label>ยืนยันรหัสผ่านเริ่มต้น</label><div class="password-wrap"><input id="newMemberConfirmPassword" type="password" minlength="12" maxlength="128" autocomplete="new-password" placeholder="กรอกรหัสผ่านเดิมอีกครั้ง"><button class="eye-btn" type="button" data-toggle-password="newMemberConfirmPassword" aria-label="แสดงรหัสผ่าน" aria-pressed="false">แสดง</button></div></div></div><button class="primary" id="createMemberBtn" type="button">ยืนยันและสร้างบัญชีสมาชิก</button><div id="createMemberMessage" class="small muted" style="margin-top:10px"></div><div id="createdMemberCredentials" class="notice" style="display:none;margin-top:12px"></div></div><div class="card section"><div class="heading"><h3>รายชื่อสมาชิก</h3><button class="secondary" id="refreshMembersBtn" type="button">รีเฟรช</button></div><div id="adminMembersTable" class="empty">กำลังโหลดรายชื่อ...</div></div><div class="notice">สมาชิกใหม่จะมีสถานะรออนุมัติ ต้องเปลี่ยนรหัสผ่านครั้งแรกก่อนใช้งาน และทุกวงเงินยังเป็น Paper เท่านั้น</div>'}
 async function loadAdminPortfolioControls(){
+ const ledStyleId='paperStatusLedStyles';if(!document.getElementById(ledStyleId)){const st=document.createElement('style');st.id=ledStyleId;st.textContent='.paper-led{display:inline-block;width:11px;height:11px;min-width:11px;border-radius:50%;vertical-align:middle}.paper-led.led-green{background:#32e58a;box-shadow:0 0 6px #32e58a,0 0 13px rgba(50,229,138,.85)}.paper-led.led-red{background:#ff5252;box-shadow:0 0 6px #ff5252,0 0 13px rgba(255,82,82,.8)}.paper-led.led-gray{background:#89919e;box-shadow:0 0 5px rgba(137,145,158,.65)}';document.head.appendChild(st);}
  const el=document.getElementById('adminPortfolioControls'),sb=window.BLESSING_AUTH?.client;
  if(!el)return;
  const shell=()=>'<div style="margin:12px 0;padding:16px;border:1px solid var(--gold,#c99b45);border-radius:16px;background:linear-gradient(135deg,rgba(201,155,69,.16),rgba(12,20,36,.97) 58%,rgba(70,90,125,.16));box-shadow:0 12px 30px rgba(0,0,0,.24)">'+
@@ -1066,7 +1067,7 @@ async function loadAdminPortfolioControls(){
  };
  if(enable)enable.onclick=()=>runBulk(true);
  if(disable)disable.onclick=()=>runBulk(false);
- if(!sb){if(state)state.textContent='รอเข้าสู่ระบบ';if(msg())msg().textContent='ไม่พบเซสชันผู้ดูแล';return}
+ if(!sb){if(state)state.innerHTML='<span style="display:inline-flex;align-items:center;gap:8px"><i class="paper-led led-gray"></i>รอเข้าสู่ระบบ</span>';if(msg())msg().textContent='ไม่พบเซสชันผู้ดูแล';return}
  try{
   const {data,error}=await sb.auth.getSession();
   if(error||!data.session?.access_token)throw Error('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
@@ -1077,7 +1078,7 @@ async function loadAdminPortfolioControls(){
   const rows=Array.isArray(result.portfolios)?result.portfolios:[];
   const paper=rows.filter(x=>x.mode==='paper'&&['crypto_paper','stock_paper'].includes(x.portfolio_type));
   const enabled=paper.filter(x=>x.enabled).length,disabled=paper.length-enabled;
-  if(state)state.textContent=paper.length?(enabled?'PAPER ACTIVE':'PAPER STOPPED'):'ยังไม่มีพอร์ต';
+  if(state){const led=paper.length?(enabled?'led-green':'led-red'):'led-gray';state.innerHTML='<span style="display:inline-flex;align-items:center;gap:8px"><i class="paper-led '+led+'"></i>'+(paper.length?(enabled?'PAPER ACTIVE':'PAPER STOPPED'):'ยังไม่มีพอร์ต')+'</span>';state.style.color=paper.length?(enabled?'#48e09a':'#ff7777'):'inherit';}
   if(counts)counts.textContent='เปิด '+enabled+' / '+paper.length+' · ปิด '+disabled;
   setButtons(paper.length>0);
   if(msg())msg().textContent='เชื่อมต่อคำสั่งควบคุมแล้ว · ปุ่ม PAPER พร้อมใช้งาน · การปิด PAPER หยุดคำสั่งใหม่ ไม่ปิดสถานะคงค้างอัตโนมัติ';
@@ -1085,7 +1086,7 @@ async function loadAdminPortfolioControls(){
   const money=n=>Number(n||0).toLocaleString('th-TH',{maximumFractionDigits:2});
   const table=document.getElementById('adminPortfolioRows');
   if(table)table.innerHTML='<div class="tablewrap"><table><thead><tr><th>สมาชิก</th><th>พอร์ต</th><th>ทุนจัดสรร</th><th>สถานะ</th><th>สวิตช์</th></tr></thead><tbody>'+
-   rows.map(x=>{const live=x.mode==='live'||String(x.portfolio_type||'').endsWith('_live');return '<tr><td>'+memberSlotLabel(x.member_no,x.member_label)+'</td><td>'+esc(labels[x.portfolio_type]||x.portfolio_type)+'</td><td>'+money(x.allocated_capital)+' '+esc(x.base_currency||'THB')+'</td><td>'+(live?'<span class="negative">LIVE · LOCKED</span>':(x.enabled?'<span class="positive">PAPER · เปิด</span>':'<span class="muted">PAPER · ปิด</span>'))+'</td><td>'+(live?'<button class="secondary" type="button" disabled>เปิด LIVE · LOCKED</button> <button class="secondary" type="button" disabled>ปิด LIVE · LOCKED</button>':'<button class="'+(x.enabled?'secondary':'primary')+'" type="button" data-portfolio-id="'+esc(x.id)+'" data-enabled="'+(!x.enabled)+'">'+(x.enabled?'■ ปิด PAPER':'▶ เปิด PAPER')+'</button>')+'</td></tr>'}).join('')+
+   rows.map(x=>{const live=x.mode==='live'||String(x.portfolio_type||'').endsWith('_live');return '<tr><td>'+memberSlotLabel(x.member_no,x.member_label)+'</td><td>'+esc(labels[x.portfolio_type]||x.portfolio_type)+'</td><td>'+money(x.allocated_capital)+' '+esc(x.base_currency||'THB')+'</td><td>'+(live?'<span class="negative">LIVE · LOCKED</span>':(x.enabled?'<span style="display:inline-flex;align-items:center;gap:7px;color:#48e09a"><i class="paper-led led-green"></i>PAPER · เปิด</span>':'<span style="display:inline-flex;align-items:center;gap:7px;color:#ff7777"><i class="paper-led led-red"></i>PAPER · ปิด</span>'))+'</td><td>'+(live?'<button class="secondary" type="button" disabled>เปิด LIVE · LOCKED</button> <button class="secondary" type="button" disabled>ปิด LIVE · LOCKED</button>':'<button class="'+(x.enabled?'secondary':'primary')+'" type="button" data-portfolio-id="'+esc(x.id)+'" data-enabled="'+(!x.enabled)+'">'+(x.enabled?'■ ปิด PAPER':'▶ เปิด PAPER')+'</button>')+'</td></tr>'}).join('')+
    '</tbody></table></div>';
   table?.querySelectorAll('[data-portfolio-id]').forEach(btn=>btn.addEventListener('click',async()=>{
    const enabled=btn.dataset.enabled==='true';
@@ -1098,7 +1099,7 @@ async function loadAdminPortfolioControls(){
    }catch(e){alert(e.message);btn.disabled=false}
   }));
  }catch(e){
-  if(state)state.textContent='ยังเชื่อมต่อไม่ได้';
+  if(state)state.innerHTML='<span style="display:inline-flex;align-items:center;gap:8px"><i class="paper-led led-gray"></i>ยังเชื่อมต่อไม่ได้</span>';
   if(counts)counts.textContent='ไม่สามารถอ่านทะเบียนพอร์ต';
   setButtons(false);
   const table=document.getElementById('adminPortfolioRows');if(table)table.innerHTML='<div class="notice">โหลดทะเบียนพอร์ตไม่ได้: '+esc(e.message)+'</div><button class="secondary" type="button" id="retryAdminPortfolioControls">ลองอีกครั้ง</button>';
