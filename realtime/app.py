@@ -2294,6 +2294,78 @@ def member_member_portfolios_daily_trades(request: Request, day: str = ""):
     }
 
 
+@app.get("/admin/member-portfolios/daily-trades")
+def admin_member_portfolios_daily_trades(request: Request, day: str = ""):
+    """Super Admin daily Paper order report grouped by member and portfolio (Bangkok time)."""
+    _binance_th_owner_auth(request)
+    try:
+        report_day = datetime.strptime(day, "%Y-%m-%d").date() if day else datetime.now(ZoneInfo("Asia/Bangkok")).date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="รูปแบบวันที่ต้องเป็น YYYY-MM-DD")
+    tz = ZoneInfo("Asia/Bangkok")
+    start = datetime(report_day.year, report_day.month, report_day.day, tzinfo=tz)
+    end = start + timedelta(days=1)
+    start_utc = start.astimezone(timezone.utc).isoformat()
+    end_utc = end.astimezone(timezone.utc).isoformat()
+
+    registry = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "member_no,member_label,portfolio_type,mode,paper_slot_id,assigned_user_id",
+        "portfolio_type": "in.(crypto_paper,stock_paper)",
+        "mode": "eq.paper", "order": "member_no.asc", "limit": "100",
+    }) or []
+    stock_member_nos = sorted({str(x["member_no"]) for x in registry
+                               if x.get("portfolio_type") == "stock_paper" and x.get("member_no") is not None})
+    stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
+        "select": "id,slot_no,assigned_user_id",
+        "slot_no": "in.(" + ",".join(stock_member_nos) + ")", "limit": "20",
+    }) if stock_member_nos else []
+    stock_by_member = {str(x.get("slot_no")): x for x in (stock_slots or [])}
+    slot_rows = []
+    for row in registry:
+        ptype = row.get("portfolio_type")
+        if ptype == "crypto_paper" and row.get("paper_slot_id"):
+            slot_rows.append((row, str(row["paper_slot_id"])))
+        elif ptype == "stock_paper":
+            slot = stock_by_member.get(str(row.get("member_no")))
+            if slot and slot.get("id"):
+                slot_rows.append((row, str(slot["id"])))
+
+    crypto_ids = list(dict.fromkeys(slot_id for row, slot_id in slot_rows if row.get("portfolio_type") == "crypto_paper"))
+    stock_ids = list(dict.fromkeys(slot_id for row, slot_id in slot_rows if row.get("portfolio_type") == "stock_paper"))
+    crypto_orders = _sb_rest("blessing_paper_slot_orders", {
+        "select": "slot_id,side,symbol,status,reason,realized_pnl_thb,created_at",
+        "slot_id": "in.(" + ",".join(crypto_ids) + ")",
+        "created_at": "gte." + start_utc, "and": "(created_at.lt." + end_utc + ")",
+        "order": "created_at.desc", "limit": "5000",
+    }) if crypto_ids else []
+    stock_orders = _sb_rest("blessing_stock_paper_slot_orders", {
+        "select": "slot_id,side,symbol,status,reason,realized_pnl_thb,created_at",
+        "slot_id": "in.(" + ",".join(stock_ids) + ")",
+        "created_at": "gte." + start_utc, "and": "(created_at.lt." + end_utc + ")",
+        "order": "created_at.desc", "limit": "5000",
+    }) if stock_ids else []
+    orders_by_key = {}
+    for ptype, orders in (("crypto_paper", crypto_orders or []), ("stock_paper", stock_orders or [])):
+        for order in orders:
+            orders_by_key.setdefault((ptype, str(order.get("slot_id"))), []).append({
+                "side": order.get("side"), "symbol": order.get("symbol"),
+                "status": order.get("status"), "reason": order.get("reason"),
+                "realizedPnlThb": order.get("realized_pnl_thb"), "createdAt": order.get("created_at"),
+            })
+    portfolios = []
+    for row, slot_id in slot_rows:
+        ptype = row.get("portfolio_type")
+        portfolios.append({
+            "memberNo": row.get("member_no"), "memberLabel": row.get("member_label"),
+            "portfolioType": ptype, "orders": orders_by_key.get((ptype, slot_id), []),
+        })
+    return {
+        "ok": True, "day": report_day.isoformat(), "timezone": "Asia/Bangkok",
+        "memberCount": len({str(x.get("member_no")) for x in registry}),
+        "portfolios": portfolios, "liveOrdersIncluded": False,
+    }
+
+
 @app.post("/member/member-portfolios/control")
 async def member_control_own_portfolio(request: Request):
     """A member may toggle only a registry row assigned to their authenticated user id."""
