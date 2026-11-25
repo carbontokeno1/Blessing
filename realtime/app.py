@@ -552,13 +552,9 @@ async def startup():
         else:
             UNIVERSE_STATE.update({"status": "paused", "lastError": "TEMPORARY_AUTH_RECOVERY_PAUSE"})
             log.warning("Alpaca IEX Universe Scanner startup skipped: UNIVERSE_SCANNER_ENABLED=false")
-        if APP_KEY and APP_SECRET:
-            global webull_stream_thread
-            state["webullConnection"] = "connecting"
-            webull_stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
-            webull_stream_thread.start()
-            log.info("Webull TH market-data stream started alongside existing Alpaca/Universe services.")
-        else:
+        # Webull was already started above when credentials are present.
+        # Do not launch a second MQTT client from the same startup path.
+        if not (APP_KEY and APP_SECRET):
             state["webullConnection"] = "waiting_credentials"
         return
     if APP_KEY and APP_SECRET:
