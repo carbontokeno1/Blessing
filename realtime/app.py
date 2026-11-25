@@ -34,9 +34,10 @@ log = logging.getLogger("blessing-realtime")
 SYMBOLS = [s.strip().upper() for s in os.getenv("WEBULL_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD").split(",") if s.strip()]
 APP_KEY = os.getenv("WEBULL_APP_KEY", "")
 APP_SECRET = os.getenv("WEBULL_APP_SECRET", "")
-ALPACA_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET = os.getenv("ALPACA_API_SECRET", "")
-ALPACA_FEED = os.getenv("ALPACA_FEED", "iex").lower()
+# Webull is the only permitted stock provider. Ignore legacy Alpaca credentials.
+ALPACA_KEY = ""
+ALPACA_SECRET = ""
+ALPACA_FEED = "disabled"
 BINANCE_TH_API_BASE = os.getenv("BINANCE_TH_API_BASE", "https://api.binance.th").rstrip("/")
 BINANCE_API_KEY = (os.getenv("BINANCE_TH_API_KEY", "") or os.getenv("BINANCE_API_KEY", "")).strip()
 BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")).strip()
@@ -429,7 +430,6 @@ def binance_th_stream_main():
 
 
 def public_status() -> dict:
-    alpaca_configured = bool(ALPACA_KEY and ALPACA_SECRET)
     return {
         "provider": state["provider"],
         "connection": state["connection"],
@@ -439,13 +439,13 @@ def public_status() -> dict:
         "lastMessageAt": state["lastMessageAt"],
         "lastMarketDataAt": state["lastMessageAt"],
         "lastError": state["lastError"],
-        "alpacaConfigured": alpaca_configured,
-        "alpacaKeyConfigured": bool(ALPACA_KEY),
-        "alpacaSecretConfigured": bool(ALPACA_SECRET),
-        "alpacaAuthenticated": bool(state["alpacaAuthenticated"]),
-        "alpacaAuthenticatedAt": state["alpacaAuthenticatedAt"],
-        "alpacaConnected": bool(state["provider"] == "alpaca" and state["connection"] in {"connected", "streaming"}),
-        "alpacaFeed": ALPACA_FEED if ALPACA_FEED in {"iex", "sip", "delayed_sip"} else "iex",
+        "alpacaConfigured": False,
+        "alpacaKeyConfigured": False,
+        "alpacaSecretConfigured": False,
+        "alpacaAuthenticated": False,
+        "alpacaAuthenticatedAt": None,
+        "alpacaConnected": False,
+        "stockProvider": "Webull OpenAPI only",
         "webullConfigured": bool(APP_KEY and APP_SECRET),
         "webullRegion": REGION,
         "webullConnection": state.get("webullConnection"),
@@ -524,48 +524,17 @@ async def startup():
     global crypto_book_stream_thread
     crypto_book_stream_thread = threading.Thread(target=binance_th_book_stream_main, name="binance-th-book-ticker", daemon=True)
     crypto_book_stream_thread.start()
-    if ALPACA_KEY and ALPACA_SECRET:
-        # Keep the existing Alpaca REST scanner available, while allowing the
-        # Webull production stream to run independently when its credentials exist.
-        if APP_KEY and APP_SECRET:
-            state["provider"] = "webull"
-            state["connection"] = "connecting"
-            stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
-            stream_thread.start()
-            log.info("Webull market stream enabled alongside the existing Alpaca REST scanner.")
-        else:
-            state["provider"] = "alpaca"
-        if ALPACA_STREAM_ENABLED and not (APP_KEY and APP_SECRET):
-            state["connection"] = "connecting"
-            stream_thread = threading.Thread(target=alpaca_stream_main, name="alpaca-websocket", daemon=True)
-            stream_thread.start()
-            log.warning("Alpaca WebSocket enabled by ALPACA_STREAM_ENABLED; ensure no other service uses the same account stream.")
-        elif not (APP_KEY and APP_SECRET):
-            state["connection"] = "rest_only"
-            state["marketDataEntitlement"] = "Alpaca Basic IEX via REST snapshots and minute bars; WebSocket disabled to avoid connection-limit conflicts"
-            log.info("Alpaca WebSocket disabled; running Universe Scanner via REST snapshots/bars only.")
-        global UNIVERSE_THREAD
-        if os.getenv("UNIVERSE_SCANNER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
-            UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="alpaca-universe-scanner", daemon=True)
-            UNIVERSE_THREAD.start()
-            log.info("Alpaca IEX Universe Scanner started.")
-        else:
-            UNIVERSE_STATE.update({"status": "paused", "lastError": "TEMPORARY_AUTH_RECOVERY_PAUSE"})
-            log.warning("Alpaca IEX Universe Scanner startup skipped: UNIVERSE_SCANNER_ENABLED=false")
-        # Webull was already started above when credentials are present.
-        # Do not launch a second MQTT client from the same startup path.
-        if not (APP_KEY and APP_SECRET):
-            state["webullConnection"] = "waiting_credentials"
-        return
+    state["provider"] = "webull"
     if APP_KEY and APP_SECRET:
-        state["provider"] = "webull"
         state["connection"] = "connecting"
+        state["webullConnection"] = "connecting"
         stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
         stream_thread.start()
-        return
-    state["provider"] = "alpaca"
-    state["connection"] = "waiting_credentials"
-    log.warning("Alpaca credentials are not configured; no market data will be fabricated.")
+        log.info("Webull is the sole stock market-data provider; Alpaca is disabled.")
+    else:
+        state["connection"] = "waiting_credentials"
+        state["webullConnection"] = "waiting_credentials"
+        log.warning("Webull credentials are missing; stock market data is unavailable. No alternate stock provider will be used.")
 
 
 
@@ -658,6 +627,28 @@ def scanner(rank_type: str = "DAY_1", direction: str = "DESC"):
     rank_type, direction = rank_type.upper(), direction.upper()
     if rank_type not in SCANNER_TYPES or direction not in {"ASC", "DESC"}:
         return {"status": "error", "message": "พารามิเตอร์การสแกนไม่ถูกต้อง", "candidates": [], "scanned": 0}
+    # Webull-only: expose only symbols actually received on the authenticated stream.
+    webull_rows = []
+    for symbol, quote in (state.get("quotes") or {}).items():
+        if not isinstance(quote, dict) or quote.get("source") != "Webull OpenAPI real-time stream":
+            continue
+        raw = quote.get("raw") if isinstance(quote.get("raw"), dict) else {}
+        price = _dual_price_number(raw or quote)
+        if not price or price <= 0:
+            continue
+        webull_rows.append({"symbol": symbol, "price": float(price),
+                            "source": "Webull OpenAPI real-time stream",
+                            "receivedAt": quote.get("receivedAt")})
+    webull_rows.sort(key=lambda row: row["symbol"])
+    return {
+        "provider": "Webull OpenAPI",
+        "status": "ok" if webull_rows else ("connecting" if APP_KEY and APP_SECRET else "waiting_credentials"),
+        "message": "แสดงเฉพาะหุ้นในรายการติดตามที่ได้รับข้อมูลจาก Webull เท่านั้น; ไม่ใช้ Alpaca หรือ Yahoo",
+        "rankType": rank_type, "direction": direction,
+        "scanned": len(webull_rows), "candidates": webull_rows[:100],
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "feed": "Webull OpenAPI", "coverage": "Webull subscribed watchlist symbols only",
+    }
     # Use the same verified Alpaca IEX universe scan for intraday and extended-hours
     # movers. The daily Yahoo fallback remains separate and explicitly labeled.
     if rank_type in {"PRE_MARKET", "AFTER_MARKET", "MIN_3", "MIN_5"}:
@@ -866,12 +857,19 @@ def quotes_fallback(symbols: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD"):
                 })
     if live_rows:
         return {
-            "status": "ok", "provider": state["provider"],
-            "message": f"ข้อมูลจากสตรีม {state['provider']} สำหรับหุ้นในรายการติดตามเท่านั้น",
+            "status": "ok", "provider": "Webull OpenAPI",
+            "message": "ข้อมูลจาก Webull สำหรับหุ้นในรายการติดตามเท่านั้น",
             "quotes": live_rows, "count": len(live_rows),
             "staleCount": sum(1 for row in live_rows if row.get("stale")),
             "streamStatus": public_status(), "updatedAt": datetime.now(timezone.utc).isoformat()
         }
+
+    return {
+        "status": "source_unavailable", "provider": "Webull OpenAPI",
+        "message": "ยังไม่มีข้อมูลหุ้นจาก Webull สำหรับสัญลักษณ์ที่ร้องขอ; ไม่ใช้ Alpaca, Yahoo หรือแหล่งข้อมูลอื่นแทน",
+        "quotes": [], "count": 0, "staleCount": 0,
+        "streamStatus": public_status(), "updatedAt": datetime.now(timezone.utc).isoformat()
+    }
 
     fresh = {}
     now = time.time()
@@ -3015,7 +3013,7 @@ def paper_engine_status(request: Request):
 
 def _dual_stock_market_price(symbol: str) -> tuple[float, str]:
     provider = str(state.get("provider") or "").lower()
-    if provider not in ("webull", "alpaca"):
+    if provider != "webull":
         raise ValueError("STOCK_MARKET_DATA_NOT_CONNECTED")
     quote = state.get("quotes", {}).get(symbol)
     if not isinstance(quote, dict):
@@ -4359,10 +4357,7 @@ def _dual_market_price(market: str, symbol: str) -> float:
             return float(price)
         raise HTTPException(status_code=503, detail="ข้อมูล Binance TH WebSocket ไม่มีราคาซื้อขายจริง")
     if market == "stocks":
-        if state.get("provider") == "alpaca" and ALPACA_FEED == "delayed_sip":
-            raise HTTPException(status_code=503, detail="ฟีดหุ้นเป็นข้อมูลล่าช้า ไม่อนุญาตให้ใช้กับ Paper Trading")
-        # Prefer the authenticated streaming quote, then use a timestamp-validated
-        # Alpaca IEX snapshot if the websocket briefly disconnects.
+        # Authenticated Webull streaming quotes are the only permitted stock price source.
         quote = state.get("quotes", {}).get(symbol)
         if isinstance(quote, dict):
             try:
@@ -4373,30 +4368,9 @@ def _dual_market_price(market: str, symbol: str) -> float:
             price = _dual_price_number(quote.get("raw") or quote)
             if 0 <= age <= 5 and price and price > 0:
                 return price
-        if ALPACA_KEY and ALPACA_SECRET and ALPACA_FEED in ("iex", "sip"):
-            try:
-                snap = (_alpaca_snapshots([symbol]).get(symbol) or {})
-                trade = snap.get("latestTrade") or {}
-                trade_price = _num(trade.get("p"), 0) or 0
-                trade_time = trade.get("t")
-                if trade_price > 0 and trade_time:
-                    stamp = datetime.fromisoformat(str(trade_time).replace("Z", "+00:00"))
-                    age = (datetime.now(timezone.utc) - stamp).total_seconds()
-                    if 0 <= age <= 60:
-                        return float(trade_price)
-                latest_quote = snap.get("latestQuote") or {}
-                bid, ask = _num(latest_quote.get("bp"), 0), _num(latest_quote.get("ap"), 0)
-                quote_time = latest_quote.get("t")
-                if bid > 0 and ask >= bid and quote_time:
-                    stamp = datetime.fromisoformat(str(quote_time).replace("Z", "+00:00"))
-                    age = (datetime.now(timezone.utc) - stamp).total_seconds()
-                    if 0 <= age <= 60:
-                        return (bid + ask) / 2
-            except Exception as exc:
-                log.info("Alpaca snapshot fallback unavailable for %s (%s)", symbol, type(exc).__name__)
-        if state.get("provider") not in ("alpaca", "webull") and not (ALPACA_KEY and ALPACA_SECRET):
-            raise HTTPException(status_code=503, detail="ยังไม่ได้เชื่อมต่อแหล่งราคาหุ้นสด")
-        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้น IEX/SIP ที่ยืนยันเวลาได้ภายใน 60 วินาที จึงปฏิเสธคำสั่ง")
+        if state.get("provider") != "webull" or state.get("webullConnection") not in {"connected", "streaming"}:
+            raise HTTPException(status_code=503, detail="Webull ยังไม่เชื่อมต่อ จึงไม่อนุญาตให้ใช้ราคาหุ้นจากแหล่งอื่น")
+        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้นสดจาก Webull ที่ยืนยันเวลาได้ภายใน 5 วินาที จึงปฏิเสธคำสั่ง")
     raise HTTPException(status_code=422, detail="เลือกตลาด crypto หรือ stocks เท่านั้น")
 
 
