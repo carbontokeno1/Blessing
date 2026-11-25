@@ -179,6 +179,13 @@ def on_message(client, topic, quotes):
         asyncio.run_coroutine_threadsafe(broadcast({"type": "quotes", "data": state["quotes"], "status": public_status()}), loop)
 
 
+def on_subscribe(client, api_client, session_id):
+    log.info("Webull Level 1 SNAPSHOT subscription accepted for %d symbols", len(SYMBOLS))
+    state["marketDataEntitlement"] = "active"
+    state["webullLastError"] = None
+    state["lastError"] = None
+
+
 def on_connect(client, api_client, session_id):
     log.info("Webull market stream connected")
     state["connection"] = "connected"
@@ -188,11 +195,15 @@ def on_connect(client, api_client, session_id):
     try:
         from webull.data.common.category import Category
         from webull.data.common.subscribe_type import SubscribeType
-        client.subscribe(SYMBOLS, Category.US_STOCK.name, [SubscribeType.QUOTE.name, SubscribeType.SNAPSHOT.name, SubscribeType.TICK.name])
-        log.info("Requested subscriptions for %d symbols", len(SYMBOLS))
+        # Start with Level 1 snapshots only. QUOTE is order-book data and may
+        # require a higher OpenAPI entitlement; requesting all types together
+        # can reject the entire subscription even when Level 1 is available.
+        client.subscribe(SYMBOLS, Category.US_STOCK.name, [SubscribeType.SNAPSHOT.name])
+        log.info("Requested Level 1 SNAPSHOT subscriptions for %d symbols", len(SYMBOLS))
     except Exception as exc:
         state["connection"] = "subscription_error"
         state["webullConnection"] = "subscription_error"
+        state["marketDataEntitlement"] = "subscription_rejected"
         state["webullLastError"] = type(exc).__name__
         state["lastError"] = type(exc).__name__
         log.exception("Webull subscription failed")
@@ -206,6 +217,7 @@ def stream_main():
             http_host=HTTP_HOST, mqtt_host=MQTT_HOST
         )
         client.on_connect_success = on_connect
+        client.on_subscribe_success = on_subscribe
         client.on_quotes_message = on_message
         log.info("Starting Webull MQTT stream for %s in region %s", ",".join(SYMBOLS), REGION)
         state["webullConnection"] = "connecting"
