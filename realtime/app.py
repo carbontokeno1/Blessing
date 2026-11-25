@@ -1922,8 +1922,9 @@ def altcoin_scanner(refresh: int = 0):
             "Fallback feed is display-only; no Paper entries are allowed without Binance candle data."
         ),
     }
-    log.info("Altcoin scan provider=%s eligible=%s evaluated=%s balanced_entries=%s fast_entries_legacy=%s candle_errors=%s balanced_rejects=%s",
+    log.info("Altcoin scan provider=%s eligible=%s evaluated=%s balanced_entries=%s opportunity_entries=%s opportunity_watch=%s fast_entries_legacy=%s candle_errors=%s balanced_rejects=%s",
              provider, len(eligible), len(selected), payload["balancedEntryCount"],
+             payload["opportunityEntryCount"], payload["opportunityWatchCount"],
              payload["fastEntryCount"], candle_errors, reject_signals)
     with ALTCOIN_CACHE_LOCK:
         ALTCOIN_CACHE.update({"at": time.time(), "payload": payload})
@@ -3439,7 +3440,7 @@ def _paper_worker_cycle():
             age = 999999
         fresh = market.get("status") == "ok" and age <= 90
         candidates = {x.get("symbol"): x for x in (market.get("candidates") or [])
-                      if x.get("symbol") and x.get("source") == "Binance"}
+                      if x.get("symbol") and x.get("source") == "Binance TH Spot API"}
         held = {p.get("symbol") for p in positions}
         # Manage existing positions first. No exit is made from stale or missing market prices.
         for pos in positions:
