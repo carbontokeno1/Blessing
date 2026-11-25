@@ -4994,6 +4994,8 @@ def admin_member_slot_engine_status(request: Request):
 # OWNER LIVE AUTO ENGINE — owner-only Binance TH Spot automation.
 # Entries are allowed only after the Super Admin explicitly starts LIVE mode.
 # STOP blocks new entries but keeps monitoring and closing already-owned positions.
+# TEMPORARY SAFETY PAUSE approved by the owner while database authentication is repaired.
+OWNER_LIVE_ENGINE_PAUSED = True
 OWNER_LIVE_ENGINE_INTERVAL = max(10, int(os.getenv("OWNER_LIVE_ENGINE_INTERVAL", "15")))
 OWNER_LIVE_ENGINE_STATE = {"status":"waiting_config","lastCycleAt":None,"lastError":None,
                            "cycles":0,"entries":0,"exits":0,"candidates":0,"actions":[]}
@@ -5202,6 +5204,9 @@ def _owner_live_mark_and_exit(owner_id, positions):
 
 
 def _owner_live_engine_cycle():
+    if OWNER_LIVE_ENGINE_PAUSED:
+        OWNER_LIVE_ENGINE_STATE.update({"status":"paused","lastError":"TEMPORARY_OWNER_APPROVED_PAUSE","liveOrdersEnabled":False})
+        return
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         OWNER_LIVE_ENGINE_STATE.update({"status":"waiting_config","lastError":"SUPABASE_CONFIG_MISSING"})
         return
@@ -5361,6 +5366,10 @@ def _owner_live_engine_loop():
 @app.on_event("startup")
 async def owner_live_engine_startup():
     global OWNER_LIVE_ENGINE_THREAD
+    if OWNER_LIVE_ENGINE_PAUSED:
+        OWNER_LIVE_ENGINE_STATE.update({"status":"paused","lastError":"TEMPORARY_OWNER_APPROVED_PAUSE","liveOrdersEnabled":False})
+        log.warning("Owner live auto engine startup skipped: temporary owner-approved pause")
+        return
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         OWNER_LIVE_ENGINE_STATE["status"]="waiting_config"
         return
@@ -5382,11 +5391,13 @@ def owner_live_auto_status(request: Request):
     }) or []
     return {"ok":True,"control":control,"engine":dict(OWNER_LIVE_ENGINE_STATE),
             "positions":positions,"masterSwitch":OWNER_LIVE_MASTER_ON(),
-            "liveOrdersEnabled":OWNER_LIVE_MASTER_ON() and bool(control and control.get("live_enabled"))}
+            "liveOrdersEnabled":(not OWNER_LIVE_ENGINE_PAUSED) and OWNER_LIVE_MASTER_ON() and bool(control and control.get("live_enabled"))}
 
 
 @app.post("/binance-th/auto-trade/start")
 async def owner_live_auto_start(request: Request):
+    if OWNER_LIVE_ENGINE_PAUSED:
+        raise HTTPException(status_code=423,detail="ระบบ Owner Live Engine ถูกพักชั่วคราวเพื่อซ่อมระบบฐานข้อมูลและล็อกอิน")
     owner = _binance_th_owner_auth(request)
     try:
         body = await request.json()
