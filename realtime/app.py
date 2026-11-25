@@ -2227,6 +2227,73 @@ def member_member_portfolios(request: Request):
     }
 
 
+@app.get("/member/member-portfolios/daily-trades")
+def member_member_portfolios_daily_trades(request: Request, day: str = ""):
+    """Return the authenticated member's own Paper order log for one Bangkok calendar day."""
+    user = _member_portfolio_auth(request)
+    try:
+        report_day = datetime.strptime(day, "%Y-%m-%d").date() if day else datetime.now(ZoneInfo("Asia/Bangkok")).date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="รูปแบบวันที่ต้องเป็น YYYY-MM-DD")
+    tz = ZoneInfo("Asia/Bangkok")
+    start = datetime(report_day.year, report_day.month, report_day.day, tzinfo=tz)
+    end = start + timedelta(days=1)
+    start_utc = start.astimezone(timezone.utc).isoformat()
+    end_utc = end.astimezone(timezone.utc).isoformat()
+
+    registry = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "member_no,portfolio_type,mode,paper_slot_id,assigned_user_id",
+        "assigned_user_id": "eq." + str(user["id"]),
+        "portfolio_type": "in.(crypto_paper,stock_paper)",
+        "mode": "eq.paper", "limit": "4",
+    }) or []
+    crypto_slot_ids = list(dict.fromkeys(
+        str(row["paper_slot_id"]) for row in registry
+        if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id")
+    ))
+    stock_member_nos = list(dict.fromkeys(
+        str(row["member_no"]) for row in registry
+        if row.get("portfolio_type") == "stock_paper" and row.get("member_no") is not None
+    ))
+    stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
+        "select": "id,slot_no,assigned_user_id",
+        "slot_no": "in.(" + ",".join(stock_member_nos) + ")",
+        "assigned_user_id": "eq." + str(user["id"]), "limit": "4",
+    }) if stock_member_nos else []
+    slots = []
+    for row in registry:
+        ptype = row.get("portfolio_type")
+        if ptype == "crypto_paper" and row.get("paper_slot_id"):
+            slots.append({"slot_id": str(row["paper_slot_id"]), "portfolio_type": ptype})
+        elif ptype == "stock_paper":
+            slot = next((x for x in stock_slots if str(x.get("slot_no")) == str(row.get("member_no"))), None)
+            if slot and slot.get("id"):
+                slots.append({"slot_id": str(slot["id"]), "portfolio_type": ptype})
+    reports = []
+    for slot in slots:
+        table = "blessing_stock_paper_slot_orders" if slot["portfolio_type"] == "stock_paper" else "blessing_paper_slot_orders"
+        orders = _sb_rest(table, {
+            "select": "slot_id,side,symbol,status,reason,realized_pnl_thb,created_at",
+            "slot_id": "eq." + slot["slot_id"],
+            "created_at": "gte." + start_utc,
+            "and": "(created_at.lt." + end_utc + ")",
+            "order": "created_at.desc", "limit": "1000",
+        }) or []
+        reports.append({
+            "portfolioType": slot["portfolio_type"],
+            "orders": [{
+                "side": order.get("side"), "symbol": order.get("symbol"),
+                "status": order.get("status"), "reason": order.get("reason"),
+                "realizedPnlThb": order.get("realized_pnl_thb"),
+                "createdAt": order.get("created_at"),
+            } for order in orders],
+        })
+    return {
+        "ok": True, "day": report_day.isoformat(), "timezone": "Asia/Bangkok",
+        "portfolios": reports, "liveOrdersIncluded": False,
+    }
+
+
 @app.post("/member/member-portfolios/control")
 async def member_control_own_portfolio(request: Request):
     """A member may toggle only a registry row assigned to their authenticated user id."""
