@@ -515,8 +515,13 @@ async def startup():
             state["marketDataEntitlement"] = "Alpaca Basic IEX via REST snapshots and minute bars; WebSocket disabled to avoid connection-limit conflicts"
             log.info("Alpaca WebSocket disabled; running Universe Scanner via REST snapshots/bars only.")
         global UNIVERSE_THREAD
-        UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="alpaca-universe-scanner", daemon=True)
-        UNIVERSE_THREAD.start()
+        if os.getenv("UNIVERSE_SCANNER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
+            UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="alpaca-universe-scanner", daemon=True)
+            UNIVERSE_THREAD.start()
+            log.info("Alpaca IEX Universe Scanner started.")
+        else:
+            UNIVERSE_STATE.update({"status": "paused", "lastError": "TEMPORARY_AUTH_RECOVERY_PAUSE"})
+            log.warning("Alpaca IEX Universe Scanner startup skipped: UNIVERSE_SCANNER_ENABLED=false")
         return
     if APP_KEY and APP_SECRET:
         state["provider"] = "webull"
