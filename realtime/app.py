@@ -5328,6 +5328,14 @@ def _owner_live_engine_cycle():
         if any(p.get("status") in ("CLOSING","RECONCILIATION_REQUIRED") for p in positions):
             OWNER_LIVE_ENGINE_STATE.update({"status":"reconciliation_required","lastError":"OPEN_ORDER_REQUIRES_RECONCILIATION"})
             return
+        active_intents = _sb_rest("blessing_owner_live_order_intents", {
+            "select":"id,status", "owner_user_id":"eq."+owner_id,
+            "status":"in.(RESERVED,SUBMITTING,NEW,PARTIALLY_FILLED,UNKNOWN,RECONCILIATION_REQUIRED)",
+            "limit":"100"
+        }) or []
+        if active_intents:
+            OWNER_LIVE_ENGINE_STATE.update({"status":"reconciliation_required","lastError":"LIVE_ORDER_INTENT_REQUIRES_RECONCILIATION"})
+            return
         exits = _owner_live_mark_and_exit(owner_id,[p for p in positions if p.get("status")=="OPEN"])
         positions = _sb_rest("blessing_owner_live_positions",{
             "select":"id,symbol,quantity,entry_price,last_price,status",
