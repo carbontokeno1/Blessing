@@ -104,8 +104,14 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         info = next((x for x in data.get("symbols", []) if x.get("symbol") == symbol), None)
         if not info or info.get("status") != "TRADING" or "MARKET" not in (info.get("orderTypes") or []):
             raise RuntimeError("SYMBOL_NOT_MARKET_TRADABLE")
-        if str(info.get("quoteAsset") or "").upper() != "USDT":
-            raise RuntimeError("AUTO_ENGINE_USDT_PAIRS_ONLY")
+        quote_asset = str(info.get("quoteAsset") or "").upper()
+        # Strategy entries remain USDT-quoted. The sole THB exception is
+        # USDTTHB BUY, used only to convert free THB into the engine's USDT cash.
+        if quote_asset != "USDT" and not (
+            symbol == "USDTTHB" and str(info.get("baseAsset") or "").upper() == "USDT"
+            and quote_asset == "THB"
+        ):
+            raise RuntimeError("AUTO_ENGINE_UNSUPPORTED_QUOTE_ASSET")
         filters = {str(x.get("filterType")): x for x in info.get("filters", []) if isinstance(x, dict)}
         lot = filters.get("MARKET_LOT_SIZE") or {}
         if _d(lot.get("stepSize")) <= 0:
@@ -223,6 +229,47 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             asset = str(row.get("reserved_asset") or "").upper()
             reserved[asset] = reserved.get(asset, Decimal("0")) + _d(row.get("remaining_reserved_amount"))
         protected = {"USDT"}  # Keep USDT as quote cash; other eligible free assets may be converted.
+
+        # THB is the account's fiat quote balance, not an altcoin. Convert it
+        # through the Binance TH USDTTHB market, if that market is live and
+        # the free amount meets its current filters and liquidity checks.
+        thb_free = max(Decimal("0"), _d(next(
+            (x.get("free") for x in account.get("balances", [])
+             if str(x.get("asset") or "").upper() == "THB"), 0
+        )) - reserved.get("THB", Decimal("0")))
+        if thb_free > 0:
+            try:
+                info, lot, min_notional = exchange_rules("USDTTHB")
+                if (str(info.get("baseAsset") or "").upper() == "USDT"
+                        and str(info.get("quoteAsset") or "").upper() == "THB"
+                        and thb_free >= min_notional):
+                    import requests
+                    book_resp = requests.get(api_base + "/api/v1/ticker/bookTicker",
+                                             params={"symbol": "USDTTHB"}, timeout=(4, 8))
+                    book_resp.raise_for_status()
+                    book = book_resp.json()
+                    if isinstance(book, dict) and isinstance(book.get("data"), dict):
+                        book = book["data"]
+                    bid, ask = _d(book.get("bidPrice")), _d(book.get("askPrice"))
+                    price = fresh_price("USDTTHB")
+                    if bid > 0 and ask >= bid and price > 0:
+                        spread_pct = (ask - bid) / price * Decimal("100")
+                        if spread_pct <= Decimal("0.30"):
+                            fill = market_order(uid, "USDTTHB", "BUY", quote_amount=thb_free)
+                            record_event(uid, "AUTO_CONVERT_THB_TO_USDT", "LIVE", {
+                                "symbol": "USDTTHB", "spentTHB": _fmt(fill["quoteQty"]),
+                                "receivedUSDT": _fmt(fill["executedQty"]),
+                                "spreadPct": _fmt(spread_pct),
+                                "clientOrderId": fill["clientOrderId"]
+                            })
+                            _worker_state["lastAction"] = {
+                                "action": "CONVERT_THB_TO_USDT", "spentTHB": _fmt(fill["quoteQty"]),
+                                "receivedUSDT": _fmt(fill["executedQty"])
+                            }
+                            return fill
+            except Exception as exc:
+                log.info("THB-to-USDT conversion skipped: %s", type(exc).__name__)
+
         import requests
         choices = []
         for row in account.get("balances", []):
