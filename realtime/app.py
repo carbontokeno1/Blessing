@@ -1695,6 +1695,35 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
         and volume_ok and spread_ok and atr_stop_pct is not None
     )
 
+    # Separate, moderately wider opportunity signal for discovery/Paper evaluation.
+    # It deliberately does NOT replace balancedEntry, which remains the only
+    # signal accepted by the existing owner live-order engine.
+    close_above_ema20 = bool(latest and ema20 is not None and float(latest["close"]) > ema20)
+    opportunity_trend_ok = bool(trend_aligned or close_above_ema20)
+    opportunity_momentum_ok = bool(
+        m5 is not None and m5 > 0 and m15 is not None and m15 > 0
+        and m1 is not None and m1 > -0.15
+    )
+    opportunity_volume_ok = bool(rvol is not None and rvol >= 1.0)
+    opportunity_spread_ok = bool(spread is not None and 0 < spread <= 0.35)
+    opportunity_confirmation_ok = bool(
+        pullback_reclaim or breakout or (close_above_ema20 and m1 is not None and m1 > 0)
+    )
+    opportunity_atr_ok = bool(atr_stop_pct is not None and 0.8 <= atr_stop_pct <= 2.0)
+    opportunity_score = (
+        (20 if opportunity_trend_ok else 0)
+        + (25 if opportunity_momentum_ok else 0)
+        + (20 if opportunity_confirmation_ok else 0)
+        + (15 if opportunity_volume_ok else 0)
+        + (10 if opportunity_spread_ok else 0)
+        + (10 if opportunity_atr_ok else 0)
+    )
+    opportunity_entry = bool(
+        opportunity_trend_ok and opportunity_momentum_ok
+        and opportunity_volume_ok and opportunity_spread_ok
+        and opportunity_confirmation_ok and opportunity_atr_ok
+    )
+
     momentum_points = sum(1 for value in (m1, m5, m15, m60) if value is not None and value > 0)
     score = min(100, momentum_points * 15
                 + (25 if rvol is not None and rvol >= 2 else 0)
@@ -1713,6 +1742,13 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
         "pullbackReclaim": pullback_reclaim, "atr14": atr14,
         "atrPct": atr_pct, "atrStopPct": atr_stop_pct,
         "balancedScore": balanced_score, "balancedEntry": balanced_entry,
+        "opportunityScore": opportunity_score, "opportunityEntry": opportunity_entry,
+        "opportunityTrendOk": opportunity_trend_ok,
+        "opportunityMomentumOk": opportunity_momentum_ok,
+        "opportunityVolumeOk": opportunity_volume_ok,
+        "opportunitySpreadOk": opportunity_spread_ok,
+        "opportunityConfirmationOk": opportunity_confirmation_ok,
+        "opportunityAtrOk": opportunity_atr_ok,
         "bid": bid or None, "ask": ask or None,
         "candleCount": len(bars),
         "candleTime": latest.get("closeTime") if latest else None,
@@ -1830,6 +1866,7 @@ def altcoin_scanner(refresh: int = 0):
 
     selected.sort(key=lambda x: (
         x.get("balancedEntry", False), x.get("balancedScore", 0),
+        x.get("opportunityEntry", False), x.get("opportunityScore", 0),
         x.get("fastEntry", False), x.get("score", 0),
         x.get("rvol") or 0, x["change24h"], x["quoteVolume24h"]
     ), reverse=True)
@@ -1869,6 +1906,8 @@ def altcoin_scanner(refresh: int = 0):
         "candidateCount": len(selected),
         "fastEntryCount": sum(1 for x in selected if x.get("fastEntry")),
         "balancedEntryCount": sum(1 for x in selected if x.get("balancedEntry") is True),
+        "opportunityEntryCount": sum(1 for x in selected if x.get("opportunityEntry") is True),
+        "opportunityWatchCount": sum(1 for x in selected if not x.get("opportunityEntry") and (x.get("opportunityScore") or 0) >= 50),
         "candleErrors": candle_errors,
         "filterCounts": reject,
         "signalDiagnostics": reject_signals,
@@ -1878,7 +1917,7 @@ def altcoin_scanner(refresh: int = 0):
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "coverage": provider + " Spot USDT pairs; all eligible pairs counted; top 100 by 24h quote volume evaluated; minimum 250,000 USDT",
         "metricsNote": (
-            "BALANCED_EMA_PULLBACK_ATR requires EMA20/EMA50 trend alignment, pullback reclaim, positive 1m/5m/15m momentum, RVOL >= 1.3, spread <= 0.5%, and a valid ATR stop. Non-entry candidates include balanced rejectReason diagnostics."
+            "BALANCED_EMA_PULLBACK_ATR remains the conservative live-entry gate. OPPORTUNITY_SCAN is a separate wider discovery/Paper signal requiring positive 5m/15m momentum, 1m momentum above -0.15%, RVOL >= 1.0, spread <= 0.35%, confirmation, and ATR stop 0.8-2.0%. Opportunity signals do not authorize live orders."
             if provider == "Binance TH Spot API" else
             "Fallback feed is display-only; no Paper entries are allowed without Binance candle data."
         ),
