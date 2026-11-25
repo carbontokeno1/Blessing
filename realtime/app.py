@@ -2437,11 +2437,11 @@ def admin_member_portfolios(request: Request):
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     })
-    if len(rows) != 20:
+    if len(rows) != 40:
         raise HTTPException(status_code=503, detail={
             "code": "PORTFOLIO_REGISTRY_INCOMPLETE",
-            "expected": 20, "found": len(rows),
-            "message": "ทะเบียน Paper สมาชิกยังไม่ครบ 20 พอร์ต จึงยังไม่พร้อมเปิดใช้งาน",
+            "expected": 40, "found": len(rows),
+            "message": "ทะเบียนสมาชิกต้องมีพอร์ตครบ 40 พอร์ต (Paper 20 และ Live 20) จึงจะแสดงข้อมูลได้",
         })
 
     # Fetch all paper slots and open-position counts in batches instead of
@@ -2511,8 +2511,8 @@ def admin_member_portfolios_report(request: Request):
     if len(registry) != 40:
         raise HTTPException(status_code=503, detail={
             "code": "PORTFOLIO_REGISTRY_INCOMPLETE",
-            "expected": 20, "found": len(registry),
-            "message": "ทะเบียน Paper สมาชิกยังไม่ครบ 20 พอร์ต",
+            "expected": 40, "found": len(registry),
+            "message": "ทะเบียนสมาชิกต้องมีพอร์ตครบ 40 พอร์ต (Paper 20 และ Live 20)",
         })
 
     def num(value):
