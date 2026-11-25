@@ -1577,45 +1577,100 @@ def _binance_1m_klines(symbol: str):
 
 
 def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
+    """Calculate legacy momentum and Balanced EMA-pullback metrics from closed 1m candles."""
     price = float(row.get("price") or row.get("lastPrice") or 0)
-    closes = [b["close"] for b in bars]
+    closes = [float(b["close"]) for b in bars]
     latest = bars[-1] if bars else None
     m1 = ((closes[-1] / closes[-2]) - 1) * 100 if len(closes) >= 2 and closes[-2] else None
     m5 = ((closes[-1] / closes[-6]) - 1) * 100 if len(closes) >= 6 and closes[-6] else None
     m15 = ((closes[-1] / closes[-16]) - 1) * 100 if len(closes) >= 16 and closes[-16] else None
     m60 = ((closes[-1] / closes[-61]) - 1) * 100 if len(closes) >= 61 and closes[-61] else None
+
     previous = bars[-21:-1] if len(bars) >= 21 else []
     avg_quote_volume = sum(b["quoteVolume"] for b in previous) / len(previous) if previous else 0
     rvol = latest["quoteVolume"] / avg_quote_volume if latest and avg_quote_volume > 0 else None
     prior_highs = [b["high"] for b in bars[-21:-1] if b.get("high") is not None]
     breakout = bool(latest and len(prior_highs) >= 10 and latest["close"] > max(prior_highs))
+
+    def ema(values, period):
+        if len(values) < period:
+            return None
+        alpha = 2.0 / (period + 1.0)
+        value = sum(values[:period]) / period
+        for item in values[period:]:
+            value = item * alpha + value * (1.0 - alpha)
+        return value
+
+    ema20 = ema(closes, 20)
+    ema50 = ema(closes, 50)
+    ema20_history = [ema(closes[:i + 1], 20) if i >= 19 else None for i in range(len(closes))]
+    pullback_touch = any(
+        ema20_history[i] is not None
+        and float(bars[i].get("low") or 0) > 0
+        and float(bars[i]["low"]) <= ema20_history[i] * 1.003
+        for i in range(max(19, len(bars) - 4), max(19, len(bars) - 1))
+    )
+    trend_aligned = bool(ema20 is not None and ema50 is not None and ema20 > ema50)
+    pullback_reclaim = bool(
+        latest and ema20 is not None and pullback_touch
+        and float(latest["close"]) > ema20
+    )
+
+    true_ranges = []
+    for i in range(1, len(bars)):
+        high = float(bars[i].get("high") or 0)
+        low = float(bars[i].get("low") or 0)
+        prev_close = float(bars[i - 1].get("close") or 0)
+        if high > 0 and low > 0 and prev_close > 0:
+            true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    atr14 = sum(true_ranges[-14:]) / 14 if len(true_ranges) >= 14 else None
+    atr_pct = (atr14 / closes[-1] * 100) if atr14 is not None and closes and closes[-1] > 0 else None
+    # Bound the 1m ATR stop distance to avoid microscopic stops or outsized position risk.
+    atr_stop_pct = min(2.0, max(0.8, atr_pct * 1.5)) if atr_pct is not None else None
+
     spread = None
     bid, ask = float(row.get("bidPrice") or row.get("bid") or 0), float(row.get("askPrice") or row.get("ask") or 0)
     if price > 0 and bid > 0 and ask >= bid:
         spread = ((ask - bid) / price) * 100
+
+    momentum_ok = bool(m1 is not None and m1 > 0 and m5 is not None and m5 > 0
+                       and m15 is not None and m15 > 0)
+    volume_ok = bool(rvol is not None and rvol >= 1.3)
+    spread_ok = bool(spread is not None and 0 < spread <= 0.5)
+    balanced_score = (
+        (25 if trend_aligned else 0)
+        + (25 if pullback_reclaim else 0)
+        + (20 if momentum_ok else 0)
+        + (15 if volume_ok else 0)
+        + (15 if spread_ok else 0)
+    )
+    balanced_entry = bool(
+        trend_aligned and pullback_reclaim and momentum_ok
+        and volume_ok and spread_ok and atr_stop_pct is not None
+    )
+
     momentum_points = sum(1 for value in (m1, m5, m15, m60) if value is not None and value > 0)
     score = min(100, momentum_points * 15
                 + (25 if rvol is not None and rvol >= 2 else 0)
                 + (20 if breakout else 0)
-                + (15 if spread is not None and 0 < spread <= 0.5 else 0))
+                + (15 if spread_ok else 0))
     fast_entry = bool(
-        m1 is not None and m1 > 0
-        and m5 is not None and m5 > 0
-        and rvol is not None and rvol >= 2
-        and breakout
-        and spread is not None and 0 < spread <= 0.5
-        and score >= 60
+        m1 is not None and m1 > 0 and m5 is not None and m5 > 0
+        and rvol is not None and rvol >= 2 and breakout and spread_ok and score >= 60
     )
     return {
         "m1": m1, "m5": m5, "m15": m15, "m60": m60,
         "rvol": rvol, "breakout": breakout,
-        "volumeSpike": bool(rvol is not None and rvol >= 2),
+        "volumeSpike": bool(rvol is not None and rvol >= 1.3),
         "spreadPct": spread, "score": score, "fastEntry": fast_entry,
+        "ema20": ema20, "ema50": ema50, "trendAligned": trend_aligned,
+        "pullbackReclaim": pullback_reclaim, "atr14": atr14,
+        "atrPct": atr_pct, "atrStopPct": atr_stop_pct,
+        "balancedScore": balanced_score, "balancedEntry": balanced_entry,
         "bid": bid or None, "ask": ask or None,
         "candleCount": len(bars),
         "candleTime": latest.get("closeTime") if latest else None,
     }
-
 
 @app.get("/altcoin-scanner")
 def altcoin_scanner(refresh: int = 0):
@@ -1728,6 +1783,7 @@ def altcoin_scanner(refresh: int = 0):
         metrics_source = provider + " ticker snapshot only; Paper entries disabled without Binance candles"
 
     selected.sort(key=lambda x: (
+        x.get("balancedEntry", False), x.get("balancedScore", 0),
         x.get("fastEntry", False), x.get("score", 0),
         x.get("rvol") or 0, x["change24h"], x["quoteVolume24h"]
     ), reverse=True)
