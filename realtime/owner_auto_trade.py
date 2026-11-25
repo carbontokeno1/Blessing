@@ -42,7 +42,8 @@ def _master_on():
 
 
 def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
-                              api_key, api_secret, api_base, scanner, market_state):
+                              api_key, api_secret, api_base, scanner, market_state,
+                              start_worker=True):
     def account_snapshot():
         if not api_key or not api_secret:
             raise HTTPException(status_code=503, detail="ยังไม่ได้ตั้งค่า Binance TH API Key/Secret บน Render")
@@ -540,9 +541,12 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
 
     global _worker_started
     with _worker_lock:
-        if not _worker_started and not OWNER_LIVE_ENGINE_PAUSED:
+        if start_worker and not _worker_started and not OWNER_LIVE_ENGINE_PAUSED:
             threading.Thread(target=worker_loop, name="blessing-owner-live-auto-trade", daemon=True).start()
             _worker_started = True
+        elif not start_worker:
+            _worker_state.update({"status": "disabled_duplicate_engine", "lastError": None})
+            log.info("Legacy owner auto-trade worker disabled; primary balanced engine owns live execution")
         elif OWNER_LIVE_ENGINE_PAUSED:
             _worker_state.update({"status": "paused", "lastError": "TEMPORARY_OWNER_APPROVED_PAUSE"})
 
