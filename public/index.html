@@ -1078,6 +1078,8 @@ async function loadAdminPortfolioControls(){
   const rows=Array.isArray(result.portfolios)?result.portfolios:[];
   const paper=rows.filter(x=>x.mode==='paper'&&['crypto_paper','stock_paper'].includes(x.portfolio_type));
   const enabled=paper.filter(x=>x.enabled).length,disabled=paper.length-enabled;
+  if(enable){enable.innerHTML='<span style="display:inline-flex;align-items:center;justify-content:center;gap:9px"><i class="paper-led '+(enabled?'led-green':'led-gray')+'"></i>▶ เปิด PAPER</span>';enable.setAttribute('aria-pressed',enabled>0?'true':'false');enable.style.boxShadow=enabled?'0 0 9px rgba(50,229,138,.5),0 0 20px rgba(50,229,138,.22)':'none';}
+  if(disable){disable.innerHTML='<span style="display:inline-flex;align-items:center;justify-content:center;gap:9px"><i class="paper-led '+(disabled?'led-red':'led-gray')+'"></i>■ ปิด PAPER</span>';disable.setAttribute('aria-pressed',disabled>0?'true':'false');disable.style.boxShadow=disabled?'0 0 9px rgba(255,82,82,.42),0 0 20px rgba(255,82,82,.18)':'none';}
   if(state){const led=paper.length?(enabled?'led-green':'led-red'):'led-gray';state.innerHTML='<span style="display:inline-flex;align-items:center;gap:8px"><i class="paper-led '+led+'"></i>'+(paper.length?(enabled?'PAPER ACTIVE':'PAPER STOPPED'):'ยังไม่มีพอร์ต')+'</span>';state.style.color=paper.length?(enabled?'#48e09a':'#ff7777'):'inherit';}
   if(counts)counts.textContent='เปิด '+enabled+' / '+paper.length+' · ปิด '+disabled;
   setButtons(paper.length>0);
