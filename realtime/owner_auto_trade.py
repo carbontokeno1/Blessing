@@ -16,6 +16,8 @@ from fastapi import HTTPException, Request
 
 log = logging.getLogger("blessing-owner-auto-trade")
 OWNER_ID = "62835b65-13eb-4d99-9647-c4b22bd61ef3"
+# Temporary owner-approved pause during authentication/database recovery.
+OWNER_LIVE_ENGINE_PAUSED = True
 ACTIVE_STATES = {"RUNNING", "STOPPING"}
 TERMINAL = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
 _worker_lock = threading.Lock()
@@ -436,6 +438,10 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         _worker_state["lastAction"] = {"action": "BUY", "symbol": symbol, "quantity": _fmt(qty), "quoteAmount": _fmt(fill["quoteQty"])}
 
     def worker_loop():
+        if OWNER_LIVE_ENGINE_PAUSED:
+            _worker_state.update({"status": "paused", "lastError": "TEMPORARY_OWNER_APPROVED_PAUSE"})
+            log.warning("Owner live auto-trade worker startup skipped: temporary pause")
+            return
         _worker_state["status"] = "running"
         while True:
             try:
@@ -465,9 +471,11 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
 
     global _worker_started
     with _worker_lock:
-        if not _worker_started:
+        if not _worker_started and not OWNER_LIVE_ENGINE_PAUSED:
             threading.Thread(target=worker_loop, name="blessing-owner-live-auto-trade", daemon=True).start()
             _worker_started = True
+        elif OWNER_LIVE_ENGINE_PAUSED:
+            _worker_state.update({"status": "paused", "lastError": "TEMPORARY_OWNER_APPROVED_PAUSE"})
 
 
     @app.get("/binance-th/auto-trade/portfolio")
@@ -600,6 +608,8 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
 
     @app.post("/binance-th/auto-trade/start")
     async def owner_auto_trade_start(request: Request):
+        if OWNER_LIVE_ENGINE_PAUSED:
+            raise HTTPException(status_code=423, detail="ระบบ Owner Live Engine ถูกพักชั่วคราวเพื่อซ่อมระบบฐานข้อมูลและล็อกอิน")
         owner = owner_auth(request)
         uid = str(owner["id"])
         if uid != OWNER_ID:
