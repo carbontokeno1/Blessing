@@ -542,18 +542,23 @@ async def startup():
     global crypto_book_stream_thread
     crypto_book_stream_thread = threading.Thread(target=binance_th_book_stream_main, name="binance-th-book-ticker", daemon=True)
     crypto_book_stream_thread.start()
-    state["provider"] = "webull"
-    if APP_KEY and APP_SECRET:
+    state["provider"] = "alpaca" if ALPACA_KEY and ALPACA_SECRET else "webull"
+    if ALPACA_KEY and ALPACA_SECRET:
+        state["connection"] = "scanner_starting"
+        state["marketDataEntitlement"] = ALPACA_FEED.upper() + " REST feed"
+        state["webullConnection"] = "disabled_by_alpaca"
+        log.info("Alpaca %s REST scanner is the primary stock data source; Webull stream skipped.", ALPACA_FEED.upper())
+    elif APP_KEY and APP_SECRET:
         state["connection"] = "connecting"
         state["webullConnection"] = "connecting"
         stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
         stream_thread.start()
-        log.info("Webull stream enabled as an additional quote source.")
+        log.info("Webull stream enabled as stock data source because Alpaca credentials are unavailable.")
     else:
         state["connection"] = "waiting_credentials"
         state["webullConnection"] = "waiting_credentials"
         present = sorted(k for k in os.environ if k.startswith("WEBULL_"))
-        log.warning("Webull credentials missing after environment read; detected variable names=%s; app_key_present=%s app_secret_present=%s", present, bool(APP_KEY), bool(APP_SECRET))
+        log.warning("No stock market data credentials available; Webull variable names=%s; webull_key_present=%s webull_secret_present=%s alpaca_key_present=%s alpaca_secret_present=%s", present, bool(APP_KEY), bool(APP_SECRET), bool(ALPACA_KEY), bool(ALPACA_SECRET))
     global UNIVERSE_THREAD
     if ALPACA_KEY and ALPACA_SECRET:
         if UNIVERSE_THREAD is None or not UNIVERSE_THREAD.is_alive():
