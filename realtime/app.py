@@ -22,7 +22,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from broker_adapters import brokerage_readonly_snapshot
 from ai_decision import build_decision_preview
-from adaptive_strategy import adaptive_decision, build_binance_th_candidates, experiment_window
+from adaptive_strategy import adaptive_decision, paper_opportunity_decision, build_binance_th_candidates, experiment_window
 from dual_portfolio import portfolio_overview
 from fastapi.middleware.cors import CORSMiddleware
 from member_capital import register_member_capital_routes
@@ -4885,7 +4885,7 @@ def _member_slot_engine_cycle():
                 price = _num(row.get("price"), 0)
                 if not symbol or not price or not symbol.endswith("USDT"):
                     continue
-                decision = adaptive_decision("crypto", row, fee_bps=10, slippage_bps=5)
+                decision = paper_opportunity_decision(row, fee_bps=10, slippage_bps=5)
                 if decision.get("decision") == "PAPER_CANDIDATE":
                     crypto_candidates[symbol] = (price, decision)
 
