@@ -382,6 +382,22 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             sb_rest("blessing_owner_live_positions", {"id": "eq." + str(pos["id"])}, "PATCH", {
                 "last_price": _fmt(price), "last_checked_at": datetime.now(timezone.utc).isoformat()
             })
+            entry = _d(pos.get("average_entry_price"))
+            initial_risk = entry - stop
+            if pos.get("status") == "OPEN" and entry > 0 and initial_risk > 0 and price >= entry + initial_risk:
+                # At +1R, protect the position above break-even after estimated fees.
+                protected_stop = max(stop, entry * Decimal("1.001"))
+                if price >= entry + initial_risk * Decimal("1.5"):
+                    # Trail the stop 0.75R behind the current price after +1.5R.
+                    protected_stop = max(protected_stop, price - initial_risk * Decimal("0.75"))
+                if protected_stop > stop:
+                    metadata = dict(pos.get("metadata") or {})
+                    metadata.update({"balancedBreakEvenArmed": True, "balancedTrailingStop": True})
+                    sb_rest("blessing_owner_live_positions", {"id": "eq." + str(pos["id"])}, "PATCH", {
+                        "stop_loss_price": _fmt(protected_stop), "metadata": metadata,
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    })
+                    stop = protected_stop
             if pos.get("status") == "CLOSING" or price <= stop or price >= target:
                 reason = "STOP_LOSS" if price <= stop else "TAKE_PROFIT" if price >= target else "STOP_REQUEST"
                 close_position(uid, pos, price, reason, config)
@@ -442,14 +458,16 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             raise RuntimeError("BINANCE_TH_SCANNER_NOT_READY")
         open_symbols = {str(x.get("symbol")) for x in refreshed}
         candidates = [x for x in (scan.get("candidates") or [])
-                      if x.get("fastEntry") is True and x.get("symbol") not in open_symbols
-                      and _d(x.get("price")) > 0 and _d(x.get("spreadPct"), "999") <= Decimal("0.5")]
-        candidates.sort(key=lambda x: (_d(x.get("score")), _d(x.get("rvol"))), reverse=True)
+                      if x.get("balancedEntry") is True and x.get("symbol") not in open_symbols
+                      and _d(x.get("price")) > 0 and _d(x.get("spreadPct"), "999") <= Decimal("0.5")
+                      and Decimal("0.8") <= _d(x.get("atrStopPct")) <= Decimal("2.0")]
+        candidates.sort(key=lambda x: (_d(x.get("balancedScore")), _d(x.get("rvol"))), reverse=True)
         if not candidates:
             return
-        risk_pct = _d(config.get("risk_per_trade_pct", 2.0))
-        stop_pct = _d(config.get("stop_loss_pct", 2))
-        cap_pct = _d(config.get("max_position_pct", 100))
+        risk_pct = _d(config.get("risk_per_trade_pct", 1.0))
+        candidate = candidates[0]
+        stop_pct = _d(candidate.get("atrStopPct"))
+        cap_pct = _d(config.get("max_position_pct", 50))
         if stop_pct <= 0 or risk_pct <= 0:
             raise RuntimeError("INVALID_RISK_CONFIGURATION")
         risk_budget = free_usdt * risk_pct / Decimal("100")
@@ -461,26 +479,29 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
         notional = min(notional, max(Decimal("0"), exposure_cap - used))
         if notional <= 0:
             return
-        candidate = candidates[0]
         symbol = str(candidate["symbol"])
         fill = market_order(uid, symbol, "BUY", quote_amount=notional)
         avg = fill["avgPrice"]
         qty = fill["executedQty"]
         stop_price = avg * (Decimal("1") - stop_pct / Decimal("100"))
-        take_price = avg * (Decimal("1") + _d(config.get("take_profit_pct", 3)) / Decimal("100"))
+        take_price = avg * (Decimal("1") + (stop_pct * Decimal("1.8")) / Decimal("100"))
         sb_rest("blessing_owner_live_positions", {}, "POST", {
             "owner_user_id": uid, "symbol": symbol, "base_asset": fill["baseAsset"],
             "quote_asset": fill["quoteAsset"], "quantity": _fmt(qty),
             "average_entry_price": _fmt(avg), "entry_quote_amount": _fmt(fill["quoteQty"]),
             "stop_loss_price": _fmt(stop_price), "take_profit_price": _fmt(take_price),
             "status": "OPEN", "entry_client_order_id": fill["clientOrderId"],
-            "last_price": _fmt(avg), "metadata": {"strategy": "FAST_ENTRY", "score": candidate.get("score"),
-            "rvol": candidate.get("rvol"), "spreadPct": candidate.get("spreadPct")}
+            "last_price": _fmt(avg), "metadata": {"strategy": "BALANCED_EMA_PULLBACK", "balancedScore": candidate.get("balancedScore"),
+            "ema20": candidate.get("ema20"), "ema50": candidate.get("ema50"),
+            "atrStopPct": candidate.get("atrStopPct"), "rvol": candidate.get("rvol"),
+            "spreadPct": candidate.get("spreadPct"), "initialRiskPct": _fmt(stop_pct)}
         })
         record_event(uid, "POSITION_OPENED", "LIVE", {
             "symbol": symbol, "quantity": _fmt(qty), "entryPrice": _fmt(avg),
             "stopLoss": _fmt(stop_price), "takeProfit": _fmt(take_price),
-            "quoteAmount": _fmt(fill["quoteQty"]), "clientOrderId": fill["clientOrderId"]
+            "strategy": "BALANCED_EMA_PULLBACK", "riskPerTradePct": _fmt(risk_pct),
+            "atrStopPct": _fmt(stop_pct), "quoteAmount": _fmt(fill["quoteQty"]),
+            "clientOrderId": fill["clientOrderId"]
         })
         _worker_state["entries"] += 1
         _worker_state["lastAction"] = {"action": "BUY", "symbol": symbol, "quantity": _fmt(qty), "quoteAmount": _fmt(fill["quoteQty"])}
@@ -701,13 +722,14 @@ def register_owner_auto_trade(app, owner_auth, sb_rest, sb_rpc, signed_request,
             raise HTTPException(status_code=409, detail="ระบบกำลังทำงานหรือกำลังหยุดอยู่แล้ว")
         cfg = control.get("strategy_config") or {}
         cfg.setdefault("universe", "BINANCE_TH_SPOT")
-        cfg.setdefault("max_open_positions", 3)
-        cfg.setdefault("risk_per_trade_pct", 0.5)
+        cfg.setdefault("max_open_positions", 2)
+        cfg.setdefault("risk_per_trade_pct", 1.0)
         cfg.setdefault("max_daily_loss_pct", 2)
-        cfg.setdefault("stop_loss_pct", 2)
-        cfg.setdefault("take_profit_pct", 3)
+        cfg.setdefault("stop_loss_pct", 1.2)
+        cfg.setdefault("take_profit_pct", 2.16)
         cfg.setdefault("scan_interval_seconds", 15)
-        cfg.setdefault("max_position_pct", 20)
+        cfg.setdefault("max_position_pct", 50)
+        cfg["strategy_model"] = "BALANCED_EMA_PULLBACK_ATR"
         cfg.setdefault("auto_convert_to_usdt", True)
         cfg.setdefault("min_usdt_reserve", 0)
         now = datetime.now(timezone.utc).isoformat()
