@@ -2861,7 +2861,8 @@ def admin_member_portfolios_report(request: Request):
                 "equity": equity, "realizedPnl": realized, "unrealizedPnl": unrealized,
                 "netPnl": realized + unrealized, "returnPct": ((equity - capital) / capital * 100) if capital else 0,
                 "fees": fees, "openPositions": len(positions), "orderCount": len(orders),
-                "openOrders": sum(1 for o in orders if str(o.get("status") or "").lower() in ("new", "open", "pending", "partially_filled", "accepted")),\n                "recentOrders": [{ "symbol": o.get("symbol"), "side": o.get("side"), "status": o.get("status"), "createdAt": o.get("created_at"), "portfolioType": ptype } for o in orders[:5]],
+                "openOrders": sum(1 for o in orders if str(o.get("status") or "").lower() in ("new", "open", "pending", "partially_filled", "accepted")),
+                "recentOrders": [{ "symbol": o.get("symbol"), "side": o.get("side"), "status": o.get("status"), "createdAt": o.get("created_at"), "portfolioType": ptype } for o in orders[:5]],
                 "filledOrders": filled_orders, "buyOrders": buy_orders, "sellOrders": sell_orders,
                 "positions": [{
                     "symbol": p.get("symbol"), "quantity": num(p.get("quantity")),
