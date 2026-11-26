@@ -1818,7 +1818,7 @@ if(recoveryMode){showRecoveryForm()}else{await enter(session)}
 <section id="login" class="card"><h1>ผู้ดูแลระบบ</h1><p class="muted">เข้าสู่ระบบด้วยบัญชี Admin / Super Admin ของ BLESSING</p><form id="loginForm"><label>อีเมล</label><input id="email" type="email" required autocomplete="username"><label>รหัสผ่าน</label><input id="password" type="password" required autocomplete="current-password"><button>เข้าสู่ระบบ</button></form><div id="loginMsg" class="status">ระบบจะตรวจสอบสิทธิ์จากฐานข้อมูล ไม่ใช้การซ่อนปุ่มเป็นมาตรการรักษาความปลอดภัย</div></section>
 <section id="app" class="hidden">
 <section id="centerDashboard" class="centerHero" style="display:none">
- <div class="centerTitle"><div><div class="brand">BLESSING · OWNER / CENTER</div><h1>Control & Portfolio Dashboard</h1><div class="muted">ภาพรวมพอร์ตสมาชิก 10 คน · ข้อมูลอ่านจากฐานข้อมูลจริง · รีเฟรชอัตโนมัติทุก 10 วินาที</div></div><span class="tag">OWNER PRIVATE</span></div>
+ <div class="centerTitle"><div><div class="brand">BLESSING · OWNER / CENTER</div><h1>Control & Portfolio Dashboard</h1><div class="muted">ภาพรวมพอร์ตสมาชิก 5 คน · ข้อมูลอ่านจากฐานข้อมูลจริง · รีเฟรชอัตโนมัติทุก 10 วินาที</div></div><span class="tag">OWNER PRIVATE</span></div>
  <div class="globalActions">
   <button id="allTradingOn">▶ เปิด PAPER ทั้ง 20 พอร์ต</button><button id="allTradingOff" class="danger">■ ปิด PAPER ทั้ง 20 พอร์ต</button>
   <button id="allLiveOn" class="secondary">◉ ตั้ง LIVE STANDBY ทั้ง 20</button><button id="allLiveOff" class="secondary">○ ปิด LIVE ทั้ง 20</button><button id="emergencyStop" class="danger">⛔ EMERGENCY STOP · ปิดทั้ง 40</button>
@@ -1838,7 +1838,7 @@ if(recoveryMode){showRecoveryForm()}else{await enter(session)}
  </div>
  <div class="syncLine">หมายเหตุ: LIVE เป็น Standby เท่านั้น ไม่มี Equity / P&L จริงให้แสดงจนกว่าจะเชื่อมบัญชีและเปิดใช้ระบบ Live อย่างเป็นทางการ</div>
 </section>
-<div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>สมาชิก 10 คน · พอร์ต 40 รายการ</h2><div class="muted">สมาชิก 01–10 · คนละ 4 พอร์ต · แสดงสถานะและข้อมูลรายพอร์ตเพียงชุดเดียว</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="muted">LIVE เป็น Standby เท่านั้น สวิตช์นี้ไม่ส่งคำสั่งซื้อขายเงินจริง</div><div id="tradingMembers" class="tradeGrid"></div></div>
+<div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>สมาชิก 5 คน · พอร์ต 20 รายการ</h2><div class="muted">สมาชิก 01–05 · คนละ 4 พอร์ต · แสดงสถานะและข้อมูลรายพอร์ตเพียงชุดเดียว</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="muted">LIVE เป็น Standby เท่านั้น สวิตช์นี้ไม่ส่งคำสั่งซื้อขายเงินจริง</div><div id="tradingMembers" class="tradeGrid"></div></div>
 </section></div>
 <script type="module">
 import {createClient} from 'https://esm.sh/@supabase/supabase-js@2.95.0';
@@ -1856,7 +1856,7 @@ async function start(session){
  await loadMembers();if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},10000)}
 }
 async function loadMembers(){
- const {data,error}=await sb.from('profiles').select('user_id,email,display_name,role,status').eq('role','member').order('created_at',{ascending:false}).limit(10);
+ const {data,error}=await sb.from('profiles').select('user_id,email,display_name,role,status').eq('role','member').order('created_at',{ascending:false}).limit(5);
  if(error)throw error;
  profileCache=data||[];
 }
@@ -1897,15 +1897,15 @@ function renderCenter(report,rows){
  $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก '+(report.refreshIntervalSeconds||10)+' วินาที';
 }
 async function loadTradingControls(){
- const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังอ่านข้อมูลเรียลไทม์ทั้ง 40 พอร์ต...';box.replaceChildren();
+ const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังอ่านข้อมูลเรียลไทม์ทั้ง 20 พอร์ต...';box.replaceChildren();
  try{
   const [data,report]=await Promise.all([adminApi('/api/admin/member-portfolios'),adminApi('/api/admin/member-portfolios/report')]);
   const rows=(data.portfolios||[]).filter(x=>['crypto_paper','stock_paper','crypto_live','stock_live'].includes(x.portfolio_type));
   const reports=new Map((report.portfolios||[]).map(x=>[String(x.id),x]));
   const profileMap=new Map(profileCache.map(p=>[p.user_id,p]));
-  const byMember=new Map();for(let n=1;n<=10;n++)byMember.set(String(n),[]);
+  const byMember=new Map();for(let n=1;n<=5;n++)byMember.set(String(n),[]);
   for(const row of rows){const key=String(row.member_no);if(byMember.has(key))byMember.get(key).push(row)}
-  status.textContent='ข้อมูลพอร์ตเชื่อมต่อแล้ว · '+rows.length+'/40 รายการ · LIVE EXECUTION LOCKED';
+  status.textContent='ข้อมูลพอร์ตเชื่อมต่อแล้ว · '+rows.length+'/20 รายการ · LIVE EXECUTION LOCKED';
   renderCenter(report,rows);
   const labels={crypto_paper:'CRYPTO PAPER',stock_paper:'STOCK PAPER',crypto_live:'CRYPTO LIVE',stock_live:'STOCK LIVE'};
   const order=['crypto_paper','stock_paper','crypto_live','stock_live'];
@@ -1940,7 +1940,7 @@ async function loadTradingControls(){
    }
    box.append(card);
   }
-  if(rows.length!==40)status.textContent+=' · คำเตือน: ทะเบียนมี '+rows.length+' แถว ไม่ครบ 40';
+  if(rows.length!==20)status.textContent+=' · คำเตือน: ทะเบียนมี '+rows.length+' แถว ไม่ครบ 20';
  }catch(e){status.textContent='โหลดข้อมูล Dashboard ไม่สำเร็จ: '+e.message}
 }
 async function setPortfolioGroup(mode,enabled){
