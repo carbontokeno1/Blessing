@@ -1873,14 +1873,15 @@ function renderCenter(report,rows){
  const openPositions=Number(t.openPositions||0);
  const allOrders=(report.portfolios||[]).flatMap(p=>p.recentOrders||[]);
  const openOrders=allOrders.filter(o=>['new','open','pending','partially_filled','accepted'].includes(String(o.status||'').toLowerCase())).length;
+ const running=paperOn,standby=liveReady,closed=totalOff;
  const metrics=[
-  ['มูลค่ารวม Equity',money(t.paperEquity),'รวมมูลค่าที่มีข้อมูล · Paper only; Live ยังไม่เชื่อมบัญชี'],
-  ['P&L รวม',(pnl>=0?'+':'')+money(pnl)+' · '+pct.toFixed(2)+'%','Paper · Realized + Unrealized'],
-  ['RUNNING',paperOn+'/10','Paper · ไฟเขียว'],
-  ['STANDBY',liveReady+'/10','Live · ไฟเหลือง/ส้ม · ไม่ส่งคำสั่งจริง'],
-  ['OFF',totalOff+'/20','Paper '+paperOff+' · Live '+liveOff],
-  ['Open Positions',String(openPositions),'รายการถือครอง Paper'],
-  ['Open Orders',String(openOrders),'คำสั่งที่ยังไม่ปิดสถานะ']
+  ['Equity รวมที่มีข้อมูล',money(t.paperEquity),'Paper 10 พอร์ต · Live ยังไม่เชื่อมบัญชีเงินจริง'],
+  ['P&L รวมที่มีข้อมูล',(pnl>=0?'+':'')+money(pnl)+' · '+(capital?pct.toFixed(2)+'%':'—'),'Paper · Realized + Unrealized'],
+  ['RUNNING',running+'/20','Paper · ไฟเขียว · จาก 10 พอร์ต'],
+  ['STANDBY',standby+'/20','Live · ไฟเหลือง/ส้ม · จาก 10 พอร์ต'],
+  ['OFF',closed+'/20','Paper '+paperOff+' · Live '+liveOff],
+  ['Open Positions',String(openPositions),'Paper · Live ไม่มีข้อมูลบัญชี'],
+  ['Open Orders',String(openOrders),'Paper · Live ไม่มีคำสั่งเงินจริง']
  ];
  $('centerMetrics').replaceChildren();
  for(const [label,value,note] of metrics){const box=document.createElement('div');box.className='metric';const a=document.createElement('small');a.textContent=label;const b=document.createElement('strong');b.textContent=value;const c=document.createElement('em');c.textContent=note;box.append(a,b,c);$('centerMetrics').append(box)}
@@ -1912,7 +1913,7 @@ async function loadTradingControls(){
    const assigned=items.find(x=>x.assigned_user_id),prof=assigned?profileMap.get(assigned.assigned_user_id):null;
    const heading=document.createElement('h3');heading.textContent='สมาชิก '+String(memberNo).padStart(2,'0')+' · '+(prof?.display_name||assigned?.assigned_member_name||assigned?.member_label||('Member '+String(memberNo).padStart(2,'0')));
    const count=document.createElement('div');count.className='memberPortfolioCount';count.textContent=items.length+'/4 พอร์ตในทะเบียน'+(items.some(x=>x.assigned_user_id)?' · ผูกบัญชีแล้ว':' · ยังไม่ผูกบัญชี');
-   card.append(heading,count);const memberPaper=items.filter(x=>x.mode==='paper').map(x=>reports.get(String(x.id))).filter(x=>x?.dataAvailable===true);const memberEquity=memberPaper.reduce((a,x)=>a+Number(x.equity||0),0);const memberPnl=memberPaper.reduce((a,x)=>a+Number(x.netPnl||0),0);const memberCapital=memberPaper.reduce((a,x)=>a+Number(x.capital||x.initialCapital||0),0);const memberPct=memberCapital?memberPnl/memberCapital*100:0;const summary=document.createElement('div');summary.className='memberPortfolioCount';summary.textContent=memberPaper.length?'Paper Equity '+money(memberEquity)+' · P&L '+(memberPnl>=0?'+':'')+money(memberPnl)+' ('+memberPct.toFixed(2)+'%)':'Paper Equity — · P&L ข้อมูลยังไม่พร้อม';card.append(summary);const map=new Map(items.map(x=>[x.portfolio_type,x]));
+   card.append(heading,count);const memberPaper=items.filter(x=>x.mode==='paper').map(x=>reports.get(String(x.id))).filter(x=>x?.dataAvailable===true);const memberEquity=memberPaper.reduce((a,x)=>a+Number(x.equity||0),0);const memberPnl=memberPaper.reduce((a,x)=>a+Number(x.netPnl||0),0);const memberCapital=memberPaper.reduce((a,x)=>a+Number(x.capital||x.initialCapital||0),0);const memberPct=memberCapital?memberPnl/memberCapital*100:null;const memberRunning=items.filter(x=>x.mode==='paper'&&x.enabled).length;const memberStandby=items.filter(x=>x.mode==='live'&&x.live_ready).length;const memberOff=items.length-memberRunning-memberStandby;const summary=document.createElement('div');summary.className='memberPortfolioCount';summary.textContent=(memberPaper.length?'Paper Equity '+money(memberEquity)+' · P&L '+(memberPnl>=0?'+':'')+money(memberPnl)+' ('+(memberPct===null?'—':memberPct.toFixed(2)+'%')+')':'Paper Equity — · P&L ข้อมูลยังไม่พร้อม')+' · RUNNING '+memberRunning+'/4 · STANDBY '+memberStandby+'/4 · OFF '+memberOff+'/4';card.append(summary);const map=new Map(items.map(x=>[x.portfolio_type,x]));
    for(const type of order){
     const row=map.get(type),rep=row?reports.get(String(row.id)):null,isLive=type.endsWith('_live');
     const line=document.createElement('div');line.className='tradeAccount';const info=document.createElement('div');
