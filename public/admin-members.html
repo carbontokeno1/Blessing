@@ -9,7 +9,7 @@ main{max-width:1100px;margin:auto;padding:22px 14px 60px}.top{display:flex;justi
 <section id="login" class="card"><h1>ผู้ดูแลระบบ</h1><p class="muted">เข้าสู่ระบบด้วยบัญชี Admin / Super Admin ของ BLESSING</p><form id="loginForm"><label>อีเมล</label><input id="email" type="email" required autocomplete="username"><label>รหัสผ่าน</label><input id="password" type="password" required autocomplete="current-password"><button>เข้าสู่ระบบ</button></form><div id="loginMsg" class="status">ระบบจะตรวจสอบสิทธิ์จากฐานข้อมูล ไม่ใช้การซ่อนปุ่มเป็นมาตรการรักษาความปลอดภัย</div></section>
 <section id="app" class="hidden">
 <div class="card"><div class="memberHead"><div><h1>สมาชิกและวงเงิน</h1><div class="muted">ทุนต้นทางอยู่ในบัญชีหลักของเจ้าของระบบ · แยกยอดภายในรายสมาชิก</div></div><span class="tag">ADMIN ONLY</span></div><div class="status">วงเงินที่จัดสรรในระยะนี้เป็น Paper Allocation เพื่อทดสอบบัญชีแยก ยังไม่ส่งคำสั่งซื้อขายเงินจริงและไม่ใช่ยอดเงินฝากที่ถอนได้</div></div>
-<div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>OWNER CONTROL · รวมพอร์ตสมาชิก 10 คน</h2><div class="muted">สมาชิก 01–10 · คนละ 4 พอร์ต · รวม 40 พอร์ต | PAPER เปิด–ปิดแยกรายพอร์ต · LIVE เตรียมพร้อมในโหมด STANDBY</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="globalActions"><button id="allTradingOn">▶ เปิด PAPER ทั้ง 20 พอร์ต</button><button id="allTradingOff" class="danger">■ ปิด PAPER ทั้ง 20 พอร์ต</button></div><div id="tradingStatus" class="status">กำลังโหลดสถานะพอร์ต...</div><h3>ควบคุมรายสมาชิก / รายพอร์ต</h3><div id="tradingMembers" class="tradeGrid"></div></div>
+<div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>OWNER CONTROL · รวมพอร์ตสมาชิก 10 คน</h2><div class="muted">สมาชิก 01–10 · คนละ 4 พอร์ต · รวม 40 พอร์ต | PAPER เปิด–ปิดแยกรายพอร์ต · LIVE เตรียมพร้อมในโหมด STANDBY</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="globalActions"><button id="allTradingOn">▶ เปิด PAPER ทั้ง 20 พอร์ต</button><button id="allTradingOff" class="danger">■ ปิด PAPER ทั้ง 20 พอร์ต</button><button id="allLiveOn" class="secondary">◉ เปิด LIVE เป็น STANDBY ทั้ง 20</button><button id="allLiveOff" class="secondary">○ ปิด LIVE ทั้ง 20 พอร์ต</button><button id="emergencyStop" class="danger">⛔ EMERGENCY STOP · ปิดทั้ง 40 พอร์ต</button></div><div class="muted">LIVE READY คือเตรียมระบบเท่านั้น ไม่ใช่การอนุมัติส่งคำสั่งเงินจริง และไม่มีการส่งคำสั่งซื้อขายจากสวิตช์นี้</div><div id="tradingStatus" class="status">กำลังโหลดสถานะพอร์ต...</div><h3>ควบคุมรายสมาชิก / รายพอร์ต</h3><div id="tradingMembers" class="tradeGrid"></div></div>
 <div class="card"><h2>รายชื่อสมาชิก</h2><div id="members"><div class="status">กำลังโหลด...</div></div></div>
 </section></main>
 <script type="module">
@@ -78,15 +78,15 @@ async function loadTradingControls(){
   for(const row of rows){const key=String(row.member_no);if(byMember.has(key))byMember.get(key).push(row)}
   const paperRows=rows.filter(x=>x.mode==='paper'&&['crypto_paper','stock_paper'].includes(x.portfolio_type));
   const liveRows=rows.filter(x=>x.mode==='live'&&['crypto_live','stock_live'].includes(x.portfolio_type));
-  const enabled=paperRows.filter(x=>x.enabled).length;
-  status.textContent='10 สมาชิก · '+rows.length+'/40 พอร์ต · PAPER '+enabled+'/20 เปิด · LIVE '+liveRows.length+'/20 STANDBY';
+  const enabled=paperRows.filter(x=>x.enabled).length;const liveReady=liveRows.filter(x=>x.enabled).length;
+  status.textContent='10 สมาชิก · '+rows.length+'/40 พอร์ต · PAPER '+enabled+'/20 ACTIVE · LIVE '+liveReady+'/20 READY (STANDBY)';
   const labels={crypto_paper:'CRYPTO PAPER',stock_paper:'STOCK PAPER',crypto_live:'CRYPTO LIVE',stock_live:'STOCK LIVE'};
   const order=['crypto_paper','stock_paper','crypto_live','stock_live'];
   for(const [memberNo,items] of byMember){
    const card=document.createElement('article');card.className='tradeMember';
    const assigned=items.find(x=>x.assigned_user_id),prof=assigned?profileMap.get(assigned.assigned_user_id):null;
-   const heading=document.createElement('h3');heading.textContent='สมาชิก '+String(memberNo).padStart(2,'0')+' · '+(prof?.display_name||assigned?.assigned_member_name||assigned?.member_label||'ยังไม่ผูกบัญชี');
-   const count=document.createElement('div');count.className='memberPortfolioCount';count.textContent=items.length+'/4 พอร์ต';
+   const heading=document.createElement('h3');heading.textContent='สมาชิก '+String(memberNo).padStart(2,'0')+' · '+(prof?.display_name||assigned?.assigned_member_name||assigned?.member_label||('Member '+String(memberNo).padStart(2,'0')));
+   const count=document.createElement('div');count.className='memberPortfolioCount';count.textContent=items.length+'/4 พอร์ตในทะเบียน'+(items.some(x=>x.assigned_user_id)?' · ผูกบัญชีแล้ว':' · ยังไม่ผูกบัญชี');
    card.append(heading,count);
    const map=new Map(items.map(x=>[x.portfolio_type,x]));
    for(const type of order){
@@ -97,17 +97,16 @@ async function loadTradingControls(){
     const state=document.createElement('div');
     const isLive=type.endsWith('_live');
     const active=!!row?.enabled;
-    const light=document.createElement('span');light.className='signal '+(isLive?'standby':active?'on':'off');
-    const label=document.createElement('span');label.textContent=isLive?' STANDBY · พร้อมใช้งานเมื่ออนุมัติ':active?' เปิดใช้งาน':' ปิดใช้งาน';
+    const light=document.createElement('span');light.className='signal '+(isLive?(active?'standby':'off'):(active?'on':'off'));
+    const label=document.createElement('span');label.textContent=isLive?(active?' STANDBY · READY':' ปิด · OFF'):(active?' ACTIVE · RUNNING':' ปิด · STOPPED');
     state.append(light,label);info.append(title,state);line.append(info);
     const control=document.createElement('div');control.className='portfolioSwitch';
     const button=document.createElement('button');
-    if(isLive){button.className='secondary';button.textContent='STANDBY';button.disabled=true;control.append(button)}
-    else if(!row){button.className='secondary';button.textContent='ไม่พบพอร์ต';button.disabled=true;control.append(button)}
+    if(!row){button.className='secondary';button.textContent='ไม่พบพอร์ต';button.disabled=true;control.append(button)}
     else {
-     button.className=active?'isOn':'isOff';button.textContent=active?'ON':'OFF';
+     button.className=isLive?(active?'secondary isOn':'isOff'):(active?'isOn':'isOff');button.textContent=isLive?(active?'READY':'OFF'):(active?'ON':'OFF');
      button.setAttribute('aria-label',(active?'ปิด':'เปิด')+' '+labels[type]+' สมาชิก '+memberNo);
-     button.onclick=async()=>{button.disabled=true;try{await adminApi('/api/admin/member-portfolios/control','POST',{portfolioId:row.id,enabled:!active});await loadTradingControls()}catch(e){alert('เปลี่ยนสถานะไม่สำเร็จ: '+e.message);button.disabled=false}};
+     button.onclick=async()=>{button.disabled=true;try{await adminApi('/api/admin/member-portfolios/control','POST',{portfolioId:row.id,mode:isLive?'live':'paper',enabled:!active});await loadTradingControls()}catch(e){alert('เปลี่ยนสถานะไม่สำเร็จ: '+e.message);button.disabled=false}};
      control.append(button);
     }
     line.append(control);card.append(line);
@@ -117,14 +116,16 @@ async function loadTradingControls(){
   if(rows.length!==40)status.textContent+=' · คำเตือน: ทะเบียนมี '+rows.length+' แถว ไม่ครบ 40';
  }catch(e){status.textContent='โหลดสถานะหรือเชื่อมต่อระบบไม่ได้: '+e.message}
 }
-async function setAllTrading(enabled){
- const buttons=[$('allTradingOn'),$('allTradingOff')];buttons.forEach(b=>b.disabled=true);
- try{const result=await adminApi('/api/admin/member-portfolios/control','POST',{enabled});await loadTradingControls();alert((enabled?'เปิด':'ปิด')+' พอร์ต PAPER สำเร็จ '+(result.updatedCount||0)+' พอร์ต')}
- catch(e){alert('สั่งงานไม่สำเร็จ: '+e.message)}
- finally{buttons.forEach(b=>b.disabled=false)}
+async function setPortfolioGroup(mode,enabled){
+ const ids=mode==='paper'?['allTradingOn','allTradingOff']:mode==='live'?['allLiveOn','allLiveOff']:['emergencyStop'];const buttons=ids.map(id=>$(id));buttons.forEach(b=>b.disabled=true);
+ try{const result=await adminApi('/api/admin/member-portfolios/control','POST',{mode,enabled});await loadTradingControls();alert((mode==='all'?'EMERGENCY STOP':(mode==='paper'?'PAPER':'LIVE'))+' · ปรับสถานะแล้ว '+(result.updatedCount||0)+' พอร์ต'+(mode==='live'?' · LIVE ยังคงไม่อนุมัติส่งคำสั่งเงินจริง':''))}
+ catch(e){alert('สั่งงานไม่สำเร็จ: '+e.message)}finally{buttons.forEach(b=>b.disabled=false)}
 }
-$('allTradingOn').addEventListener('click',()=>{if(confirm('ยืนยันเปิดเทรด PAPER ให้สมาชิกทุกบัญชี ทั้งหุ้นและคริปโต?'))setAllTrading(true)});
-$('allTradingOff').addEventListener('click',()=>{if(confirm('ยืนยันปิดเทรด PAPER ของสมาชิกทุกบัญชี?'))setAllTrading(false)});
+$('allTradingOn').addEventListener('click',()=>{if(confirm('ยืนยันเปิด PAPER ทั้ง 20 พอร์ต?'))setPortfolioGroup('paper',true)});
+$('allTradingOff').addEventListener('click',()=>{if(confirm('ยืนยันปิด PAPER ทั้ง 20 พอร์ต?'))setPortfolioGroup('paper',false)});
+$('allLiveOn').addEventListener('click',()=>{if(confirm('ตั้ง LIVE ทั้ง 20 พอร์ตเป็น READY / STANDBY? การดำเนินการนี้ไม่ส่งคำสั่งเงินจริง'))setPortfolioGroup('live',true)});
+$('allLiveOff').addEventListener('click',()=>{if(confirm('ยืนยันปิดสถานะ READY ของ LIVE ทั้ง 20 พอร์ต?'))setPortfolioGroup('live',false)});
+$('emergencyStop').addEventListener('click',()=>{if(confirm('EMERGENCY STOP: ยืนยันปิดสถานะทั้ง 40 พอร์ตทันที?'))setPortfolioGroup('all',false)});
 async function changeStatus(id,status){
  try{const {data,error}=await sb.rpc('blessing_admin_set_member_status',{p_user_id:id,p_status:status});if(error)throw error;await loadMembers()}catch(e){alert('บันทึกสถานะไม่สำเร็จ: '+e.message)}
 }
