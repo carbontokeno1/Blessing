@@ -1394,7 +1394,7 @@ async function refreshWebullLiveAccount(force=true){
  if(meta)meta.textContent='กำลังเรียกข้อมูลบัญชีจาก Webull Production Trading API';
  try{
   const token=await ownerAutoToken();
-  const url=MARKET_BRIDGE_URL+'/webull/trading/account'+(force?'?refresh=true':'');
+  const url='/api/webull/trading/account'+(force?'?refresh=true':'');
   const r=await fetch(url,{headers:{Authorization:'Bearer '+token,Accept:'application/json'},cache:'no-store'});
   const d=await r.json().catch(()=>({}));
   if(!r.ok)throw Error(d.detail||d.message||'ตรวจสอบบัญชี Webull ไม่สำเร็จ');
