@@ -1459,6 +1459,18 @@ connectMarketBridge();
   <div class="field"><label for="authPassword">รหัสผ่าน</label><div class="password-wrap"><input id="authPassword" type="password" autocomplete="current-password" required placeholder="รหัสผ่าน Supabase"><button class="eye-btn" type="button" data-toggle-password="authPassword" aria-label="แสดงรหัสผ่าน" aria-pressed="false">แสดง</button></div></div>
   <button class="full" id="authSubmit" type="submit">เข้าสู่ระบบอย่างปลอดภัย</button>
   <button class="forgot-link" type="button" id="showForgot">ลืมรหัสผ่าน?</button>
+  <button class="forgot-link" type="button" id="showSignup">ยังไม่มีบัญชี? สมัครสมาชิก</button>
+  <div id="signupPanel" class="hidden" style="margin-top:14px;padding:14px;border:1px solid #344258;border-radius:14px;background:#0b1220">
+   <h2 style="font-size:17px;margin:0 0 12px;color:#e8bd62">สมัครสมาชิก Blessing</h2>
+   <div class="field"><label for="signupName">ชื่อที่ใช้แสดง</label><input id="signupName" maxlength="60" autocomplete="name" placeholder="ชื่อสมาชิก"></div>
+   <div class="field"><label for="signupEmail">อีเมล</label><input id="signupEmail" type="email" maxlength="254" autocomplete="email" placeholder="name@example.com"></div>
+   <div class="field"><label for="signupPassword">ตั้งรหัสผ่าน (อย่างน้อย 12 ตัวอักษร)</label><input id="signupPassword" type="password" minlength="12" maxlength="128" autocomplete="new-password" placeholder="รหัสผ่าน"></div>
+   <div class="field"><label for="signupConfirm">ยืนยันรหัสผ่าน</label><input id="signupConfirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" placeholder="กรอกรหัสผ่านอีกครั้ง"></div>
+   <label style="display:flex;gap:9px;align-items:flex-start;font-size:12px;line-height:1.6;color:#c7d2e2;margin:12px 0"><input id="signupTerms" type="checkbox" style="width:17px;height:17px;flex:0 0 auto;margin-top:2px">ข้าพเจ้ายอมรับข้อตกลงการใช้งานและรับทราบว่าการสมัครยังไม่ถือว่าได้รับอนุมัติหรือได้รับสิทธิ์ซื้อขาย จนกว่าผู้ดูแลระบบจะตรวจสอบและเปิดใช้งานบัญชี</label>
+   <button class="full" type="button" id="signupSubmit">สร้างบัญชีสมาชิก</button>
+   <button class="forgot-link" type="button" id="hideSignup">กลับไปเข้าสู่ระบบ</button>
+   <div id="signupMessage" class="authmsg" role="status" aria-live="polite"></div>
+  </div>
   <div id="forgotPanel" class="hidden"><div class="field"><label for="forgotEmail">อีเมลสำหรับรับลิงก์ตั้งรหัสผ่านใหม่</label><input id="forgotEmail" type="email" autocomplete="email" placeholder="name@example.com"></div><button class="secondary full" type="button" id="sendReset">ส่งลิงก์ตั้งรหัสผ่านใหม่</button><div id="forgotMessage" class="authmsg" role="status"></div></div>
   <div id="authMessage" class="authmsg" role="status"></div>
   <div class="authhint">บัญชีต้องได้รับการอนุมัติและเปิดใช้งานโดยผู้ดูแลระบบก่อนเข้าใช้งาน หากยังไม่มีบัญชี โปรดติดต่อผู้ดูแลระบบ</div>
@@ -1469,6 +1481,39 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb = createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
 const gate=document.getElementById('authGate'), form=document.getElementById('authForm'), msg=document.getElementById('authMessage'), submit=document.getElementById('authSubmit');
 function say(t){const m=document.getElementById('authMessage');if(m)m.textContent=t}
+const signupPanel=document.getElementById('signupPanel');
+const signupMessage=document.getElementById('signupMessage');
+function signupSay(t,ok=false){signupMessage.textContent=t;signupMessage.style.color=ok?'#43d6a0':'#ff9bad'}
+document.getElementById('showSignup').addEventListener('click',()=>{
+ document.getElementById('forgotPanel').classList.add('hidden');
+ signupPanel.classList.remove('hidden');
+ document.getElementById('signupName').focus();
+});
+document.getElementById('hideSignup').addEventListener('click',()=>{signupPanel.classList.add('hidden');signupSay('')});
+document.getElementById('signupSubmit').addEventListener('click',async()=>{
+ const btn=document.getElementById('signupSubmit');
+ const displayName=document.getElementById('signupName').value.trim();
+ const email=document.getElementById('signupEmail').value.trim().toLowerCase();
+ const password=document.getElementById('signupPassword').value;
+ const confirm=document.getElementById('signupConfirm').value;
+ if(displayName.length<2){signupSay('กรุณากรอกชื่ออย่างน้อย 2 ตัวอักษร');return}
+ if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)){signupSay('กรุณาตรวจสอบรูปแบบอีเมล');return}
+ if(password.length<12||password.length>128){signupSay('รหัสผ่านต้องมี 12–128 ตัวอักษร');return}
+ if(password!==confirm){signupSay('รหัสผ่านทั้งสองช่องไม่ตรงกัน');return}
+ if(!document.getElementById('signupTerms').checked){signupSay('กรุณายอมรับข้อตกลงก่อนสมัคร');return}
+ btn.disabled=true;signupSay('กำลังสร้างบัญชีสมาชิก...');
+ try{
+  const {data,error}=await sb.auth.signUp({email,password,options:{data:{display_name:displayName},emailRedirectTo:location.origin+location.pathname}});
+  if(error){signupSay(error.message.toLowerCase().includes('already registered')?'อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบหรือใช้ลืมรหัสผ่าน':('สมัครไม่สำเร็จ: '+error.message));btn.disabled=false;return}
+  if(data.session){await sb.auth.signOut().catch(()=>{});}
+  document.getElementById('authEmail').value=email;
+  document.getElementById('authPassword').value='';
+  document.getElementById('signupPassword').value='';
+  document.getElementById('signupConfirm').value='';
+  signupSay(data.user?.identities?.length===0?'อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบหรือใช้ลืมรหัสผ่าน':'สร้างบัญชีแล้ว! บัญชีของคุณอยู่ระหว่างรอผู้ดูแลอนุมัติ หากระบบส่งอีเมลยืนยัน กรุณาตรวจสอบกล่องจดหมายก่อนเข้าสู่ระบบ',true);
+  btn.disabled=false;
+ }catch(err){signupSay('เชื่อมต่อระบบสมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่');btn.disabled=false}
+});
 let enteringUserId=null,enteringPromise=null,activeUserId=null,forcedPasswordMode=false;
 async function enter(session){
  if(!session?.user){activeUserId=null;gate.style.display='grid';return}
