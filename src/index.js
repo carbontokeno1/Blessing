@@ -287,6 +287,25 @@ export default {
     const pathname = url.pathname.replace(/\/+$/, "") || "/";
     // Same-origin member API proxy: avoids browser CORS/network failures
     // while preserving backend authentication and per-user ownership checks.
+    // Same-origin owner-only member access management proxy.
+    if (pathname === "/api/admin/member-access" || pathname === "/api/admin/member-access/portfolio-limit") {
+      const isLimit = pathname.endsWith("/portfolio-limit");
+      const allowedMethod = isLimit ? "PUT" : (request.method === "GET" ? "GET" : "PUT");
+      if (request.method !== allowedMethod) return json({ok:false,message:allowedMethod+" only"},405,{allow:allowedMethod});
+      const target = isLimit ? "/admin/member-access/portfolio-limit" : "/admin/member-access";
+      try {
+        const authorization = request.headers.get("authorization") || "";
+        if (!authorization.startsWith("Bearer ")) return json({ok:false,message:"กรุณาเข้าสู่ระบบก่อน"},401);
+        const init = {method:request.method,headers:{"accept":"application/json","authorization":authorization},signal:AbortSignal.timeout(25000),cache:"no-store"};
+        if (request.method !== "GET") { init.headers["content-type"]="application/json"; init.body=await request.text(); }
+        const response=await fetch("https://blessing-webull-realtime-djfm.onrender.com"+target,init);
+        const payload=await response.json().catch(()=>({ok:false,message:"Backend returned invalid JSON"}));
+        return json(payload,response.status);
+      } catch(error) {
+        console.error("admin_member_access_proxy_failed",target,error?.message||error);
+        return json({ok:false,code:"ADMIN_MEMBER_ACCESS_UNAVAILABLE",message:"เชื่อมต่อระบบกำหนดสิทธิ์สมาชิกไม่สำเร็จ กรุณาลองใหม่"},502);
+      }
+    }
     if (pathname === "/api/member/member-portfolios") {
       if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
       return memberBackendProxy(request, "/member/member-portfolios");
