@@ -1,23 +1,29 @@
 name: Deploy Blessing to Cloudflare Workers
 
-# Triggered by repository updates after deployment secrets are configured.
 on:
   push:
     branches:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: blessing-cloudflare-production
+  cancel-in-progress: true
+
 jobs:
   deploy:
+    name: Deploy BLESSING Worker
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Deploy Worker and public assets
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
