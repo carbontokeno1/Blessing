@@ -1604,7 +1604,7 @@ def _binance_1m_klines(symbol: str):
 
 
 def _moderate_crypto_entry_metrics(row: dict):
-    """Shared crypto entry gate aligned with the owner live crypto strategy."""
+    """Symmetric adaptive Long/Short Paper gate using Binance TH closed-candle metrics."""
     try:
         price = Decimal(str(row.get("price") or row.get("lastPrice") or "0"))
         stop = Decimal(str(row.get("atrStopPct") or "0"))
@@ -1616,15 +1616,23 @@ def _moderate_crypto_entry_metrics(row: dict):
         ema20 = Decimal(str(row.get("ema20") or "0"))
     except Exception:
         return None
-    trend_ok = row.get("trendAligned") is True or row.get("opportunityTrendOk") is True
-    momentum_ok = m5 > 0 and m15 > 0 and m1 > Decimal("-0.20")
-    confirmation_ok = (
+    long_trend = row.get("trendAligned") is True
+    short_trend = row.get("trendDownAligned") is True
+    long_momentum = m5 > 0 and m15 > 0 and m1 > Decimal("-0.20")
+    short_momentum = m5 < 0 and m15 < 0 and m1 < Decimal("0.20")
+    long_confirmation = (
         row.get("pullbackReclaim") is True or row.get("breakout") is True
         or (ema20 > 0 and price > ema20 and m1 > 0)
     )
+    short_confirmation = (
+        row.get("pullbackReject") is True or row.get("breakdown") is True
+        or (ema20 > 0 and price < ema20 and m1 < 0)
+    )
+    direction = "long" if long_trend and long_momentum and long_confirmation else (
+        "short" if short_trend and short_momentum and short_confirmation else None
+    )
     valid = bool(
-        trend_ok and momentum_ok and confirmation_ok
-        and rvol >= Decimal("0.8")
+        direction and rvol >= Decimal("0.8")
         and Decimal("0") < spread <= Decimal("0.5")
         and Decimal("0.8") <= stop <= Decimal("2.0")
         and price > 0
@@ -1633,97 +1641,38 @@ def _moderate_crypto_entry_metrics(row: dict):
     )
     if not valid:
         return None
-    score = (
-        (25 if trend_ok else 0) + (25 if momentum_ok else 0)
-        + (20 if confirmation_ok else 0) + 10 + 10 + 10
-    )
+    setup = ("PULLBACK" if row.get("pullbackReclaim") else "BREAKOUT" if row.get("breakout") else "TREND")
+    if direction == "short":
+        setup = ("PULLBACK_REJECT" if row.get("pullbackReject") else "BREAKDOWN" if row.get("breakdown") else "DOWNTREND")
     return {
-        "decision": "PAPER_CANDIDATE",
-        "opportunityScore": score,
-        "liveEntryScore": score,
-        "liveEntryModel": "MODERATE_EMA_MOMENTUM_CONFIRMATION",
-        "netEdgeProxyPct": None,
+        "decision": "PAPER_CANDIDATE", "side": direction,
+        "opportunityScore": 90, "liveEntryScore": 90,
+        "liveEntryModel": "ADAPTIVE_LONG_SHORT_EMA_MOMENTUM",
+        "strategy": setup, "netEdgeProxyPct": None,
     }
 
 
-
 def _crypto_three_strategy_decision(row: dict):
-    """Paper-only selector using the shared moderate entry gate plus named setups.
-
-    Requires real Binance TH candle-derived EMA/ATR metrics from altcoin_scanner;
-    websocket ticker-only rows are intentionally rejected.
-    """
-    # Apply the same moderate momentum/confirmation gate used by the owner strategy
-    # to member crypto Paper slots. This prevents the member engine silently using
-    # the older, stricter EMA-only selector while the owner uses the moderate gate.
-    moderate = _moderate_crypto_entry_metrics(row)
-    if moderate:
-        return {
-            **moderate,
-            "strategy": "MODERATE_MOMENTUM",
-            "strategyLabel": "Moderate Momentum",
-            "entryAllowed": True,
-            "paperOnly": True,
-            "liveEntryAllowed": False,
-            "atrStopPct": row.get("atrStopPct"),
-            "note": "Paper-only entry using the shared moderate EMA/momentum confirmation gate.",
-        }
-    try:
-        symbol = str(row.get("symbol") or "").upper()
-        exchange_symbol = str(row.get("exchangeSymbol") or "").upper()
-        price = float(row.get("price") or row.get("lastPrice") or 0)
-        m1 = float(row.get("m1")) if row.get("m1") is not None else -999.0
-        m5 = float(row.get("m5")) if row.get("m5") is not None else -999.0
-        m15 = float(row.get("m15")) if row.get("m15") is not None else -999.0
-        rvol = float(row.get("rvol") or 0)
-        spread = float(row.get("spreadPct") or 999)
-        atr_stop = float(row.get("atrStopPct") or 0)
-        ema20 = float(row.get("ema20") or 0)
-    except (TypeError, ValueError):
+    """Adaptive member Crypto Paper selector: Long in confirmed uptrends, Short in confirmed downtrends."""
+    decision = _moderate_crypto_entry_metrics(row)
+    if not decision:
         return None
-
-    # Shared execution-quality and risk-distance gates for every Paper setup.
-    if (not symbol.endswith("USDT") or exchange_symbol != symbol or price <= 0
-            or not (0 < spread <= 0.5) or not (0.8 <= atr_stop <= 2.0)
-            or rvol < 0.8 or m5 <= 0 or m15 <= 0 or m1 <= -0.20
-            or ema20 <= 0):
-        return None
-
-    setups = []
-    # 1) Trend follow: positive EMA structure and price holding above EMA20.
-    trend_ok = bool(row.get("trendAligned") is True and price > ema20 and m1 > 0 and rvol >= 0.8 and spread <= 0.45)
-    if trend_ok:
-        setups.append(("TREND_FOLLOW", 76 + min(12, rvol * 3) + min(8, max(0, m1) * 2)))
-
-    # 2) Breakout: fresh 20-candle high with stronger relative volume and tighter spread.
-    breakout_ok = bool(row.get("breakout") is True and m1 > 0 and rvol >= 1.0 and spread <= 0.30)
-    if breakout_ok:
-        setups.append(("BREAKOUT", 78 + min(12, rvol * 4) + min(8, max(0, m1) * 2)))
-
-    # 3) Pullback: EMA20/EMA50 uptrend, recent EMA20 retest and reclaim.
-    pullback_ok = bool(row.get("trendAligned") is True and row.get("pullbackReclaim") is True
-                       and rvol >= 0.8 and spread <= 0.45)
-    if pullback_ok:
-        setups.append(("PULLBACK", 80 + min(12, rvol * 3) + min(8, max(0, m5) * 2)))
-
-    if not setups:
-        return None
-
-    strategy, score = max(setups, key=lambda item: item[1])
+    label = {
+        "PULLBACK": "Trend Pullback",
+        "BREAKOUT": "Momentum Breakout",
+        "TREND": "Trend Momentum",
+        "PULLBACK_REJECT": "Bearish Pullback Rejection",
+        "BREAKDOWN": "Support Breakdown",
+        "DOWNTREND": "Downtrend Momentum",
+    }.get(decision.get("strategy"), "Adaptive Momentum")
     return {
-        "decision": "PAPER_CANDIDATE",
-        "opportunityScore": round(min(100, score), 2),
-        "strategy": strategy,
-        "strategyLabel": {
-            "TREND_FOLLOW": "Trend Follow",
-            "BREAKOUT": "Breakout",
-            "PULLBACK": "Pullback",
-        }[strategy],
+        **decision,
+        "strategyLabel": label,
         "entryAllowed": True,
         "paperOnly": True,
         "liveEntryAllowed": False,
-        "atrStopPct": atr_stop,
-        "note": "Paper-only strategy selection using Binance TH closed-candle EMA/ATR metrics.",
+        "atrStopPct": row.get("atrStopPct"),
+        "note": "Adaptive Long/Short Paper signal; confirmed candle trend, volume, spread and ATR filters required.",
     }
 
 
@@ -1741,7 +1690,9 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     avg_quote_volume = sum(b["quoteVolume"] for b in previous) / len(previous) if previous else 0
     rvol = latest["quoteVolume"] / avg_quote_volume if latest and avg_quote_volume > 0 else None
     prior_highs = [b["high"] for b in bars[-21:-1] if b.get("high") is not None]
+    prior_lows = [b["low"] for b in bars[-21:-1] if b.get("low") is not None]
     breakout = bool(latest and len(prior_highs) >= 10 and latest["close"] > max(prior_highs))
+    breakdown = bool(latest and len(prior_lows) >= 10 and latest["close"] < min(prior_lows))
 
     def ema(values, period):
         if len(values) < period:
@@ -1762,9 +1713,20 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
         for i in range(max(19, len(bars) - 4), max(19, len(bars) - 1))
     )
     trend_aligned = bool(ema20 is not None and ema50 is not None and ema20 > ema50)
+    trend_down_aligned = bool(ema20 is not None and ema50 is not None and ema20 < ema50)
     pullback_reclaim = bool(
         latest and ema20 is not None and pullback_touch
         and float(latest["close"]) > ema20
+    )
+    pullback_reject_touch = any(
+        ema20_history[i] is not None
+        and float(bars[i].get("high") or 0) > 0
+        and float(bars[i]["high"]) >= ema20_history[i] * 0.997
+        for i in range(max(19, len(bars) - 4), max(19, len(bars) - 1))
+    )
+    pullback_reject = bool(
+        latest and ema20 is not None and pullback_reject_touch
+        and float(latest["close"]) < ema20
     )
 
     true_ranges = []
@@ -1844,7 +1806,9 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
         "volumeSpike": bool(rvol is not None and rvol >= 1.3),
         "spreadPct": spread, "score": score, "fastEntry": fast_entry,
         "ema20": ema20, "ema50": ema50, "trendAligned": trend_aligned,
-        "pullbackReclaim": pullback_reclaim, "atr14": atr14,
+        "trendDownAligned": trend_down_aligned,
+        "pullbackReclaim": pullback_reclaim, "pullbackReject": pullback_reject,
+        "breakdown": breakdown, "atr14": atr14,
         "atrPct": atr_pct, "atrStopPct": atr_stop_pct,
         "balancedScore": balanced_score, "balancedEntry": balanced_entry,
         "opportunityScore": opportunity_score, "opportunityEntry": opportunity_entry,
@@ -4024,12 +3988,19 @@ def _paper_worker_cycle():
                 continue
             _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":"mark","p_symbol":pos["symbol"],
                     "p_exchange":"Binance","p_price":price,"p_position_id":pos["id"],"p_reason":"MARK_TO_MARKET","p_signal_score":None})
-            reason = "TAKE_PROFIT" if price >= float(pos["take_profit_price"]) else (
-                     "STOP_LOSS" if price <= float(pos["stop_loss_price"]) else None)
+            position_side = str(pos.get("position_side") or "long").lower()
+            if position_side == "short":
+                reason = "TAKE_PROFIT" if price <= float(pos["take_profit_price"]) else (
+                         "STOP_LOSS" if price >= float(pos["stop_loss_price"]) else None)
+                close_action = "cover"
+            else:
+                reason = "TAKE_PROFIT" if price >= float(pos["take_profit_price"]) else (
+                         "STOP_LOSS" if price <= float(pos["stop_loss_price"]) else None)
+                close_action = "sell"
             if reason:
-                result = _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":"sell","p_symbol":pos["symbol"],
+                result = _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":close_action,"p_symbol":pos["symbol"],
                                  "p_exchange":"Binance","p_price":price,"p_position_id":pos["id"],"p_reason":reason,"p_signal_score":None})
-                PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":"sell",
+                PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":close_action,
                                                        "symbol":pos["symbol"],"reason":reason,"result":result})
                 PAPER_WORKER_STATE["actions"] = PAPER_WORKER_STATE["actions"][-20:]
         if not setting.get("enabled") or not fresh:
@@ -4046,12 +4017,13 @@ def _paper_worker_cycle():
         for p in positions:
             q = candidates.get(p.get("symbol"))
             if q and _num(q.get("price"),0):
-                open_pnl += (_num(q.get("price"),0) - _num(p.get("entry_price"),0)) * _num(p.get("quantity"),0)
+                direction = -1 if str(p.get("position_side") or "long").lower() == "short" else 1
+                open_pnl += direction * (_num(q.get("price"),0) - _num(p.get("entry_price"),0)) * _num(p.get("quantity"),0)
         total_pnl = float(account.get("realized_pnl") or 0) + open_pnl
         start_balance = float(account.get("starting_balance") or setting.get("starting_balance") or 88.4173298)
         day_start = datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
         daily_orders = _sb_rest("paper_bot_orders", {
-            "select":"realized_pnl","user_id":"eq." + uid,"side":"eq.sell",
+            "select":"realized_pnl","user_id":"eq." + uid,"side":"in.(sell,cover)",
             "created_at":"gte." + day_start,"status":"eq.filled","limit":"500"
         })
         daily_pnl = sum(_num(x.get("realized_pnl"),0) or 0 for x in daily_orders) + open_pnl
@@ -4080,12 +4052,14 @@ def _paper_worker_cycle():
             if time.time() - PAPER_ENTRY_COOLDOWNS.get(cooldown_key,0) < 180:
                 continue
             try:
-                result = _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":"buy","p_symbol":candidate["symbol"],
+                entry_action = "short" if decision.get("side") == "short" else "buy"
+                result = _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":entry_action,"p_symbol":candidate["symbol"],
                                   "p_exchange":"Binance","p_price":float(candidate["price"]),"p_position_id":None,
-                                  "p_reason":"FAST_ENTRY","p_signal_score":int(min(100,decision.get("opportunityScore") or 0))})
+                                  "p_reason":"ADAPTIVE_"+entry_action.upper()+"_"+str(decision.get("strategy") or "MOMENTUM"),
+                                  "p_signal_score":int(min(100,decision.get("opportunityScore") or 0))})
                 PAPER_ENTRY_COOLDOWNS[cooldown_key] = time.time()
-                PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":"buy",
-                                                       "symbol":candidate["symbol"],"result":result})
+                PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":entry_action,
+                                                       "symbol":candidate["symbol"],"strategy":decision.get("strategy"),"result":result})
                 PAPER_WORKER_STATE["actions"] = PAPER_WORKER_STATE["actions"][-20:]
                 positions.append({"symbol":candidate["symbol"]})
             except Exception as exc:
