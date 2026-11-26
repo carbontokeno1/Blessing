@@ -1816,8 +1816,8 @@ def altcoin_scanner(refresh: int = 0):
         })
 
     eligible.sort(key=lambda x: x["quoteVolume24h"], reverse=True)
-    # Evaluate a broad, liquid top-100 universe; all eligible pairs are counted in scanned.
-    selected = eligible[:100]
+    # Evaluate the 420 highest-volume eligible USDT pairs per scan; all eligible pairs are counted in scanned.
+    selected = eligible[:420]
     candle_errors = 0
     if provider == "Binance TH Spot API" and selected:
         with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
@@ -1831,7 +1831,7 @@ def altcoin_scanner(refresh: int = 0):
                     candle_errors += 1
                     row["candleError"] = type(candle_error).__name__
                     row["rejectReason"] = "CANDLE_DATA_UNAVAILABLE"
-        metrics_source = "Binance TH 1m closed candles; 100 highest-volume eligible USDT pairs"
+        metrics_source = "Binance TH 1m closed candles; 420 highest-volume eligible USDT pairs"
     else:
         metrics_source = provider + " ticker snapshot only; Paper entries disabled without Binance candles"
 
@@ -1886,7 +1886,7 @@ def altcoin_scanner(refresh: int = 0):
         "metricsSource": metrics_source,
         "candidates": selected,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "coverage": provider + " Spot USDT pairs; all eligible pairs counted; top 100 by 24h quote volume evaluated; minimum 250,000 USDT",
+        "coverage": provider + " Spot USDT pairs; all eligible pairs counted; top 420 by 24h quote volume evaluated; minimum 250,000 USDT",
         "metricsNote": (
             "BALANCED_EMA_PULLBACK_ATR remains the conservative live-entry gate. OPPORTUNITY_SCAN is a separate wider discovery/Paper signal requiring positive 5m/15m momentum, 1m momentum above -0.15%, RVOL >= 1.0, spread <= 0.35%, confirmation, and ATR stop 0.8-2.0%. Opportunity signals do not authorize live orders."
             if provider == "Binance TH Spot API" else
