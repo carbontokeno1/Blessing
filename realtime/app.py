@@ -1964,7 +1964,7 @@ def _altcoin_scanner_run(refresh: int = 0):
             row["rejectReason"] = "BALANCED_SCORE_NOT_QUALIFIED"
 
     reject_signals = {}
-    paper_strategy_counts = {"TREND_FOLLOW": 0, "BREAKOUT": 0, "PULLBACK": 0}
+    paper_strategy_counts = {"TREND": 0, "BREAKOUT": 0, "PULLBACK": 0, "PULLBACK_REJECT": 0, "BREAKDOWN": 0, "DOWNTREND": 0}
     for row in selected:
         reason = row.get("rejectReason") or "BALANCED_ENTRY"
         reject_signals[reason] = reject_signals.get(reason, 0) + 1
@@ -4031,7 +4031,7 @@ def _paper_worker_cycle():
         if not setting.get("enabled") or not fresh:
             continue
         # Refresh open positions after exits and enforce the persisted position cap.
-        positions = _sb_rest("paper_bot_positions", {"select":"id,symbol,status", "user_id":"eq." + uid, "status":"eq.open", "limit":"20"})
+        positions = _sb_rest("paper_bot_positions", {"select":"id,symbol,status,position_side,entry_price,quantity", "user_id":"eq." + uid, "status":"eq.open", "limit":"20"})
         if len(positions) >= int(setting.get("max_open_positions") or 5):
             continue
         account_rows = _sb_rest("paper_bot_accounts", {"select":"cash_balance,starting_balance,realized_pnl", "user_id":"eq." + uid, "limit":"1"})
