@@ -1593,6 +1593,72 @@ def _moderate_crypto_entry_metrics(row: dict):
     }
 
 
+
+def _crypto_three_strategy_decision(row: dict):
+    """Paper-only selector for trend-follow, breakout and pullback setups.
+
+    Requires real Binance TH candle-derived EMA/ATR metrics from altcoin_scanner;
+    websocket ticker-only rows are intentionally rejected.
+    """
+    try:
+        symbol = str(row.get("symbol") or "").upper()
+        exchange_symbol = str(row.get("exchangeSymbol") or "").upper()
+        price = float(row.get("price") or row.get("lastPrice") or 0)
+        m1 = float(row.get("m1")) if row.get("m1") is not None else -999.0
+        m5 = float(row.get("m5")) if row.get("m5") is not None else -999.0
+        m15 = float(row.get("m15")) if row.get("m15") is not None else -999.0
+        rvol = float(row.get("rvol") or 0)
+        spread = float(row.get("spreadPct") or 999)
+        atr_stop = float(row.get("atrStopPct") or 0)
+        ema20 = float(row.get("ema20") or 0)
+    except (TypeError, ValueError):
+        return None
+
+    # Shared execution-quality and risk-distance gates for every Paper setup.
+    if (not symbol.endswith("USDT") or exchange_symbol != symbol or price <= 0
+            or not (0 < spread <= 0.5) or not (0.8 <= atr_stop <= 2.0)
+            or rvol < 0.8 or m5 <= 0 or m15 <= 0 or m1 <= -0.20
+            or ema20 <= 0):
+        return None
+
+    setups = []
+    # 1) Trend follow: positive EMA structure and price holding above EMA20.
+    trend_ok = bool(row.get("trendAligned") is True and price > ema20 and m1 > 0 and rvol >= 0.8 and spread <= 0.45)
+    if trend_ok:
+        setups.append(("TREND_FOLLOW", 76 + min(12, rvol * 3) + min(8, max(0, m1) * 2)))
+
+    # 2) Breakout: fresh 20-candle high with stronger relative volume and tighter spread.
+    breakout_ok = bool(row.get("breakout") is True and m1 > 0 and rvol >= 1.0 and spread <= 0.30)
+    if breakout_ok:
+        setups.append(("BREAKOUT", 78 + min(12, rvol * 4) + min(8, max(0, m1) * 2)))
+
+    # 3) Pullback: EMA20/EMA50 uptrend, recent EMA20 retest and reclaim.
+    pullback_ok = bool(row.get("trendAligned") is True and row.get("pullbackReclaim") is True
+                       and rvol >= 0.8 and spread <= 0.45)
+    if pullback_ok:
+        setups.append(("PULLBACK", 80 + min(12, rvol * 3) + min(8, max(0, m5) * 2)))
+
+    if not setups:
+        return None
+
+    strategy, score = max(setups, key=lambda item: item[1])
+    return {
+        "decision": "PAPER_CANDIDATE",
+        "opportunityScore": round(min(100, score), 2),
+        "strategy": strategy,
+        "strategyLabel": {
+            "TREND_FOLLOW": "Trend Follow",
+            "BREAKOUT": "Breakout",
+            "PULLBACK": "Pullback",
+        }[strategy],
+        "entryAllowed": True,
+        "paperOnly": True,
+        "liveEntryAllowed": False,
+        "atrStopPct": atr_stop,
+        "note": "Paper-only strategy selection using Binance TH closed-candle EMA/ATR metrics.",
+    }
+
+
 def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     """Calculate legacy momentum and Balanced EMA-pullback metrics from closed 1m candles."""
     price = float(row.get("price") or row.get("lastPrice") or 0)
@@ -3707,7 +3773,7 @@ def _paper_worker_cycle():
                 continue
             if not _num(candidate.get("price"),0):
                 continue
-            decision = _moderate_crypto_entry_metrics(candidate)
+            decision = _crypto_three_strategy_decision(candidate)
             if decision:
                 ranked.append((candidate,decision))
         ranked.sort(key=lambda pair:pair[1].get("opportunityScore",0),reverse=True)
@@ -4444,17 +4510,21 @@ def _dual_paper_worker_cycle():
         entries_opened = 0
         selected_markets = {}
         crypto_candidates = {}
-        crypto_stamp=state.get("lastCryptoMessageAt")
+        crypto_scan = altcoin_scanner(0)
         try:
-            crypto_age=(now-datetime.fromisoformat(str(crypto_stamp).replace("Z","+00:00"))).total_seconds() if crypto_stamp else 999999
+            crypto_age = (now - datetime.fromisoformat(str(crypto_scan.get("updatedAt")).replace("Z","+00:00"))).total_seconds()
         except Exception:
-            crypto_age=999999
-        crypto_fresh=state.get("cryptoConnection")=="streaming" and 0 <= crypto_age <= 5
+            crypto_age = 999999
+        crypto_fresh = (
+            crypto_scan.get("status") == "ok"
+            and crypto_scan.get("provider") == "Binance TH Spot API"
+            and 0 <= crypto_age <= 90
+        )
         if crypto_fresh:
-            for row in _binance_th_adaptive_candidates():
-                decision=_moderate_crypto_entry_metrics(row)
+            for row in (crypto_scan.get("candidates") or []):
+                decision = _crypto_three_strategy_decision(row)
                 if decision:
-                    crypto_candidates[row["symbol"]]=(row,decision)
+                    crypto_candidates[row["symbol"]] = (row, decision)
         with UNIVERSE_LOCK:
             stock_scan = dict(UNIVERSE_STATE)
         try:
@@ -5062,21 +5132,26 @@ def _member_slot_engine_cycle():
             "enabled":"eq.true", "limit":"20"
         }) or []
 
-        # Crypto candidates are sourced only from a fresh Binance TH stream.
-        crypto_stamp = state.get("lastCryptoMessageAt")
+        # Paper entries use the candle scanner, not ticker-only WebSocket rows:
+        # EMA/ATR are mandatory inputs for the three setup types.
+        crypto_scan = altcoin_scanner(0)
         try:
-            crypto_age = (now-datetime.fromisoformat(str(crypto_stamp).replace("Z","+00:00"))).total_seconds() if crypto_stamp else 999999
+            crypto_age = (now-datetime.fromisoformat(str(crypto_scan.get("updatedAt")).replace("Z","+00:00"))).total_seconds()
         except Exception:
             crypto_age = 999999
-        crypto_fresh = state.get("cryptoConnection") == "streaming" and 0 <= crypto_age <= 60
+        crypto_fresh = (
+            crypto_scan.get("status") == "ok"
+            and crypto_scan.get("provider") == "Binance TH Spot API"
+            and 0 <= crypto_age <= 90
+        )
         crypto_candidates = {}
         if crypto_fresh:
-            for row in _binance_th_adaptive_candidates():
+            for row in (crypto_scan.get("candidates") or []):
                 symbol = str(row.get("symbol") or "").upper()
                 price = _num(row.get("price"), 0)
                 if not symbol or not price or not symbol.endswith("USDT"):
                     continue
-                decision = _moderate_crypto_entry_metrics(row)
+                decision = _crypto_three_strategy_decision(row)
                 if decision:
                     crypto_candidates[symbol] = (price, decision)
 
