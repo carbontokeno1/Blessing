@@ -5982,16 +5982,19 @@ def _webull_list_active_universe(force=False):
     return assets
 
 def _webull_snapshot_batch(assets):
+    """Fetch snapshots without allowing one unsupported symbol to poison a whole batch."""
     client = _webull_data_client()
     result = {}
-    for category in ("US_STOCK", "US_ETF"):
-        symbols = [x["symbol"] for x in assets if x.get("category") == category]
-        for offset in range(0, len(symbols), 100):
-            batch = symbols[offset:offset+100]
-            if not batch:
-                continue
-            response = client.market_data.get_snapshot(batch, category,
-                extend_hour_required=True, overnight_required=True)
+
+    def fetch_safe_batch(batch, category):
+        if not batch:
+            return
+        try:
+            response = client.market_data.get_snapshot(
+                batch, category,
+                extend_hour_required=True,
+                overnight_required=True,
+            )
             payload = _webull_json(response)
             rows = payload if isinstance(payload, list) else payload.get("data", payload.get("snapshots", [])) if isinstance(payload, dict) else []
             for row in rows if isinstance(rows, list) else []:
@@ -6000,7 +6003,35 @@ def _webull_snapshot_batch(assets):
                 symbol = str(row.get("symbol") or "").upper()
                 if symbol:
                     result[symbol] = row
-            time.sleep(1.05)
+            time.sleep(0.25)
+        except Exception as exc:
+            error_text = str(exc)
+            invalid_symbol = (
+                "INVALID_SYMBOL" in error_text
+                or "symbols does not exist in the category" in error_text.lower()
+            )
+            if not invalid_symbol:
+                log.exception("Webull %s snapshot batch failed (%s)", category, type(exc).__name__)
+                raise
+            if len(batch) == 1:
+                log.warning("Skipping unsupported Webull %s symbol %s", category, batch[0])
+                return
+            midpoint = len(batch) // 2
+            log.warning(
+                "Webull %s snapshot batch contains unsupported symbols; splitting %d symbols",
+                category, len(batch)
+            )
+            fetch_safe_batch(batch[:midpoint], category)
+            fetch_safe_batch(batch[midpoint:], category)
+
+    for category in ("US_STOCK", "US_ETF"):
+        symbols = list(dict.fromkeys(
+            str(item.get("symbol") or "").strip().upper()
+            for item in assets
+            if item.get("category") == category and item.get("symbol")
+        ))
+        for offset in range(0, len(symbols), 100):
+            fetch_safe_batch(symbols[offset:offset + 100], category)
     return result
 
 def _webull_bar_batches(symbols):
