@@ -3734,7 +3734,7 @@ def dual_paper_status(request: Request):
         orders = _sb_rest("blessing_dual_orders", {
             "select": "id,market,symbol,side,quantity,price,notional,fee,status,reason,realized_pnl,created_at",
             "portfolio_id": "eq." + pid, "user_id": "eq." + uid,
-            "order": "created_at.desc", "limit": "30",
+            "order": "created_at.desc", "limit": "1000",
         })
         unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
         position_value = sum(
@@ -3773,7 +3773,7 @@ def dual_paper_status(request: Request):
                 "maxOpenPositions": int(portfolio.get("max_open_positions") or 0),
             },
             "positions": positions, "orders": orders,
-            "openPositions": positions, "recentOrders": orders,
+            "openPositions": positions, "recentOrders": orders[:30],
         }
     return {"ok": True, "mode": "paper", "liveOrdersEnabled": False,
             "crossPortfolioTransfersEnabled": False, "portfolios": result,
