@@ -4659,7 +4659,8 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         return None
     try:
         market_price = _dual_market_price(market, symbol)
-    except Exception:
+    except Exception as exc:
+        log.info("Dual Paper entry skipped %s/%s: price unavailable (%s: %s)", market, symbol, type(exc).__name__, getattr(exc, "detail", str(exc))[:160])
         return None
     equity = float(portfolio.get("cash_balance") or 0)
     positions = _sb_rest("blessing_dual_positions", {
@@ -4950,19 +4951,23 @@ def _dual_market_price(market: str, symbol: str) -> float:
         if not symbol.endswith("USDT"):
             raise HTTPException(status_code=422, detail="คู่เหรียญต้องเป็น Spot/USDT")
         quote = state.get("crypto_quotes", {}).get(symbol)
-        if not isinstance(quote, dict):
-            raise HTTPException(status_code=503, detail="ยังไม่มีราคา Binance TH WebSocket สำหรับคู่นี้")
+        if isinstance(quote, dict):
+            try:
+                stamp = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - stamp).total_seconds()
+            except Exception:
+                age = 999999
+            price = _num(quote.get("price"), 0)
+            if 0 <= age <= 5 and price > 0:
+                return float(price)
+        # Use a fresh Binance TH server-side ticker when the local websocket is stale.
         try:
-            stamp = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
-            age = (datetime.now(timezone.utc) - stamp).total_seconds()
-        except Exception:
-            age = 999999
-        if age < 0 or age > 5:
-            raise HTTPException(status_code=503, detail="ราคา Binance TH เกิน 5 วินาทีหรือไม่มีข้อมูลสด")
-        price = _num(quote.get("price"), 0)
-        if price > 0:
-            return float(price)
-        raise HTTPException(status_code=503, detail="ข้อมูล Binance TH WebSocket ไม่มีราคาซื้อขายจริง")
+            price = _binance_th_public_price(symbol)
+            if price > 0:
+                return float(price)
+        except Exception as exc:
+            log.info("Paper crypto price unavailable for %s (%s)", symbol, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="ไม่มีราคา Binance TH สดสำหรับส่งคำสั่ง Paper")
     if market == "stocks":
         # Prefer Webull streaming when it is fresh. The Paper stock scanner itself
         # uses Alpaca IEX snapshots, so use that same server-side feed as a safe
