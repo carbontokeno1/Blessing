@@ -1141,7 +1141,7 @@ async function loadAdminPortfolioControls(){
 async function loadAdminMemberAccess(){
  const el=document.getElementById('adminMemberAccess'),sb=window.BLESSING_AUTH?.client;if(!el||!sb)return;
  try{const {data,error}=await sb.auth.getSession();if(error||!data.session?.access_token)throw Error('กรุณาเข้าสู่ระบบใหม่');
- const r=await fetch(MARKET_BRIDGE_URL+'/admin/member-access',{headers:{authorization:'Bearer '+data.session.access_token},cache:'no-store'});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.detail||'โหลดข้อมูลสิทธิ์ไม่สำเร็จ');
+ const r=await fetch('/api/admin/member-access',{headers:{authorization:'Bearer '+data.session.access_token},cache:'no-store'});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.detail||'โหลดข้อมูลสิทธิ์ไม่สำเร็จ');
  window.adminMemberAccessData=j.members||[];if(!window.adminMemberAccessData.length){el.innerHTML='<div class="notice">ยังไม่มีบัญชีสมาชิกที่ได้รับการผูกเข้ากับพอร์ต</div>';return}
  el.innerHTML='<div class="field"><label>เลือกสมาชิก</label><select id="adminAccessMemberSelect">'+window.adminMemberAccessData.map((m,i)=>'<option value="'+i+'">'+esc(m.name||('สมาชิก '+m.memberNo))+' · '+esc(m.email||'')+'</option>').join('')+'</select></div><div id="adminAccessMemberEditor"></div>';
  document.getElementById('adminAccessMemberSelect').addEventListener('change',renderAdminMemberAccessEditor);renderAdminMemberAccessEditor();
@@ -1162,8 +1162,8 @@ async function saveAdminMemberAccess(){
  const limits=[...document.querySelectorAll('[data-access-limit]')];
  try{
   el.textContent='กำลังบันทึกสิทธิ์หน้า...';
-  let r=await fetch(MARKET_BRIDGE_URL+'/admin/member-access',{method:'PUT',headers,body:JSON.stringify({userId:m.userId,visiblePages}),cache:'no-store'});let j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.detail||'บันทึกสิทธิ์ไม่สำเร็จ');
-  for(const input of limits){const value=input.value.trim();r=await fetch(MARKET_BRIDGE_URL+'/admin/member-access/portfolio-limit',{method:'PUT',headers,body:JSON.stringify({portfolioId:input.dataset.accessLimit,limit:value===''?null:value}),cache:'no-store'});j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.detail||'บันทึกวงเงินไม่สำเร็จ')}
+  let r=await fetch('/api/admin/member-access',{method:'PUT',headers,body:JSON.stringify({userId:m.userId,visiblePages}),cache:'no-store'});let j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.detail||'บันทึกสิทธิ์ไม่สำเร็จ');
+  for(const input of limits){const value=input.value.trim();r=await fetch('/api/admin/member-access/portfolio-limit',{method:'PUT',headers,body:JSON.stringify({portfolioId:input.dataset.accessLimit,limit:value===''?null:value}),cache:'no-store'});j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.detail||'บันทึกวงเงินไม่สำเร็จ')}
   el.textContent='บันทึกสิทธิ์และวงเงินครบแล้ว';await loadAdminMemberAccess();
  }catch(e){el.textContent='บันทึกไม่ครบ: '+e.message+' · โปรดรีเฟรชเพื่อตรวจสอบค่าที่บันทึกแล้ว'}
 }
