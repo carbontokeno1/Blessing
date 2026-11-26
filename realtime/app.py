@@ -26,6 +26,7 @@ from adaptive_strategy import adaptive_decision, paper_opportunity_decision, bui
 from dual_portfolio import portfolio_overview
 from fastapi.middleware.cors import CORSMiddleware
 from member_capital import register_member_capital_routes
+from member_access import register_member_access_routes
 from owner_auto_trade import register_owner_auto_trade
 
 logging.basicConfig(level=logging.INFO)
@@ -2270,6 +2271,7 @@ def webull_trading_account(request: Request, refresh: bool = False):
 
 
 register_member_capital_routes(app, _binance_th_owner_auth, _sb_rest, _sb_rpc)
+register_member_access_routes(app, _binance_th_owner_auth, _sb_rest, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 @app.post("/admin/member-portfolios/control")
 async def admin_control_member_portfolios(request: Request):
