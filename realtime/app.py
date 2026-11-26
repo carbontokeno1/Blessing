@@ -3759,7 +3759,7 @@ def dual_paper_status(request: Request):
         unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
         position_value = sum(
             (float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
-             + float(p.get("unrealized_pnl") or 0))
+             + float(p.get("unrealized_pnl") or 0) + float(p.get("entry_fee") or 0))
             if p.get("side") == "short"
             else float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0)
             for p in positions
@@ -4753,7 +4753,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     }) or []
     position_value = sum(
         (float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
-         + float(p.get("unrealized_pnl") or 0))
+         + float(p.get("unrealized_pnl") or 0) + float(p.get("entry_fee") or 0))
         if p.get("side") == "short"
         else float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0)
         for p in positions
@@ -4787,7 +4787,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     total_cash = sum(float(row.get("cash_balance") or 0) for row in all_portfolios)
     total_exposure = sum(
         (float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
-         + float(p.get("unrealized_pnl") or 0))
+         + float(p.get("unrealized_pnl") or 0) + float(p.get("entry_fee") or 0))
         if p.get("side") == "short"
         else float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0)
         for p in all_positions if str(p.get("portfolio_id")) in portfolio_ids
