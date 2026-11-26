@@ -4572,11 +4572,14 @@ def dual_paper_status(request: Request):
 
 
 
-DUAL_PAPER_WORKER_INTERVAL = max(15, int(os.getenv("DUAL_PAPER_WORKER_INTERVAL", "20")))
+# A full 420-symbol candle scan can take about a minute; keep one bounded cycle per 90s.
+DUAL_PAPER_WORKER_INTERVAL = max(60, int(os.getenv("DUAL_PAPER_WORKER_INTERVAL", "90")))
 DUAL_ADAPTIVE_ENTRY_COOLDOWNS = {}  # per-user cooldown shared across crypto and equities
 DUAL_PAPER_WORKER_STATE = {
     "status": "waiting_config" if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY) else "starting",
-    "lastCycleAt": None, "lastError": None, "cycles": 0, "positionsChecked": 0, "automaticExits": 0
+    "lastCycleAt": None, "lastCycleStartedAt": None, "lastError": None, "cycles": 0,
+    "positionsChecked": 0, "automaticExits": 0, "cryptoCandidates": 0, "stocksCandidates": 0,
+    "cryptoScanDiagnostics": {}, "entrySkips": [], "entriesOpened": 0
 }
 DUAL_PAPER_WORKER_THREAD = None
 DUAL_PAPER_WORKER_LOCK = threading.Lock()
@@ -4734,6 +4737,7 @@ def _dual_paper_worker_cycle():
     if not DUAL_PAPER_WORKER_LOCK.acquire(blocking=False):
         return
     try:
+        DUAL_PAPER_WORKER_STATE["lastCycleStartedAt"] = datetime.now(timezone.utc).isoformat()
         # Always manage existing positions, even if an experiment is stopped.
         open_rows = _sb_rest("blessing_dual_positions", {
             "select":"id,user_id,market,symbol","status":"eq.open","order":"opened_at.asc","limit":"1000"
@@ -4772,6 +4776,16 @@ def _dual_paper_worker_cycle():
             and crypto_scan.get("provider") == "Binance TH Spot API"
             and 0 <= crypto_age <= 90
         )
+        DUAL_PAPER_WORKER_STATE["cryptoScanDiagnostics"] = {
+            "status": crypto_scan.get("status"), "provider": crypto_scan.get("provider"),
+            "updatedAt": crypto_scan.get("updatedAt"), "ageSeconds": round(crypto_age, 1),
+            "evaluated": int(crypto_scan.get("evaluated") or 0),
+            "paperStrategyCandidateCount": int(crypto_scan.get("paperStrategyCandidateCount") or 0),
+            "opportunityEntryCount": int(crypto_scan.get("opportunityEntryCount") or 0),
+            "signalDiagnostics": crypto_scan.get("signalDiagnostics") or {},
+            "paperStrategyCounts": crypto_scan.get("paperStrategyCounts") or {},
+            "fresh": bool(crypto_fresh)
+        }
         if crypto_fresh:
             for row in (crypto_scan.get("candidates") or []):
                 decision = _crypto_three_strategy_decision(row)
@@ -4864,13 +4878,16 @@ def _dual_paper_worker_cycle():
         # The automatic per-portfolio crypto and stock loops above are the sole
         # entry paths. Do not re-run the removed experiment-ranked legacy path.
         DUAL_PAPER_WORKER_STATE.update({
-            "status":"running","lastCycleAt":now.isoformat(),"lastError":None,
+            "status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),"lastError":None,
             "cycles":DUAL_PAPER_WORKER_STATE.get("cycles",0)+1,
             "positionsChecked":checked,"automaticExits":exits,
             "activeExperiments":len(experiments),
             "cryptoCandidates":len(crypto_candidates),"stocksCandidates":len(stock_candidates),
             "entriesOpened":entries_opened,"selectedMarkets":selected_markets
         })
+        log.info("Dual Paper cycle complete crypto_candidates=%s stock_candidates=%s entries=%s crypto_rejects=%s",
+                 len(crypto_candidates), len(stock_candidates), entries_opened,
+                 DUAL_PAPER_WORKER_STATE.get("cryptoScanDiagnostics", {}).get("signalDiagnostics", {}))
     except Exception as exc:
         DUAL_PAPER_WORKER_STATE.update({"status":"error","lastError":type(exc).__name__})
         log.exception("Dual paper monitor cycle failed")
@@ -4887,7 +4904,7 @@ def _dual_paper_worker_loop():
 @app.on_event("startup")
 async def dual_paper_worker_startup():
     global DUAL_PAPER_WORKER_THREAD
-    # Pause the dual-market Paper monitor until its database load is optimized.
+    # The monitor runs one bounded scan cycle at a time; paper-only execution never calls broker order APIs.
     if os.getenv("DUAL_PAPER_WORKER_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
         DUAL_PAPER_WORKER_STATE.update({"status":"paused","lastError":"DISABLED_TO_PROTECT_DATABASE"})
         log.warning("Dual Paper monitor paused; set DUAL_PAPER_WORKER_ENABLED=true to re-enable")
