@@ -47,9 +47,9 @@ BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINAN
 # REST batch scanning avoids Alpaca Basic websocket symbol limits.
 ALPACA_DISABLED = not bool(ALPACA_KEY and ALPACA_SECRET)
 ALPACA_STREAM_ENABLED = False
-REGION = os.getenv("WEBULL_REGION", "th")
-HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.co.th")
-MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.co.th")
+REGION = os.getenv("WEBULL_REGION", "us")
+HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.com")
+MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.com")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://blessing.carbontokeno1.workers.dev").split(",")
 
 app = FastAPI(title="Blessing Market Data Bridge", version="0.2.0")
@@ -149,12 +149,16 @@ def publish_quote(topic: str, payload: Any) -> None:
                         break
         if not symbol:
             continue
+        previous = state["quotes"].get(symbol, {})
+        previous_raw = previous.get("raw", {}) if isinstance(previous, dict) else {}
+        merged_raw = {**previous_raw, **item} if isinstance(previous_raw, dict) else item
         state["quotes"][symbol] = {
+            **(previous if isinstance(previous, dict) else {}),
             "symbol": symbol,
             "topic": topic,
             "receivedAt": now,
             "source": "Webull OpenAPI real-time stream",
-            "raw": item,
+            "raw": merged_raw,
         }
         state["webullLastMessageAt"] = now
         state["webullConnection"] = "streaming"
@@ -184,8 +188,8 @@ def on_message(client, topic, quotes):
 
 
 def on_subscribe(client, api_client, session_id):
-    log.info("Webull Level 1 SNAPSHOT subscription accepted for %d symbols", len(SYMBOLS))
-    state["marketDataEntitlement"] = "active"
+    log.info("Webull market-data subscription accepted for %d symbols", len(SYMBOLS))
+    state["marketDataEntitlement"] = "subscription_accepted"
     state["webullLastError"] = None
     state["lastError"] = None
 
@@ -199,11 +203,21 @@ def on_connect(client, api_client, session_id):
     try:
         from webull.data.common.category import Category
         from webull.data.common.subscribe_type import SubscribeType
-        # Start with Level 1 snapshots only. QUOTE is order-book data and may
-        # require a higher OpenAPI entitlement; requesting all types together
-        # can reject the entire subscription even when Level 1 is available.
-        client.subscribe(SYMBOLS, Category.US_STOCK.name, [SubscribeType.SNAPSHOT.name])
-        log.info("Requested Level 1 SNAPSHOT subscriptions for %d symbols", len(SYMBOLS))
+        # Webull OpenAPI supports independent QUOTE (BBO/order book),
+        # SNAPSHOT, and TICK (time-and-sales) stream subscriptions for US stocks.
+        # Request each separately so one entitlement rejection does not block
+        # the other authorized data types.
+        requested = []
+        for data_type in (SubscribeType.SNAPSHOT, SubscribeType.QUOTE, SubscribeType.TICK):
+            try:
+                client.subscribe(SYMBOLS, Category.US_STOCK.name, [data_type.name])
+                requested.append(data_type.name)
+                log.info("Requested Webull %s subscription for %d symbols", data_type.name, len(SYMBOLS))
+            except Exception as sub_exc:
+                log.exception("Webull %s subscription request failed", data_type.name)
+        state["webullRequestedSubscriptions"] = requested
+        if not requested:
+            raise RuntimeError("All Webull market-data subscriptions were rejected")
     except Exception as exc:
         state["connection"] = "subscription_error"
         state["webullConnection"] = "subscription_error"
@@ -542,23 +556,21 @@ async def startup():
     global crypto_book_stream_thread
     crypto_book_stream_thread = threading.Thread(target=binance_th_book_stream_main, name="binance-th-book-ticker", daemon=True)
     crypto_book_stream_thread.start()
-    state["provider"] = "alpaca" if ALPACA_KEY and ALPACA_SECRET else "webull"
-    if ALPACA_KEY and ALPACA_SECRET:
-        state["connection"] = "scanner_starting"
-        state["marketDataEntitlement"] = ALPACA_FEED.upper() + " REST feed"
-        state["webullConnection"] = "disabled_by_alpaca"
-        log.info("Alpaca %s REST scanner is the primary stock data source; Webull stream skipped.", ALPACA_FEED.upper())
-    elif APP_KEY and APP_SECRET:
+    # Webull is the authoritative live US-stock data provider. Alpaca, if
+    # configured, may continue its separate universe-scanner role only.
+    state["provider"] = "webull"
+    if APP_KEY and APP_SECRET:
         state["connection"] = "connecting"
+        state["marketDataEntitlement"] = "webull_subscription_pending"
         state["webullConnection"] = "connecting"
         stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
         stream_thread.start()
-        log.info("Webull stream enabled as stock data source because Alpaca credentials are unavailable.")
+        log.info("Webull stream started as PRIMARY US-stock market-data provider; Alpaca is not used for quotes.")
     else:
         state["connection"] = "waiting_credentials"
         state["webullConnection"] = "waiting_credentials"
         present = sorted(k for k in os.environ if k.startswith("WEBULL_"))
-        log.warning("No stock market data credentials available; Webull variable names=%s; webull_key_present=%s webull_secret_present=%s alpaca_key_present=%s alpaca_secret_present=%s", present, bool(APP_KEY), bool(APP_SECRET), bool(ALPACA_KEY), bool(ALPACA_SECRET))
+        log.warning("Webull primary stock market data credentials unavailable; Webull variable names=%s; webull_key_present=%s webull_secret_present=%s", present, bool(APP_KEY), bool(APP_SECRET))
     global UNIVERSE_THREAD
     if ALPACA_KEY and ALPACA_SECRET:
         if UNIVERSE_THREAD is None or not UNIVERSE_THREAD.is_alive():
