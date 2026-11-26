@@ -2986,7 +2986,7 @@ def admin_member_portfolios_report(request: Request):
         currency = str(dp.get("currency") or ("USD" if market == "stocks" else "USDT"))
         pid = str(dp.get("id"))
         positions = _sb_rest("blessing_dual_positions", {
-            "select": "id,symbol,quantity,entry_price,current_price,stop_loss_price,take_profit_price,entry_fee,exit_fee,unrealized_pnl,realized_pnl,status,opened_at,closed_at,close_reason",
+            "select": "id,symbol,side,quantity,entry_price,current_price,stop_loss_price,take_profit_price,entry_fee,exit_fee,unrealized_pnl,realized_pnl,status,opened_at,closed_at,close_reason",
             "portfolio_id": "eq." + pid, "status": "eq.open", "limit": "500",
         }) or []
         orders = _sb_rest("blessing_dual_orders", {
@@ -3043,14 +3043,14 @@ def admin_member_portfolios_report(request: Request):
             if live_price is not None:
                 current = live_price
             cost = entry * quantity
-            gross_pnl = (current - entry) * quantity if current > 0 and entry > 0 else None
+            gross_pnl = ((entry - current) if pos.get("side") == "short" else (current - entry)) * quantity if current > 0 and entry > 0 else None
             net_pnl = (gross_pnl - num(pos.get("entry_fee"))) if gross_pnl is not None else num(pos.get("unrealized_pnl"))
             pnl_pct = (net_pnl / cost * 100) if cost > 0 and net_pnl is not None else None
-            value = current * quantity if current > 0 else 0.0
+            value = ((entry * quantity + (net_pnl or 0.0)) if pos.get("side") == "short" else current * quantity) if current > 0 else 0.0
             market_value += value
             unrealized_total += net_pnl or 0.0
             position_reports.append({
-                "symbol": symbol, "quantity": quantity, "entryPrice": entry,
+                "symbol": symbol, "side": pos.get("side") or "long", "quantity": quantity, "entryPrice": entry,
                 "currentPrice": current if current > 0 else None,
                 "stopLossPrice": num(pos.get("stop_loss_price")) or None,
                 "takeProfitPrice": num(pos.get("take_profit_price")) or None,
@@ -4591,7 +4591,7 @@ def dual_paper_status(request: Request):
             continue
         row = rows[0]
         positions = _sb_rest("blessing_dual_positions", {
-            "select":"id,symbol,quantity,entry_price,current_price,stop_loss_price,take_profit_price,unrealized_pnl,status,opened_at",
+            "select":"id,symbol,side,quantity,entry_price,current_price,stop_loss_price,take_profit_price,unrealized_pnl,status,opened_at",
             "user_id":"eq." + uid, "portfolio_id":"eq." + row["id"], "status":"eq.open",
             "order":"opened_at.desc","limit":"100"
         }) or []
@@ -4600,7 +4600,7 @@ def dual_paper_status(request: Request):
             "user_id":"eq." + uid, "portfolio_id":"eq." + row["id"],
             "order":"created_at.desc","limit":"100"
         }) or []
-        market_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
+        market_value = sum((float(p.get("entry_price") or 0) * float(p.get("quantity") or 0) + float(p.get("unrealized_pnl") or 0)) if p.get("side") == "short" else float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
         cash = float(row["cash_balance"])
         realized = float(row["realized_pnl"])
         unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
