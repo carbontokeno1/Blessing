@@ -1550,6 +1550,49 @@ def _binance_1m_klines(symbol: str):
 
 
 
+def _moderate_crypto_entry_metrics(row: dict):
+    """Shared crypto entry gate aligned with the owner live crypto strategy."""
+    try:
+        price = Decimal(str(row.get("price") or row.get("lastPrice") or "0"))
+        stop = Decimal(str(row.get("atrStopPct") or "0"))
+        spread = Decimal(str(row.get("spreadPct") or "999"))
+        m1 = Decimal(str(row.get("m1") if row.get("m1") is not None else "-999"))
+        m5 = Decimal(str(row.get("m5") if row.get("m5") is not None else "-999"))
+        m15 = Decimal(str(row.get("m15") if row.get("m15") is not None else "-999"))
+        rvol = Decimal(str(row.get("rvol") or "0"))
+        ema20 = Decimal(str(row.get("ema20") or "0"))
+    except Exception:
+        return None
+    trend_ok = row.get("trendAligned") is True or row.get("opportunityTrendOk") is True
+    momentum_ok = m5 > 0 and m15 > 0 and m1 > Decimal("-0.20")
+    confirmation_ok = (
+        row.get("pullbackReclaim") is True or row.get("breakout") is True
+        or (ema20 > 0 and price > ema20 and m1 > 0)
+    )
+    valid = bool(
+        trend_ok and momentum_ok and confirmation_ok
+        and rvol >= Decimal("0.8")
+        and Decimal("0") < spread <= Decimal("0.5")
+        and Decimal("0.8") <= stop <= Decimal("2.0")
+        and price > 0
+        and str(row.get("symbol") or "").upper().endswith("USDT")
+        and str(row.get("exchangeSymbol") or "").upper() == str(row.get("symbol") or "").upper()
+    )
+    if not valid:
+        return None
+    score = (
+        (25 if trend_ok else 0) + (25 if momentum_ok else 0)
+        + (20 if confirmation_ok else 0) + 10 + 10 + 10
+    )
+    return {
+        "decision": "PAPER_CANDIDATE",
+        "opportunityScore": score,
+        "liveEntryScore": score,
+        "liveEntryModel": "MODERATE_EMA_MOMENTUM_CONFIRMATION",
+        "netEdgeProxyPct": None,
+    }
+
+
 def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     """Calculate legacy momentum and Balanced EMA-pullback metrics from closed 1m candles."""
     price = float(row.get("price") or row.get("lastPrice") or 0)
@@ -3664,8 +3707,8 @@ def _paper_worker_cycle():
                 continue
             if not _num(candidate.get("price"),0):
                 continue
-            decision = adaptive_decision("crypto",candidate,fee_bps=10,slippage_bps=5)
-            if decision.get("decision") == "PAPER_CANDIDATE":
+            decision = _moderate_crypto_entry_metrics(candidate)
+            if decision:
                 ranked.append((candidate,decision))
         ranked.sort(key=lambda pair:pair[1].get("opportunityScore",0),reverse=True)
         allowed = setting.get("allowed_exchanges") or ["Binance"]
@@ -4409,8 +4452,8 @@ def _dual_paper_worker_cycle():
         crypto_fresh=state.get("cryptoConnection")=="streaming" and 0 <= crypto_age <= 5
         if crypto_fresh:
             for row in _binance_th_adaptive_candidates():
-                decision=adaptive_decision("crypto",row,fee_bps=10,slippage_bps=5)
-                if decision["decision"]=="PAPER_CANDIDATE":
+                decision=_moderate_crypto_entry_metrics(row)
+                if decision:
                     crypto_candidates[row["symbol"]]=(row,decision)
         with UNIVERSE_LOCK:
             stock_scan = dict(UNIVERSE_STATE)
