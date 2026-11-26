@@ -3768,59 +3768,43 @@ async def dual_paper_refresh(request: Request):
     uid = str(user["id"])
     portfolios = _dual_paper_portfolio_rows(uid)
     updated = []
+    closed = []
     unavailable = []
     for portfolio in portfolios:
         market = portfolio["market"]
         positions = _sb_rest("blessing_dual_positions", {
-            "select": "id,symbol,quantity,entry_price,entry_fee",
+            "select": "id,symbol,side,quantity,entry_price,entry_fee",
             "portfolio_id": "eq." + str(portfolio["id"]),
-            "user_id": "eq." + uid, "status": "eq.open", "limit": "20",
+            "user_id": "eq." + uid, "status": "eq.open", "limit": "100",
         })
         for position in positions:
             symbol = str(position.get("symbol") or "")
             try:
-                if market == "crypto":
-                    price = _binance_th_public_price(symbol)
-                    source = "binance_th_public"
-                else:
-                    price = _dual_market_price("stocks", symbol)
-                    source = "alpaca_iex_verified_live"
-                quantity = float(position.get("quantity") or 0)
-                entry = float(position.get("entry_price") or 0)
-                entry_fee = float(position.get("entry_fee") or 0)
-                unrealized = (price - entry) * quantity - entry_fee
-                _sb_rest("blessing_dual_positions", {
-                    "id": "eq." + str(position["id"]),
-                    "portfolio_id": "eq." + str(portfolio["id"]),
-                    "user_id": "eq." + uid, "status": "eq.open",
-                }, "PATCH", {
-                    "current_price": price, "unrealized_pnl": unrealized,
+                price = _dual_market_price(market, symbol)
+                result = _sb_rpc("blessing_dual_mark_position", {
+                    "p_user_id": uid, "p_market": market,
+                    "p_position_id": str(position["id"]), "p_price": price,
                 })
-                updated.append({"market": market, "symbol": symbol, "price": price, "source": source})
+                if isinstance(result, dict) and result.get("closed"):
+                    closed.append({
+                        "market": market, "symbol": symbol,
+                        "side": position.get("side"), "result": result,
+                    })
+                else:
+                    updated.append({
+                        "market": market, "symbol": symbol, "price": price,
+                        "side": position.get("side"),
+                        "unrealizedPnl": result.get("unrealizedPnl") if isinstance(result, dict) else None,
+                    })
             except Exception as exc:
                 unavailable.append({"market": market, "symbol": symbol, "reason": type(exc).__name__})
-
-        # Keep peak equity current so the database risk gate measures drawdown
-        # from the highest observed equity, not only from the initial deposit.
-        refreshed = _sb_rest("blessing_dual_positions", {
-            "select": "quantity,current_price,entry_price",
-            "portfolio_id": "eq." + str(portfolio["id"]),
-            "user_id": "eq." + uid, "status": "eq.open", "limit": "20",
-        })
-        position_value = sum(
-            float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0)
-            for p in refreshed
-        )
-        equity = float(portfolio.get("cash_balance") or 0) + position_value
-        peak = float(portfolio.get("peak_equity") or portfolio.get("initial_capital") or 0)
-        if equity > peak:
-            _sb_rest("blessing_dual_portfolios", {
-                "id": "eq." + str(portfolio["id"]), "user_id": "eq." + uid,
-            }, "PATCH", {"peak_equity": equity, "updated_at": datetime.now(timezone.utc).isoformat()})
     return {
         "ok": True, "updatedCount": len(updated), "updated": updated,
+        "closedCount": len(closed), "closed": closed,
         "unavailableCount": len(unavailable), "unavailable": unavailable,
-        "automaticTakeProfitStopLoss": False,
+        "automaticTakeProfitStopLoss": True,
+        "trailingStopEnabled": True,
+        "liveOrdersEnabled": False,
     }
 
 
