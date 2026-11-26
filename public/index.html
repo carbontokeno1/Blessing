@@ -431,11 +431,12 @@ function dualRender(snapshot){
  led('dualWorkerLed',state,(w.status||'unknown')==='running'&&fresh?'กำลังทำงาน':w.status==='paused'?'หยุดอยู่':w.status==='error'?'ขัดข้อง':'กำลังเริ่ม/รอรอบ');
  led('dualCryptoLed',diag.fresh?'green':diag.status==='source_error'?'red':'yellow',diag.fresh?'สแกน Binance TH สำเร็จ':('รอข้อมูลสด · '+(diag.status||'unknown')));
  const sd=w.stocksScanDiagnostics||{};
- led('dualStockLed',sd.fresh?'green':sd.status==='source_error'?'red':'yellow',sd.fresh?'สแกนหุ้นสำเร็จ':('รอข้อมูลสด · '+(sd.status||'unknown')));
+ const stockBlocked=!sd.fresh&&['waiting_webull_auth','waiting_credentials','source_error','no_quotes'].includes(sd.status);
+ led('dualStockLed',sd.fresh?'green':stockBlocked?'red':'yellow',sd.fresh?'สแกนหุ้นสำเร็จ':('Webull '+(sd.webullConnection||sd.status||'รอข้อมูลสด')));
  const setText=(id,t)=>{const el=document.getElementById(id);if(el)el.textContent=t};
  setText('dualWorkerCycle','รอบ '+Number(w.cycles||0)+' · เริ่ม '+(w.lastCycleStartedAt?new Date(w.lastCycleStartedAt).toLocaleTimeString('th-TH'):'—')+' · จบ '+(w.lastCycleAt?new Date(w.lastCycleAt).toLocaleTimeString('th-TH'):'—')+' · BUY '+Number(w.entriesOpened||0)+' · ตรวจสถานะ '+Number(w.positionsChecked||0));
  setText('dualCryptoDiag','ประเมิน '+Number(diag.evaluated||0)+' เหรียญ · ผ่านเกณฑ์ Paper '+Number(diag.paperStrategyCandidateCount||0)+' · เข้าโอกาส '+Number(diag.opportunityEntryCount||0));
- setText('dualStockDiag','ผ่านเกณฑ์ '+Number(w.stocksCandidates||0)+' หุ้น · พร้อมคำสั่ง Paper');
+ setText('dualStockDiag','แหล่ง '+(sd.provider||'Webull')+' · สถานะ '+(sd.status||'unknown')+' · ผ่าน '+Number(w.stocksCandidates||0)+' หุ้น'+(sd.lastError?' · '+sd.lastError:'')+' · Webull '+(sd.webullConfigured?'ตั้งค่าแล้ว':'ยังไม่ตั้งค่า'));
  const reasons=diag.signalDiagnostics||{},reasonText=Object.entries(reasons).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>k+': '+v).join(' · ');
  setText('dualSkipReasons','เหตุผลคัดกรองคริปโต: '+(reasonText||'ยังไม่มีข้อมูล')+(w.lastError?' · Engine Error: '+w.lastError:'')+(diag.ageSeconds!=null?' · อายุข้อมูล '+diag.ageSeconds+' วินาที':''));
  if(msg){msg.textContent=(snapshot?.liveOrdersEnabled===false?'เชื่อมต่อแล้ว · Paper only':'สถานะระบบไม่พร้อม')+' · Monitor: '+(w.status||'unknown')+' · รอบตรวจ '+(w.cycles||0)+' · ปิดอัตโนมัติ '+(w.automaticExits||0);}
