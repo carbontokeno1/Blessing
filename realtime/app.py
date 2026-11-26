@@ -370,14 +370,14 @@ def alpaca_stream_main():
 
 def binance_th_stream_main():
     """Consume Binance TH all-market ticker updates over its official public WebSocket."""
-    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!miniTicker@arr/!ticker@arr"
+    url = "wss://nbstream.binance.th/w3w/wsa/stream?streams=!miniTicker@arr"
     while True:
         try:
             async def run_stream():
                 state["cryptoConnection"] = "connecting"
                 async with websockets.connect(url, ping_interval=60, ping_timeout=30, close_timeout=5, max_size=2**22) as ws:
                     state["cryptoConnection"] = "connected"
-                    log.info("Binance TH all-market mini + 24h ticker streams connected")
+                    log.info("Binance TH all-market mini-ticker stream connected")
                     async for raw_message in ws:
                         payload = json.loads(raw_message)
                         data = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
