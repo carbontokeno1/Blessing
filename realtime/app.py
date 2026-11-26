@@ -2271,7 +2271,7 @@ def webull_trading_account(request: Request, refresh: bool = False):
 
 
 register_member_capital_routes(app, _binance_th_owner_auth, _sb_rest, _sb_rpc)
-register_member_access_routes(app, _binance_th_owner_auth, _sb_rest, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+register_member_access_routes(app, _binance_th_owner_auth, _sb_rest, _sb_rpc, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 @app.post("/admin/member-portfolios/control")
 async def admin_control_member_portfolios(request: Request):
