@@ -376,6 +376,16 @@ const pairs=[
 ['หุ้น Live','Stock Live'],
 ['สมาชิก 10 ราย','10 Members'],
 ['รายบุคคล','Individual'],
+['STANDBY · ยังไม่อนุมัติ LIVE','STANDBY · LIVE not approved'],
+['STANDBY · LOCKED','STANDBY · LOCKED'],
+['STANDBY','STANDBY'],
+['พบพอร์ตทั้งหมด','Total portfolios found'],
+['พอร์ตทั้งหมด','Total portfolios'],
+['PAPER','PAPER'],
+['LIVE','LIVE'],
+['ยังไม่อนุมัติ LIVE','LIVE not approved'],
+['สมาชิกและวงเงิน','Members & Allocations'],
+['PAPER ONLY','PAPER ONLY'],
 ];
 const map=new Map(pairs);
 const replacements=[...map.entries()].sort((a,b)=>b[0].length-a[0].length);
