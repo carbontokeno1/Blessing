@@ -1929,9 +1929,18 @@ def altcoin_scanner(refresh: int = 0):
             row["rejectReason"] = "BALANCED_SCORE_NOT_QUALIFIED"
 
     reject_signals = {}
+    paper_strategy_counts = {"TREND_FOLLOW": 0, "BREAKOUT": 0, "PULLBACK": 0}
     for row in selected:
         reason = row.get("rejectReason") or "BALANCED_ENTRY"
         reject_signals[reason] = reject_signals.get(reason, 0) + 1
+        paper_decision = _crypto_three_strategy_decision(row)
+        if paper_decision:
+            row["paperStrategy"] = paper_decision["strategy"]
+            row["paperStrategyScore"] = paper_decision["opportunityScore"]
+            paper_strategy_counts[paper_decision["strategy"]] += 1
+        else:
+            row["paperStrategy"] = None
+            row["paperStrategyScore"] = 0
 
     payload = {
         "status": "ok" if selected else "empty",
@@ -1945,6 +1954,8 @@ def altcoin_scanner(refresh: int = 0):
         "balancedEntryCount": sum(1 for x in selected if x.get("balancedEntry") is True),
         "opportunityEntryCount": sum(1 for x in selected if x.get("opportunityEntry") is True),
         "opportunityWatchCount": sum(1 for x in selected if not x.get("opportunityEntry") and (x.get("opportunityScore") or 0) >= 50),
+        "paperStrategyCandidateCount": sum(paper_strategy_counts.values()),
+        "paperStrategyCounts": paper_strategy_counts,
         "candleErrors": candle_errors,
         "filterCounts": reject,
         "signalDiagnostics": reject_signals,
@@ -1959,10 +1970,10 @@ def altcoin_scanner(refresh: int = 0):
             "Fallback feed is display-only; no Paper entries are allowed without Binance candle data."
         ),
     }
-    log.info("Altcoin scan provider=%s eligible=%s evaluated=%s balanced_entries=%s opportunity_entries=%s opportunity_watch=%s fast_entries_legacy=%s candle_errors=%s balanced_rejects=%s",
+    log.info("Altcoin scan provider=%s eligible=%s evaluated=%s balanced_entries=%s opportunity_entries=%s paper_strategy_candidates=%s paper_strategies=%s candle_errors=%s balanced_rejects=%s",
              provider, len(eligible), len(selected), payload["balancedEntryCount"],
-             payload["opportunityEntryCount"], payload["opportunityWatchCount"],
-             payload["fastEntryCount"], candle_errors, reject_signals)
+             payload["opportunityEntryCount"], payload["paperStrategyCandidateCount"],
+             paper_strategy_counts, candle_errors, reject_signals)
     with ALTCOIN_CACHE_LOCK:
         ALTCOIN_CACHE.update({"at": time.time(), "payload": payload})
     return payload
