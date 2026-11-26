@@ -422,7 +422,7 @@ function startDualPolling(){if(dualTimer)return;dualRefresh(false);dualTimer=set
 function stopDualPolling(){if(dualTimer){clearInterval(dualTimer);dualTimer=null}}
 
 function nav(){if(role==='member'&&!window.BLESSING_MEMBER_PAGES_LOADED)loadMemberPagePermissions();let keys=role==='admin'?['overview','cryptolive','stocklive','stocks','stockpaper','crypto','altcoins','members','paper','dual','reports','live','history','connection','settings']:(window.BLESSING_MEMBER_VISIBLE_PAGES||['overview','settings']);$('tabs').innerHTML=keys.map(k=>'<button class="tab '+(active===k?'active':'')+'" onclick="go(\''+k+'\')">'+(names[k]||k)+'</button>').join('')+(role==='admin'?'<a class="tab" href="/fast-profit-lab/">FAST PROFIT LAB</a>':'')}
-async function loadMemberPagePermissions(){if(window.BLESSING_MEMBER_PAGES_LOADING)return;window.BLESSING_MEMBER_PAGES_LOADING=true;try{const sb=window.BLESSING_AUTH?.client;const {data,error}=await sb.auth.getSession();if(error||!data.session?.access_token)throw Error('session');const r=await fetch(MARKET_BRIDGE_URL+'/member/member-access',{headers:{authorization:'Bearer '+data.session.access_token},cache:'no-store'});const j=await r.json();if(!r.ok)throw Error(j.detail||'access');window.BLESSING_MEMBER_VISIBLE_PAGES=Array.isArray(j.visiblePages)?j.visiblePages:['overview','settings']}catch(e){window.BLESSING_MEMBER_VISIBLE_PAGES=['overview','settings']}finally{window.BLESSING_MEMBER_PAGES_LOADED=true;window.BLESSING_MEMBER_PAGES_LOADING=false;if(role==='member'){if(!window.BLESSING_MEMBER_VISIBLE_PAGES.includes(active))active='overview';nav();if(active==='portfolio')render()}}}
+async function loadMemberPagePermissions(){if(window.BLESSING_MEMBER_PAGES_LOADING)return;window.BLESSING_MEMBER_PAGES_LOADING=true;try{const sb=window.BLESSING_AUTH?.client;const {data,error}=await sb.auth.getSession();if(error||!data.session?.access_token)throw Error('session');const r=await fetch('/api/member/member-access',{headers:{authorization:'Bearer '+data.session.access_token},cache:'no-store'});const j=await r.json();if(!r.ok)throw Error(j.detail||'access');window.BLESSING_MEMBER_VISIBLE_PAGES=Array.isArray(j.visiblePages)?j.visiblePages:['overview','settings']}catch(e){window.BLESSING_MEMBER_VISIBLE_PAGES=['overview','settings']}finally{window.BLESSING_MEMBER_PAGES_LOADED=true;window.BLESSING_MEMBER_PAGES_LOADING=false;if(role==='member'){if(!window.BLESSING_MEMBER_VISIBLE_PAGES.includes(active))active='overview';nav();if(active==='portfolio')render()}}}
 function go(k){if(role==='member'&&!(window.BLESSING_MEMBER_VISIBLE_PAGES||['overview','settings']).includes(k)){active='overview';render();return}active=k;try{localStorage.setItem('blessing.activePage',k)}catch(e){}render()}
 let memberPortfolioRefreshTimer=null;
 function startMemberPortfolioPolling(){if(memberPortfolioRefreshTimer)clearInterval(memberPortfolioRefreshTimer);memberPortfolioRefreshTimer=setInterval(()=>{if(role==='member'&&active==='portfolio'){loadMemberPortfolioControls();loadMemberDailyTradeReport()}},5000)}
@@ -435,7 +435,7 @@ function render(){if(!(role==='member'&&active==='portfolio'))stopMemberPortfoli
   el.innerHTML='<div class="empty">กำลังโหลดรายการของวันที่ '+esc(day)+'...</div>';
   try{
    const {data,error}=await sb.auth.getSession();if(error||!data.session?.access_token)throw Error('กรุณาเข้าสู่ระบบใหม่');
-   const r=await fetch(MARKET_BRIDGE_URL+'/member/member-portfolios/daily-trades?day='+encodeURIComponent(day),{headers:{authorization:'Bearer '+data.session.access_token},cache:'no-store'});
+   const r=await fetch('/api/member/member-portfolios/daily-trades?day='+encodeURIComponent(day),{headers:{authorization:'Bearer '+data.session.access_token},cache:'no-store'});
    const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.detail||'โหลดประวัติไม่สำเร็จ');
    const labels={crypto_paper:'คริปโต Paper',stock_paper:'หุ้น Paper',crypto_live:'คริปโต Live',stock_live:'หุ้น Live'};
    const money=n=>n==null?'—':(Number(n)>0?'+':'')+'฿'+Number(n).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -471,7 +471,7 @@ async function loadMemberPortfolioControls(){
   for(let attempt=0;attempt<3;attempt++){
    try{
     const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
-    try{response=await fetch(MARKET_BRIDGE_URL+'/member/member-portfolios',{headers,cache:'no-store',signal:controller.signal})}
+    try{response=await fetch('/api/member/member-portfolios',{headers,cache:'no-store',signal:controller.signal})}
     finally{clearTimeout(timeout)}
     result=await response.json().catch(()=>({}));
     if(response.ok)break;
@@ -494,7 +494,7 @@ async function loadMemberPortfolioControls(){
    if(!confirm('ยืนยัน'+(enabled?'เปิด':'ปิด')+'พอร์ตนี้ใช่หรือไม่?'))return;
    b.disabled=true;
    try{
-    const r=await fetch(MARKET_BRIDGE_URL+'/member/member-portfolios/control',{method:'POST',headers,body:JSON.stringify({portfolioId:b.dataset.memberPortfolio,enabled}),cache:'no-store'});
+    const r=await fetch('/api/member/member-portfolios/control',{method:'POST',headers,body:JSON.stringify({portfolioId:b.dataset.memberPortfolio,enabled}),cache:'no-store'});
     const j=await r.json().catch(()=>({}));
     if(!r.ok)throw Error(j.detail||'บันทึกสถานะไม่สำเร็จ');
     await loadMemberPortfolioControls();
