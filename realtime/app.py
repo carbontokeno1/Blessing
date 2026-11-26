@@ -2412,16 +2412,43 @@ def member_member_portfolios(request: Request):
     }) or []
     member_nos = list(dict.fromkeys(str(x["member_no"]) for x in assigned if x.get("member_no") is not None))
     rows = _sb_rest("blessing_member_portfolio_registry", {
-        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,allocated_capital,authorized_limit,status,enabled,live_trading_approved",
+        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,allocated_capital,authorized_limit,status,enabled,live_trading_approved,paper_slot_id",
         "member_no": "in.(" + ",".join(member_nos) + ")",
         "order": "portfolio_type.asc", "limit": "4",
     }) if member_nos else []
-    # Live rows are visible as locked placeholders for the member's own member_no;
-    # they are never enabled or made executable by this read endpoint.
-    return {
-        "ok": True, "portfolioCount": len(rows), "portfolios": rows,
-        "liveTradingEnabled": False,
-    }
+    crypto_ids = list(dict.fromkeys(str(x["paper_slot_id"]) for x in rows if x.get("portfolio_type") == "crypto_paper" and x.get("paper_slot_id")))
+    crypto_slots = _sb_rest("blessing_paper_member_slots", {
+        "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,updated_at",
+        "id": "in.(" + ",".join(crypto_ids) + ")", "limit": "4",
+    }) if crypto_ids else []
+    stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
+        "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,updated_at",
+        "slot_no": "in.(" + ",".join(member_nos) + ")", "limit": "4",
+    }) if member_nos else []
+    crypto_slot_map = {str(x.get("id")): x for x in crypto_slots}
+    stock_slot_map = {str(x.get("slot_no")): x for x in stock_slots}
+    crypto_slot_ids = [str(x["id"]) for x in crypto_slots if x.get("id")]
+    stock_slot_ids = [str(x["id"]) for x in stock_slots if x.get("id")]
+    crypto_positions = _sb_rest("blessing_paper_slot_positions", {
+        "select": "slot_id,symbol,quantity,current_price_thb,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
+        "slot_id": "in.(" + ",".join(crypto_slot_ids) + ")", "status": "eq.open", "limit": "500",
+    }) if crypto_slot_ids else []
+    stock_positions = _sb_rest("blessing_stock_paper_slot_positions", {
+        "select": "slot_id,symbol,quantity,current_price_usd,current_fx_thb_per_usd,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
+        "slot_id": "in.(" + ",".join(stock_slot_ids) + ")", "status": "eq.open", "limit": "500",
+    }) if stock_slot_ids else []
+    for row in rows:
+        ptype = row.get("portfolio_type")
+        slot = crypto_slot_map.get(str(row.get("paper_slot_id"))) if ptype == "crypto_paper" else stock_slot_map.get(str(row.get("member_no"))) if ptype == "stock_paper" else None
+        positions = [x for x in (crypto_positions if ptype == "crypto_paper" else stock_positions) if slot and str(x.get("slot_id")) == str(slot.get("id"))] if slot else []
+        row["snapshot"] = ({
+            "initialCapital": slot.get("initial_capital"), "cashBalance": slot.get("cash_balance"),
+            "realizedPnl": slot.get("realized_pnl"), "feesPaid": slot.get("fees_paid"),
+            "updatedAt": slot.get("updated_at"), "openPositions": positions,
+            "unrealizedPnl": sum(float(x.get("unrealized_pnl_thb") or 0) for x in positions),
+        } if slot else {"locked": ptype in ("crypto_live", "stock_live"), "openPositions": []})
+    # Live rows are visible as locked placeholders; no member Live execution is enabled.
+    return {"ok": True, "portfolioCount": len(rows), "portfolios": rows, "liveTradingEnabled": False}
 
 
 @app.get("/member/member-portfolios/daily-trades")
