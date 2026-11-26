@@ -1638,6 +1638,15 @@ connectMarketBridge();
 </section>
 <script type="module">
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.0';
+// Defensive bridge: auth module may execute against a cached/older shell where the classic-script bridge is absent.
+if (typeof window.configureBlessingSession !== 'function') {
+ window.configureBlessingSession = (nextRole) => {
+  try { role = nextRole; } catch (_) { window.__BLESSING_SESSION_ROLE = nextRole; }
+  if (nextRole === 'member' && ['members','live','cryptolive','dual'].includes(active)) active = 'overview';
+  try { localStorage.setItem('blessing.activePage', active); } catch (_) {}
+ };
+}
+
 const sb = createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
 const gate=document.getElementById('authGate'), form=document.getElementById('authForm'), msg=document.getElementById('authMessage'), submit=document.getElementById('authSubmit');
 function applyBlessingSessionRole(nextRole){
