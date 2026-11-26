@@ -1501,6 +1501,47 @@ def _binance_public_tickers():
         })
 
     if not rows:
+        # REST recovery path: official Binance TH all-market 24h ticker.
+        # Candle confirmation below still uses Binance TH klines, so a
+        # third-party display feed can never authorize a Paper entry.
+        response = requests.get(
+            BINANCE_TH_API_BASE + "/api/v1/ticker/24hr",
+            headers=_binance_th_market_headers(), timeout=(4, 12),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict):
+            code = payload.get("code")
+            if code not in (None, 0, "0"):
+                raise RuntimeError("BINANCE_TH_24HR_TICKER_API_ERROR:" + str(code))
+            payload = payload.get("data") or []
+        if isinstance(payload, dict):
+            payload = [payload]
+        if isinstance(payload, list):
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                pair = str(item.get("symbol") or "").upper()
+                if pair.endswith("_USDT"):
+                    pair = pair[:-5] + "USDT"
+                base_asset = pair[:-4] if pair.endswith("USDT") else ""
+                if not base_asset or not base_asset.isascii() or not base_asset.isalnum():
+                    continue
+                price = _num(item.get("lastPrice") or item.get("price"), 0) or 0
+                open_price = _num(item.get("openPrice"), 0) or 0
+                quote_volume = _num(item.get("quoteVolume"), 0) or 0
+                bid = _num(item.get("bidPrice"), 0) or 0
+                ask = _num(item.get("askPrice"), 0) or 0
+                if price <= 0 or open_price <= 0:
+                    continue
+                rows.append({
+                    "symbol":pair,"lastPrice":price,"quoteVolume":quote_volume,
+                    "openPrice":open_price,"bidPrice":bid,"askPrice":ask,
+                    "closeTime":int(_num(item.get("closeTime"), 0) or 0),
+                })
+        if rows:
+            log.warning("Binance TH ticker WebSocket unavailable; recovered %d symbols from official REST 24hr ticker",len(rows))
+    if not rows:
         quote_cache = state.get("crypto_quotes") or {}
         sample_symbols = list(quote_cache.keys())[:8]
         raise RuntimeError(
