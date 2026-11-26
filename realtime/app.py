@@ -2418,12 +2418,14 @@ def member_member_portfolios(request: Request):
     }) if member_nos else []
     crypto_ids = list(dict.fromkeys(str(x["paper_slot_id"]) for x in rows if x.get("portfolio_type") == "crypto_paper" and x.get("paper_slot_id")))
     crypto_slots = _sb_rest("blessing_paper_member_slots", {
-        "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,updated_at",
-        "id": "in.(" + ",".join(crypto_ids) + ")", "limit": "4",
+        "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,updated_at,assigned_user_id",
+        "id": "in.(" + ",".join(crypto_ids) + ")",
+        "assigned_user_id": "eq." + str(user["id"]), "limit": "4",
     }) if crypto_ids else []
     stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
         "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,updated_at",
-        "slot_no": "in.(" + ",".join(member_nos) + ")", "limit": "4",
+        "slot_no": "in.(" + ",".join(member_nos) + ")",
+        "assigned_user_id": "eq." + str(user["id"]), "limit": "4",
     }) if member_nos else []
     crypto_slot_map = {str(x.get("id")): x for x in crypto_slots}
     stock_slot_map = {str(x.get("slot_no")): x for x in stock_slots}
@@ -2474,10 +2476,15 @@ def member_member_portfolios_daily_trades(request: Request, day: str = ""):
         "member_no": "in.(" + ",".join(member_nos) + ")", "limit": "4",
     }) if member_nos else []
     paper_registry = [x for x in registry if x.get("mode") == "paper" and x.get("portfolio_type") in ("crypto_paper", "stock_paper")]
-    crypto_slot_ids = list(dict.fromkeys(
-        str(row["paper_slot_id"]) for row in registry
+    registry_crypto_ids = list(dict.fromkeys(
+        str(row["paper_slot_id"]) for row in paper_registry
         if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id")
     ))
+    owned_crypto_slots = _sb_rest("blessing_paper_member_slots", {
+        "select": "id,assigned_user_id", "id": "in.(" + ",".join(registry_crypto_ids) + ")",
+        "assigned_user_id": "eq." + str(user["id"]), "limit": "4",
+    }) if registry_crypto_ids else []
+    crypto_slot_ids = [str(x["id"]) for x in owned_crypto_slots if x.get("id")]
     stock_member_nos = list(dict.fromkeys(
         str(row["member_no"]) for row in registry
         if row.get("portfolio_type") == "stock_paper" and row.get("member_no") is not None
