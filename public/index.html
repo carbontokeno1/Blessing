@@ -1820,15 +1820,15 @@ if(recoveryMode){showRecoveryForm()}else{await enter(session)}
 <section id="centerDashboard" class="centerHero" style="display:none">
  <div class="centerTitle"><div><div class="brand">BLESSING · OWNER / CENTER</div><h1>Control & Portfolio Dashboard</h1><div class="muted">ภาพรวมพอร์ตสมาชิก 5 คน · ข้อมูลอ่านจากฐานข้อมูลจริง · รีเฟรชอัตโนมัติทุก 10 วินาที</div></div><span class="tag">OWNER PRIVATE</span></div>
  <div class="globalActions">
-  <button id="allTradingOn">▶ เปิด PAPER ทั้ง 20 พอร์ต</button><button id="allTradingOff" class="danger">■ ปิด PAPER ทั้ง 20 พอร์ต</button>
-  <button id="allLiveOn" class="secondary">◉ ตั้ง LIVE STANDBY ทั้ง 20</button><button id="allLiveOff" class="secondary">○ ปิด LIVE ทั้ง 20</button><button id="emergencyStop" class="danger">⛔ EMERGENCY STOP · ปิดทั้ง 40</button>
+  <button id="allTradingOn">▶ เปิด PAPER ทั้ง 10 พอร์ต</button><button id="allTradingOff" class="danger">■ ปิด PAPER ทั้ง 10 พอร์ต</button>
+  <button id="allLiveOn" class="secondary">◉ ตั้ง LIVE STANDBY ทั้ง 10</button><button id="allLiveOff" class="secondary">○ ปิด LIVE ทั้ง 10</button><button id="emergencyStop" class="danger">⛔ EMERGENCY STOP · ปิดทั้ง 20</button>
  </div>
  <div id="tradingStatus" class="status">กำลังโหลดสถานะพอร์ต...</div>
  <div class="centerMetrics" id="centerMetrics">
   <div class="metric"><small>มูลค่ารวม PAPER Equity</small><strong>—</strong><em>ข้อมูลเงินจริงไม่รวม LIVE</em></div>
   <div class="metric"><small>PAPER P&L รวม</small><strong>—</strong><em>ตัวเลขและเปอร์เซ็นต์</em></div>
-  <div class="metric"><small>PAPER Portfolio</small><strong>—</strong><em>เปิด / ปิด จาก 20</em></div>
-  <div class="metric"><small>LIVE Portfolio</small><strong>—</strong><em>Standby / Off จาก 20</em></div>
+  <div class="metric"><small>PAPER Portfolio</small><strong>—</strong><em>เปิด / ปิด จาก 10</em></div>
+  <div class="metric"><small>LIVE Portfolio</small><strong>—</strong><em>Standby / Off จาก 10</em></div>
   <div class="metric"><small>Open Positions</small><strong>—</strong><em>เฉพาะ Paper</em></div>
   <div class="metric"><small>Open Orders</small><strong>—</strong><em>เฉพาะ Paper</em></div>
  </div>
@@ -1876,19 +1876,19 @@ function renderCenter(report,rows){
  const allOrders=(report.portfolios||[]).flatMap(p=>p.recentOrders||[]);
  const openOrders=allOrders.filter(o=>['new','open','pending','partially_filled','accepted'].includes(String(o.status||'').toLowerCase())).length;
  const metrics=[
-  ['มูลค่ารวม Equity',money(t.paperEquity),'Paper only · Live ยังไม่เชื่อมบัญชี'],
+  ['มูลค่ารวม Equity',money(t.paperEquity),'รวมมูลค่าที่มีข้อมูล · Paper only; Live ยังไม่เชื่อมบัญชี'],
   ['P&L รวม',(pnl>=0?'+':'')+money(pnl)+' · '+pct.toFixed(2)+'%','Paper · Realized + Unrealized'],
-  ['RUNNING',paperOn+'/20','Paper · ไฟเขียว'],
-  ['STANDBY',liveReady+'/20','Live · ไฟเหลือง/ส้ม · ไม่ส่งคำสั่งจริง'],
-  ['OFF',totalOff+'/40','Paper '+paperOff+' · Live '+liveOff],
+  ['RUNNING',paperOn+'/10','Paper · ไฟเขียว'],
+  ['STANDBY',liveReady+'/10','Live · ไฟเหลือง/ส้ม · ไม่ส่งคำสั่งจริง'],
+  ['OFF',totalOff+'/20','Paper '+paperOff+' · Live '+liveOff],
   ['Open Positions',String(openPositions),'รายการถือครอง Paper'],
   ['Open Orders',String(openOrders),'คำสั่งที่ยังไม่ปิดสถานะ']
  ];
  $('centerMetrics').replaceChildren();
  for(const [label,value,note] of metrics){const box=document.createElement('div');box.className='metric';const a=document.createElement('small');a.textContent=label;const b=document.createElement('strong');b.textContent=value;const c=document.createElement('em');c.textContent=note;box.append(a,b,c);$('centerMetrics').append(box)}
  $('centerBreakdown').innerHTML='';
- const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 20 พอร์ต</b><small>'+paperOn+' Running · '+paperOff+' Off</small></div><b>'+paperOn+'/20 ACTIVE</b>';
- const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 20 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · Execution locked</small></div><b>'+liveReady+'/20 READY</b>';
+ const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 10 พอร์ต</b><small>'+paperOn+' Running · '+paperOff+' Off</small></div><b>'+paperOn+'/20 ACTIVE</b>';
+ const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 10 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · Execution locked</small></div><b>'+liveReady+'/20 READY</b>';
  $('centerBreakdown').append(paperLine,liveLine);
  const activity=allOrders.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,8);
  $('centerActivity').replaceChildren();
@@ -1914,7 +1914,7 @@ async function loadTradingControls(){
    const assigned=items.find(x=>x.assigned_user_id),prof=assigned?profileMap.get(assigned.assigned_user_id):null;
    const heading=document.createElement('h3');heading.textContent='สมาชิก '+String(memberNo).padStart(2,'0')+' · '+(prof?.display_name||assigned?.assigned_member_name||assigned?.member_label||('Member '+String(memberNo).padStart(2,'0')));
    const count=document.createElement('div');count.className='memberPortfolioCount';count.textContent=items.length+'/4 พอร์ตในทะเบียน'+(items.some(x=>x.assigned_user_id)?' · ผูกบัญชีแล้ว':' · ยังไม่ผูกบัญชี');
-   card.append(heading,count);const map=new Map(items.map(x=>[x.portfolio_type,x]));
+   card.append(heading,count);const memberReports=items.map(x=>reports.get(String(x.id))).filter(Boolean);const memberPaper=memberReports.filter(x=>String(x.portfolioType||x.portfolio_type||'').includes('paper')||items.some(r=>String(r.id)===String(x.id)&&r.mode==='paper'));const memberEquity=memberPaper.reduce((a,x)=>a+Number(x.equity||0),0);const memberPnl=memberPaper.reduce((a,x)=>a+Number(x.netPnl||0),0);const memberCapital=memberPaper.reduce((a,x)=>a+Number(x.capital||x.initialCapital||0),0);const memberPct=memberCapital?memberPnl/memberCapital*100:0;const summary=document.createElement('div');summary.className='memberPortfolioCount';summary.textContent='Paper Equity '+money(memberEquity)+' · P&L '+(memberPnl>=0?'+':'')+money(memberPnl)+' ('+memberPct.toFixed(2)+'%)';card.append(summary);const map=new Map(items.map(x=>[x.portfolio_type,x]));
    for(const type of order){
     const row=map.get(type),rep=row?reports.get(String(row.id)):null,isLive=type.endsWith('_live');
     const line=document.createElement('div');line.className='tradeAccount';const info=document.createElement('div');
@@ -1948,11 +1948,11 @@ async function setPortfolioGroup(mode,enabled){
  try{const result=await adminApi('/api/admin/member-portfolios/control','POST',{mode,enabled});await loadTradingControls();alert((mode==='all'?'EMERGENCY STOP':(mode==='paper'?'PAPER':'LIVE'))+' · ปรับสถานะแล้ว '+(result.updatedCount||0)+' พอร์ต'+(mode==='live'?' · LIVE ยังคงไม่อนุมัติส่งคำสั่งเงินจริง':''))}
  catch(e){alert('สั่งงานไม่สำเร็จ: '+e.message)}finally{buttons.forEach(b=>b.disabled=false)}
 }
-$('allTradingOn').addEventListener('click',()=>{if(confirm('ยืนยันเปิด PAPER ทั้ง 20 พอร์ต?'))setPortfolioGroup('paper',true)});
-$('allTradingOff').addEventListener('click',()=>{if(confirm('ยืนยันปิด PAPER ทั้ง 20 พอร์ต?'))setPortfolioGroup('paper',false)});
-$('allLiveOn').addEventListener('click',()=>{if(confirm('ตั้ง LIVE ทั้ง 20 พอร์ตเป็น READY / STANDBY? การดำเนินการนี้ไม่ส่งคำสั่งเงินจริง'))setPortfolioGroup('live',true)});
-$('allLiveOff').addEventListener('click',()=>{if(confirm('ยืนยันปิดสถานะ READY ของ LIVE ทั้ง 20 พอร์ต?'))setPortfolioGroup('live',false)});
-$('emergencyStop').addEventListener('click',()=>{if(confirm('EMERGENCY STOP: ยืนยันปิดสถานะทั้ง 40 พอร์ตทันที?'))setPortfolioGroup('all',false)});
+$('allTradingOn').addEventListener('click',()=>{if(confirm('ยืนยันเปิด PAPER ทั้ง 10 พอร์ต?'))setPortfolioGroup('paper',true)});
+$('allTradingOff').addEventListener('click',()=>{if(confirm('ยืนยันปิด PAPER ทั้ง 10 พอร์ต?'))setPortfolioGroup('paper',false)});
+$('allLiveOn').addEventListener('click',()=>{if(confirm('ตั้ง LIVE ทั้ง 10 พอร์ตเป็น READY / STANDBY? การดำเนินการนี้ไม่ส่งคำสั่งเงินจริง'))setPortfolioGroup('live',true)});
+$('allLiveOff').addEventListener('click',()=>{if(confirm('ยืนยันปิดสถานะ READY ของ LIVE ทั้ง 10 พอร์ต?'))setPortfolioGroup('live',false)});
+$('emergencyStop').addEventListener('click',()=>{if(confirm('EMERGENCY STOP: ยืนยันปิดสถานะทั้ง 20 พอร์ตทันที?'))setPortfolioGroup('all',false)});
 $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error)throw error;await start(data.session)}catch(err){await sb.auth.signOut();msg(err.message||'เข้าสู่ระบบไม่สำเร็จ')}});
 $('logout').onclick=async()=>{await sb.auth.signOut();location.reload()};
 try{const {data,error}=await sb.auth.getSession();if(error)throw error;if(data.session)await start(data.session)}catch(e){msg(e.message||'ไม่สามารถตรวจสอบบัญชีได้')}
