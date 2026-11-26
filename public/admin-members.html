@@ -78,7 +78,7 @@ async function loadTradingControls(){
   for(const row of rows){const key=String(row.member_no);if(byMember.has(key))byMember.get(key).push(row)}
   const paperRows=rows.filter(x=>x.mode==='paper'&&['crypto_paper','stock_paper'].includes(x.portfolio_type));
   const liveRows=rows.filter(x=>x.mode==='live'&&['crypto_live','stock_live'].includes(x.portfolio_type));
-  const enabled=paperRows.filter(x=>x.enabled).length;const liveReady=liveRows.filter(x=>x.enabled).length;
+  const enabled=paperRows.filter(x=>x.enabled).length;const liveReady=liveRows.filter(x=>x.live_ready).length;
   status.textContent='10 สมาชิก · '+rows.length+'/40 พอร์ต · PAPER '+enabled+'/20 ACTIVE · LIVE '+liveReady+'/20 READY (STANDBY)';
   const labels={crypto_paper:'CRYPTO PAPER',stock_paper:'STOCK PAPER',crypto_live:'CRYPTO LIVE',stock_live:'STOCK LIVE'};
   const order=['crypto_paper','stock_paper','crypto_live','stock_live'];
@@ -96,7 +96,7 @@ async function loadTradingControls(){
     const title=document.createElement('b');title.textContent=labels[type];
     const state=document.createElement('div');
     const isLive=type.endsWith('_live');
-    const active=!!row?.enabled;
+    const active=!!(isLive?row?.live_ready:row?.enabled);
     const light=document.createElement('span');light.className='signal '+(isLive?(active?'standby':'off'):(active?'on':'off'));
     const label=document.createElement('span');label.textContent=isLive?(active?' STANDBY · READY':' ปิด · OFF'):(active?' ACTIVE · RUNNING':' ปิด · STOPPED');
     state.append(light,label);info.append(title,state);line.append(info);
