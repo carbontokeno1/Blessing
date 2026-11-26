@@ -4,12 +4,44 @@
 :root{color-scheme:dark;--bg:#0b1020;--panel:#121a2d;--line:#26334d;--muted:#94a3b8;--gold:#f4b942;--green:#36c98f;--red:#fb7185}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,#18284b 0,transparent 40%),var(--bg);color:#edf3ff;font:15px system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:1100px;margin:auto;padding:22px 14px 60px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.brand{font-weight:900;letter-spacing:.15em;color:var(--gold)}.muted,small{color:var(--muted)}.card{background:linear-gradient(145deg,#151f35,#101729);border:1px solid var(--line);border-radius:16px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}input,select,button{font:inherit;border-radius:10px;padding:11px 12px;border:1px solid var(--line)}input,select{width:100%;background:#0b1324;color:white;margin:5px 0 10px}button{background:var(--gold);color:#171717;font-weight:800;cursor:pointer;border:0}button.secondary{background:#26344c;color:#fff}button.danger{background:#7f1d1d;color:#fff}button:disabled{opacity:.5;cursor:not-allowed}label{font-size:12px;color:var(--muted)}.hidden{display:none!important}.status{padding:12px;border-radius:10px;background:#0b1324;color:var(--muted);white-space:pre-wrap;margin-top:10px}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:760px;font-size:13px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:middle}th{color:var(--muted)}.tag{padding:4px 8px;border-radius:20px;background:#183a35;color:#77e5ba;font-size:11px}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions button{font-size:12px;padding:8px 10px}.member{border:1px solid var(--line);border-radius:13px;padding:14px;margin:10px 0;background:#0d1628}.memberHead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.allocs{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:12px}.alloc{background:#101a2c;border:1px solid var(--line);padding:12px;border-radius:12px}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.tradeGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}.tradeMember{background:#0d1628;border:1px solid var(--line);border-radius:12px;padding:13px}.tradeAccount{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line)}.tradeAccount:first-of-type{border-top:0}.tradeAccount button{min-width:92px}.on{color:#77e5ba}.off{color:#fb7185}.portfolioSwitch{display:flex;align-items:center;gap:10px;min-width:112px;justify-content:flex-end}.portfolioSwitch button{min-width:74px;padding:8px 12px;border-radius:999px;font-size:12px}.portfolioSwitch button.isOn{background:#087f5b;color:#fff}.portfolioSwitch button.isOff{background:#7f1d1d;color:#fff}.signal{width:11px;height:11px;border-radius:50%;display:inline-block;box-shadow:0 0 10px currentColor}.signal.on{background:#36c98f;color:#36c98f}.signal.off{background:#fb7185;color:#fb7185}.signal.standby{background:#f4b942;color:#f4b942}.tradeMember h3{margin:2px 0 8px;color:var(--gold)}.memberPortfolioCount{font-size:12px;color:var(--muted);margin-bottom:8px}.globalActions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.globalActions button{flex:1;min-width:190px}@media(max-width:560px){main{padding:14px 10px}.card{padding:13px}.row{grid-template-columns:1fr}.tradeAccount{align-items:flex-start;flex-direction:column}.tradeAccount button{width:100%}}
+
+.centerHero{border:1px solid #3b4a67;background:linear-gradient(135deg,#172743,#101729 65%,#172033);border-radius:18px;padding:18px;margin:16px 0}
+.centerTitle{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+.centerTitle h1{margin:0;color:var(--gold)}.centerMetrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
+.metric{background:#0b1425;border:1px solid #2b3a55;border-radius:13px;padding:12px;min-width:0}
+.metric small{display:block;color:var(--muted);font-size:11px}.metric strong{display:block;font-size:clamp(17px,2vw,23px);margin-top:5px;overflow-wrap:anywhere}.metric em{font-size:11px;color:var(--muted);font-style:normal}
+.centerSplit{display:grid;grid-template-columns:1.1fr .9fr;gap:12px}.centerPanel{background:#0b1425;border:1px solid #2b3a55;border-radius:13px;padding:13px;min-width:0}
+.centerPanel h3{margin:0 0 10px;color:var(--gold)}.activityList{display:grid;gap:7px;max-height:230px;overflow:auto}.activityItem{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #26334d;font-size:12px}.activityItem:last-child{border:0}.activityItem b{display:block}.activityItem small{display:block}.syncLine{font-size:11px;color:var(--muted);margin-top:10px}
+.portfolioStats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:9px}
+.portfolioStat{background:#0a1221;border-radius:8px;padding:7px}.portfolioStat small{display:block;font-size:10px}.portfolioStat b{font-size:12px;overflow-wrap:anywhere}
+@media(max-width:680px){.centerSplit{grid-template-columns:1fr}.centerHero{padding:13px}.centerMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style></head><body><main>
-<header class="top"><div><div class="brand">BLESSING · CONTROL CENTER</div><div class="muted">อนุมัติสมาชิกและจัดสรรวงเงินรายบุคคล · PAPER ONLY</div></div><div class="actions"><button id="blessingLanguageToggle" class="secondary" type="button" onclick="window.BLESSING_I18N?.toggle()">EN</button><button id="logout" class="secondary hidden">ออกจากระบบ</button></div></header>
+<header class="top"><div><div class="brand">BLESSING · CONTROL CENTER</div><div class="muted">อนุมัติสมาชิกและจัดสรรวงเงินรายบุคคล · PAPER + LIVE STANDBY</div></div><div class="actions"><button id="blessingLanguageToggle" class="secondary" type="button" onclick="window.BLESSING_I18N?.toggle()">EN</button><button id="logout" class="secondary hidden">ออกจากระบบ</button></div></header>
 <section id="login" class="card"><h1>ผู้ดูแลระบบ</h1><p class="muted">เข้าสู่ระบบด้วยบัญชี Admin / Super Admin ของ BLESSING</p><form id="loginForm"><label>อีเมล</label><input id="email" type="email" required autocomplete="username"><label>รหัสผ่าน</label><input id="password" type="password" required autocomplete="current-password"><button>เข้าสู่ระบบ</button></form><div id="loginMsg" class="status">ระบบจะตรวจสอบสิทธิ์จากฐานข้อมูล ไม่ใช้การซ่อนปุ่มเป็นมาตรการรักษาความปลอดภัย</div></section>
 <section id="app" class="hidden">
+<section id="centerDashboard" class="centerHero" style="display:none">
+ <div class="centerTitle"><div><div class="brand">BLESSING · OWNER / CENTER</div><h1>Control & Portfolio Dashboard</h1><div class="muted">ภาพรวมพอร์ตสมาชิก 10 คน · ข้อมูลอ่านจากฐานข้อมูลจริง · รีเฟรชอัตโนมัติทุก 10 วินาที</div></div><span class="tag">OWNER PRIVATE</span></div>
+ <div class="globalActions">
+  <button id="allTradingOn">▶ เปิด PAPER ทั้ง 20 พอร์ต</button><button id="allTradingOff" class="danger">■ ปิด PAPER ทั้ง 20 พอร์ต</button>
+  <button id="allLiveOn" class="secondary">◉ ตั้ง LIVE STANDBY ทั้ง 20</button><button id="allLiveOff" class="secondary">○ ปิด LIVE ทั้ง 20</button><button id="emergencyStop" class="danger">⛔ EMERGENCY STOP · ปิดทั้ง 40</button>
+ </div>
+ <div id="tradingStatus" class="status">กำลังโหลดสถานะพอร์ต...</div>
+ <div class="centerMetrics" id="centerMetrics">
+  <div class="metric"><small>มูลค่ารวม PAPER Equity</small><strong>—</strong><em>ข้อมูลเงินจริงไม่รวม LIVE</em></div>
+  <div class="metric"><small>PAPER P&L รวม</small><strong>—</strong><em>ตัวเลขและเปอร์เซ็นต์</em></div>
+  <div class="metric"><small>PAPER Portfolio</small><strong>—</strong><em>เปิด / ปิด จาก 20</em></div>
+  <div class="metric"><small>LIVE Portfolio</small><strong>—</strong><em>Standby / Off จาก 20</em></div>
+  <div class="metric"><small>Open Positions</small><strong>—</strong><em>เฉพาะ Paper</em></div>
+  <div class="metric"><small>Open Orders</small><strong>—</strong><em>เฉพาะ Paper</em></div>
+ </div>
+ <div class="centerSplit">
+  <div class="centerPanel"><h3>รายละเอียดแยก Paper / Live</h3><div id="centerBreakdown" class="muted">กำลังโหลด...</div></div>
+  <div class="centerPanel"><h3>กิจกรรม / Log ล่าสุด</h3><div id="centerActivity" class="activityList"><div class="muted">กำลังโหลด...</div></div><div id="centerUpdated" class="syncLine">เวลาอัปเดต: —</div></div>
+ </div>
+ <div class="syncLine">หมายเหตุ: LIVE เป็น Standby เท่านั้น ไม่มี Equity / P&L จริงให้แสดงจนกว่าจะเชื่อมบัญชีและเปิดใช้ระบบ Live อย่างเป็นทางการ</div>
+</section>
 <div class="card"><div class="memberHead"><div><h1>สมาชิกและวงเงิน</h1><div class="muted">ทุนต้นทางอยู่ในบัญชีหลักของเจ้าของระบบ · แยกยอดภายในรายสมาชิก</div></div><span class="tag">ADMIN ONLY</span></div><div class="status">วงเงินที่จัดสรรในระยะนี้เป็น Paper Allocation เพื่อทดสอบบัญชีแยก ยังไม่ส่งคำสั่งซื้อขายเงินจริงและไม่ใช่ยอดเงินฝากที่ถอนได้</div></div>
-<div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>OWNER CONTROL · รวมพอร์ตสมาชิก 10 คน</h2><div class="muted">สมาชิก 01–10 · คนละ 4 พอร์ต · รวม 40 พอร์ต | PAPER เปิด–ปิดแยกรายพอร์ต · LIVE เตรียมพร้อมในโหมด STANDBY</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="globalActions"><button id="allTradingOn">▶ เปิด PAPER ทั้ง 20 พอร์ต</button><button id="allTradingOff" class="danger">■ ปิด PAPER ทั้ง 20 พอร์ต</button><button id="allLiveOn" class="secondary">◉ เปิด LIVE เป็น STANDBY ทั้ง 20</button><button id="allLiveOff" class="secondary">○ ปิด LIVE ทั้ง 20 พอร์ต</button><button id="emergencyStop" class="danger">⛔ EMERGENCY STOP · ปิดทั้ง 40 พอร์ต</button></div><div class="muted">LIVE READY คือเตรียมระบบเท่านั้น ไม่ใช่การอนุมัติส่งคำสั่งเงินจริง และไม่มีการส่งคำสั่งซื้อขายจากสวิตช์นี้</div><div id="tradingStatus" class="status">กำลังโหลดสถานะพอร์ต...</div><h3>ควบคุมรายสมาชิก / รายพอร์ต</h3><div id="tradingMembers" class="tradeGrid"></div></div>
+<div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>OWNER CONTROL · รวมพอร์ตสมาชิก 10 คน</h2><div class="muted">สมาชิก 01–10 · คนละ 4 พอร์ต · รวม 40 พอร์ต | แสดงสถานะและผลการดำเนินงานแยกรายพอร์ต</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="muted">LIVE READY คือเตรียมระบบเท่านั้น ไม่ใช่การอนุมัติส่งคำสั่งเงินจริง และไม่มีการส่งคำสั่งซื้อขายจากสวิตช์นี้</div><h3>ควบคุมรายสมาชิก / รายพอร์ต</h3><div id="tradingMembers" class="tradeGrid"></div></div>
 <div class="card"><h2>รายชื่อสมาชิก</h2><div id="members"><div class="status">กำลังโหลด...</div></div></div>
 </section></main>
 <script type="module">
@@ -24,7 +56,7 @@ async function start(session){
  if(error)throw error;
  if(!p||p.status!=='active'||!['admin','super_admin'].includes(p.role))throw Error('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ');
  current=session.user;ownerMode=p.role==='super_admin';$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');
- $('tradingControls').style.display=ownerMode?'block':'none';
+ $('tradingControls').style.display=ownerMode?'block':'none';$('centerDashboard').style.display=ownerMode?'block':'none';
  await loadMembers();if(ownerMode)await loadTradingControls();
 }
 async function loadMembers(){
@@ -67,19 +99,49 @@ async function adminApi(path,method='GET',body){
  if(!response.ok)throw Error(payload.detail||payload.message||'HTTP '+response.status);
  return payload;
 }
+function money(v,c='THB'){return Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c}
+function stamp(v){if(!v)return '—';try{return new Date(v).toLocaleString('th-TH',{dateStyle:'short',timeStyle:'medium'})}catch{return String(v)}}
+function renderCenter(report,rows){
+ const paper=rows.filter(x=>x.mode==='paper'),live=rows.filter(x=>x.mode==='live');
+ const paperOn=paper.filter(x=>x.enabled).length,liveReady=live.filter(x=>x.live_ready).length,liveOff=live.length-liveReady;
+ const t=report.totals||{},capital=Number(t.paperCapital||0),pnl=Number(t.paperNetPnl||0),pct=capital?pnl/capital*100:0;
+ const openPositions=Number(t.openPositions||0);
+ const allOrders=(report.portfolios||[]).flatMap(p=>p.recentOrders||[]);
+ const openOrders=allOrders.filter(o=>['new','open','pending','partially_filled','accepted'].includes(String(o.status||'').toLowerCase())).length;
+ const metrics=[
+  ['มูลค่ารวม PAPER Equity',money(t.paperEquity),'Cash + Market Value · THB'],
+  ['PAPER P&L รวม',(pnl>=0?'+':'')+money(pnl)+' · '+pct.toFixed(2)+'%','Realized + Unrealized'],
+  ['PAPER Portfolio',paperOn+'/20 Active',(20-paperOn)+' Off'],
+  ['LIVE Portfolio',liveReady+'/20 Standby',liveOff+' Off · Execution locked'],
+  ['Open Positions',String(openPositions),'รายการถือครอง Paper'],
+  ['Open Orders',String(openOrders),'คำสั่งที่ยังไม่ปิดสถานะ']
+ ];
+ $('centerMetrics').replaceChildren();
+ for(const [label,value,note] of metrics){const box=document.createElement('div');box.className='metric';const a=document.createElement('small');a.textContent=label;const b=document.createElement('strong');b.textContent=value;const c=document.createElement('em');c.textContent=note;box.append(a,b,c);$('centerMetrics').append(box)}
+ $('centerBreakdown').innerHTML='';
+ const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 20 พอร์ต</b><small>'+paperOn+' Active · '+(20-paperOn)+' Off · Equity '+money(t.paperEquity)+'</small></div><b>'+(pnl>=0?'+':'')+money(pnl)+' ('+pct.toFixed(2)+'%)</b>';
+ const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 20 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · ยังไม่ส่งคำสั่งเงินจริง</small></div><b>LOCKED</b>';
+ $('centerBreakdown').append(paperLine,liveLine);
+ const activity=allOrders.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,8);
+ $('centerActivity').replaceChildren();
+ if(!activity.length){const empty=document.createElement('div');empty.className='muted';empty.textContent='ยังไม่มี Order Log ในพอร์ตสมาชิก';$('centerActivity').append(empty)}
+ for(const o of activity){const item=document.createElement('div');item.className='activityItem';const left=document.createElement('div');const title=document.createElement('b');title.textContent=(o.symbol||'Order')+' · '+String(o.side||'').toUpperCase();const sub=document.createElement('small');sub.textContent=(o.portfolioType||'PAPER')+' · '+stamp(o.createdAt);left.append(title,sub);const right=document.createElement('b');right.textContent=String(o.status||'—').toUpperCase();item.append(left,right);$('centerActivity').append(item)}
+ $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก '+(report.refreshIntervalSeconds||10)+' วินาที';
+}
 async function loadTradingControls(){
- const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังอ่านสถานะพอร์ตทั้ง 40 พอร์ต...';box.replaceChildren();
+ const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังอ่านข้อมูลเรียลไทม์ทั้ง 40 พอร์ต...';box.replaceChildren();
  try{
-  const data=await adminApi('/api/admin/member-portfolios');
+  const [data,report]=await Promise.all([adminApi('/api/admin/member-portfolios'),adminApi('/api/admin/member-portfolios/report')]);
   const rows=(data.portfolios||[]).filter(x=>['crypto_paper','stock_paper','crypto_live','stock_live'].includes(x.portfolio_type));
+  const reports=new Map((report.portfolios||[]).map(x=>[String(x.id),x]));
   const profileMap=new Map(profileCache.map(p=>[p.user_id,p]));
-  const byMember=new Map();
-  for(let n=1;n<=10;n++)byMember.set(String(n),[]);
+  const byMember=new Map();for(let n=1;n<=10;n++)byMember.set(String(n),[]);
   for(const row of rows){const key=String(row.member_no);if(byMember.has(key))byMember.get(key).push(row)}
   const paperRows=rows.filter(x=>x.mode==='paper'&&['crypto_paper','stock_paper'].includes(x.portfolio_type));
   const liveRows=rows.filter(x=>x.mode==='live'&&['crypto_live','stock_live'].includes(x.portfolio_type));
-  const enabled=paperRows.filter(x=>x.enabled).length;const liveReady=liveRows.filter(x=>x.live_ready).length;
-  status.textContent='10 สมาชิก · '+rows.length+'/40 พอร์ต · PAPER '+enabled+'/20 ACTIVE · LIVE '+liveReady+'/20 READY (STANDBY)';
+  const enabled=paperRows.filter(x=>x.enabled).length,liveReady=liveRows.filter(x=>x.live_ready).length;
+  status.textContent='10 สมาชิก · '+rows.length+'/40 พอร์ต · PAPER '+enabled+'/20 ACTIVE · LIVE '+liveReady+'/20 STANDBY · LIVE EXECUTION LOCKED';
+  renderCenter(report,rows);
   const labels={crypto_paper:'CRYPTO PAPER',stock_paper:'STOCK PAPER',crypto_live:'CRYPTO LIVE',stock_live:'STOCK LIVE'};
   const order=['crypto_paper','stock_paper','crypto_live','stock_live'];
   for(const [memberNo,items] of byMember){
@@ -87,34 +149,34 @@ async function loadTradingControls(){
    const assigned=items.find(x=>x.assigned_user_id),prof=assigned?profileMap.get(assigned.assigned_user_id):null;
    const heading=document.createElement('h3');heading.textContent='สมาชิก '+String(memberNo).padStart(2,'0')+' · '+(prof?.display_name||assigned?.assigned_member_name||assigned?.member_label||('Member '+String(memberNo).padStart(2,'0')));
    const count=document.createElement('div');count.className='memberPortfolioCount';count.textContent=items.length+'/4 พอร์ตในทะเบียน'+(items.some(x=>x.assigned_user_id)?' · ผูกบัญชีแล้ว':' · ยังไม่ผูกบัญชี');
-   card.append(heading,count);
-   const map=new Map(items.map(x=>[x.portfolio_type,x]));
+   card.append(heading,count);const map=new Map(items.map(x=>[x.portfolio_type,x]));
    for(const type of order){
-    const row=map.get(type);
-    const line=document.createElement('div');line.className='tradeAccount';
-    const info=document.createElement('div');
-    const title=document.createElement('b');title.textContent=labels[type];
-    const state=document.createElement('div');
-    const isLive=type.endsWith('_live');
+    const row=map.get(type),rep=row?reports.get(String(row.id)):null,isLive=type.endsWith('_live');
+    const line=document.createElement('div');line.className='tradeAccount';const info=document.createElement('div');
+    const title=document.createElement('b');title.textContent=labels[type];const state=document.createElement('div');
     const active=!!(isLive?row?.live_ready:row?.enabled);
     const light=document.createElement('span');light.className='signal '+(isLive?(active?'standby':'off'):(active?'on':'off'));
-    const label=document.createElement('span');label.textContent=isLive?(active?' STANDBY · READY':' ปิด · OFF'):(active?' ACTIVE · RUNNING':' ปิด · STOPPED');
+    const label=document.createElement('span');label.textContent=isLive?(active?' STANDBY · READY':' OFF · STOPPED'):(active?' ACTIVE · RUNNING':' OFF · STOPPED');
     state.append(light,label);info.append(title,state);line.append(info);
-    const control=document.createElement('div');control.className='portfolioSwitch';
-    const button=document.createElement('button');
-    if(!row){button.className='secondary';button.textContent='ไม่พบพอร์ต';button.disabled=true;control.append(button)}
-    else {
-     button.className=isLive?(active?'secondary isOn':'isOff'):(active?'isOn':'isOff');button.textContent=isLive?(active?'READY':'OFF'):(active?'ON':'OFF');
-     button.setAttribute('aria-label',(active?'ปิด':'เปิด')+' '+labels[type]+' สมาชิก '+memberNo);
+    const control=document.createElement('div');control.className='portfolioSwitch';const button=document.createElement('button');
+    if(!row){button.className='secondary';button.textContent='ไม่พบพอร์ต';button.disabled=true}
+    else{button.className=isLive?(active?'secondary isOn':'isOff'):(active?'isOn':'isOff');button.textContent=isLive?(active?'READY':'OFF'):(active?'ON':'OFF');button.setAttribute('aria-label',(active?'ปิด':'เปิด')+' '+labels[type]+' สมาชิก '+memberNo);
      button.onclick=async()=>{button.disabled=true;try{await adminApi('/api/admin/member-portfolios/control','POST',{portfolioId:row.id,mode:isLive?'live':'paper',enabled:!active});await loadTradingControls()}catch(e){alert('เปลี่ยนสถานะไม่สำเร็จ: '+e.message);button.disabled=false}};
-     control.append(button);
-    }
-    line.append(control);card.append(line);
+    }control.append(button);line.append(control);card.append(line);
+    const stats=document.createElement('div');stats.className='portfolioStats';
+    const equity=rep?.dataAvailable?money(rep.equity,rep.base_currency||row.base_currency||'THB'):'—';
+    const pnl=rep?.dataAvailable?((Number(rep.netPnl||0)>=0?'+':'')+money(rep.netPnl,rep.base_currency||row.base_currency||'THB')+' · '+Number(rep.returnPct||0).toFixed(2)+'%'):'ข้อมูลยังไม่พร้อม';
+    const positions=rep?.dataAvailable?String(rep.openPositions||0):'—';
+    const sync=rep?.slotUpdatedAt?stamp(rep.slotUpdatedAt):(row.updated_at?stamp(row.updated_at):'—');
+    const cells=[['Equity',equity],['P&L',pnl],['Open Positions / Orders',rep?.dataAvailable?positions+' / '+String(rep.openOrders||0):'—'],['Sync',sync]];
+    for(const [k,v] of cells){const cell=document.createElement('div');cell.className='portfolioStat';const sm=document.createElement('small');sm.textContent=k;const strong=document.createElement('b');strong.textContent=v;cell.append(sm,strong);stats.append(cell)}
+    if(isLive){stats.querySelectorAll('.portfolioStat')[0].lastChild.textContent='— · ยังไม่เชื่อมบัญชีเงินจริง';stats.querySelectorAll('.portfolioStat')[1].lastChild.textContent='— · STANDBY';stats.querySelectorAll('.portfolioStat')[2].lastChild.textContent='0 · ไม่มี Live Orders';}
+    card.append(stats);
    }
    box.append(card);
   }
   if(rows.length!==40)status.textContent+=' · คำเตือน: ทะเบียนมี '+rows.length+' แถว ไม่ครบ 40';
- }catch(e){status.textContent='โหลดสถานะหรือเชื่อมต่อระบบไม่ได้: '+e.message}
+ }catch(e){status.textContent='โหลดข้อมูล Dashboard ไม่สำเร็จ: '+e.message}
 }
 async function setPortfolioGroup(mode,enabled){
  const ids=mode==='paper'?['allTradingOn','allTradingOff']:mode==='live'?['allLiveOn','allLiveOff']:['emergencyStop'];const buttons=ids.map(id=>$(id));buttons.forEach(b=>b.disabled=true);
