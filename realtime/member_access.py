@@ -140,7 +140,7 @@ def register_member_access_routes(app, owner_auth, sb_rest, sb_rpc, supabase_url
             "p_idempotency_key": __import__("uuid").uuid4().hex
         })
         return {"ok": True, "portfolioId": portfolio_id, "portfolioType": rows[0].get("portfolio_type"),
-                "limit": result.get("newLimit") if isinstance(result, dict) else normalized,
+                "limit": (result.get("authorizedLimit", result.get("newLimit")) if isinstance(result, dict) else normalized),
                 "result": result, "liveOrdersStillLocked": str(rows[0].get("portfolio_type", "")).endswith("_live")}
 
     @app.get("/member/member-access")
