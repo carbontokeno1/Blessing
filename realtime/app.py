@@ -4807,6 +4807,12 @@ def _dual_paper_worker_cycle():
                     decision=adaptive_decision("stocks",normalized,fee_bps=10,slippage_bps=5)
                     if decision["decision"]=="PAPER_CANDIDATE":
                         stock_candidates[row["symbol"]]=(row,decision)
+        DUAL_PAPER_WORKER_STATE["stocksScanDiagnostics"] = {
+            "status":stock_scan.get("status"), "updatedAt":stock_scan.get("updatedAt"),
+            "ageSeconds":round(stock_age,1), "fresh":bool(stock_fresh),
+            "evaluated":len(stock_scan.get("candidates") or []),
+            "paperStrategyCandidateCount":len(stock_candidates)
+        }
         # All enabled member portfolios run independently; no experiment-row gate.
             # Crypto Paper: every enabled member portfolio runs automatically without an experiment gate.
         enabled_crypto_portfolios = _sb_rest("blessing_dual_portfolios", {
