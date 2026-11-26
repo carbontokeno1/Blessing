@@ -1901,24 +1901,25 @@ function money(v,c='THB'){return Number(v||0).toLocaleString('en-US',{minimumFra
 function stamp(v){if(!v)return '—';try{return new Date(v).toLocaleString('th-TH',{dateStyle:'short',timeStyle:'medium'})}catch{return String(v)}}
 function renderCenter(report,rows){
  const paper=rows.filter(x=>x.mode==='paper'),live=rows.filter(x=>x.mode==='live');
- const paperOn=paper.filter(x=>x.enabled).length,liveReady=live.filter(x=>x.live_ready).length,liveOff=live.length-liveReady;
+ const paperOn=paper.filter(x=>x.enabled).length,liveReady=live.filter(x=>x.live_ready).length,liveOff=live.length-liveReady,paperOff=paper.length-paperOn,totalOff=paperOff+liveOff;
  const t=report.totals||{},capital=Number(t.paperCapital||0),pnl=Number(t.paperNetPnl||0),pct=capital?pnl/capital*100:0;
  const openPositions=Number(t.openPositions||0);
  const allOrders=(report.portfolios||[]).flatMap(p=>p.recentOrders||[]);
  const openOrders=allOrders.filter(o=>['new','open','pending','partially_filled','accepted'].includes(String(o.status||'').toLowerCase())).length;
  const metrics=[
-  ['มูลค่ารวม PAPER Equity',money(t.paperEquity),'Cash + Market Value · THB'],
-  ['PAPER P&L รวม',(pnl>=0?'+':'')+money(pnl)+' · '+pct.toFixed(2)+'%','Realized + Unrealized'],
-  ['PAPER Portfolio',paperOn+'/20 Active',(20-paperOn)+' Off'],
-  ['LIVE Portfolio',liveReady+'/20 Standby',liveOff+' Off · Execution locked'],
+  ['มูลค่ารวม Equity',money(t.paperEquity),'Paper only · Live ยังไม่เชื่อมบัญชี'],
+  ['P&L รวม',(pnl>=0?'+':'')+money(pnl)+' · '+pct.toFixed(2)+'%','Paper · Realized + Unrealized'],
+  ['RUNNING',paperOn+'/20','Paper · ไฟเขียว'],
+  ['STANDBY',liveReady+'/20','Live · ไฟเหลือง/ส้ม · ไม่ส่งคำสั่งจริง'],
+  ['OFF',totalOff+'/40','Paper '+paperOff+' · Live '+liveOff],
   ['Open Positions',String(openPositions),'รายการถือครอง Paper'],
   ['Open Orders',String(openOrders),'คำสั่งที่ยังไม่ปิดสถานะ']
  ];
  $('centerMetrics').replaceChildren();
  for(const [label,value,note] of metrics){const box=document.createElement('div');box.className='metric';const a=document.createElement('small');a.textContent=label;const b=document.createElement('strong');b.textContent=value;const c=document.createElement('em');c.textContent=note;box.append(a,b,c);$('centerMetrics').append(box)}
  $('centerBreakdown').innerHTML='';
- const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 20 พอร์ต</b><small>'+paperOn+' Active · '+(20-paperOn)+' Off · Equity '+money(t.paperEquity)+'</small></div><b>'+(pnl>=0?'+':'')+money(pnl)+' ('+pct.toFixed(2)+'%)</b>';
- const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 20 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · ยังไม่ส่งคำสั่งเงินจริง</small></div><b>LOCKED</b>';
+ const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 20 พอร์ต</b><small>'+paperOn+' Running · '+paperOff+' Off · Equity '+money(t.paperEquity)+'</small></div><b>'+(pnl>=0?'+':'')+money(pnl)+' ('+pct.toFixed(2)+'%)</b>';
+ const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 20 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · Live execution locked</small></div><b>NO LIVE ORDERS</b>';
  $('centerBreakdown').append(paperLine,liveLine);
  const activity=allOrders.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,8);
  $('centerActivity').replaceChildren();
