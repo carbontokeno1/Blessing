@@ -2438,12 +2438,15 @@ def member_member_portfolios_daily_trades(request: Request, day: str = ""):
     start_utc = start.astimezone(timezone.utc).isoformat()
     end_utc = end.astimezone(timezone.utc).isoformat()
 
+    assigned = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "member_no", "assigned_user_id": "eq." + str(user["id"]), "limit": "4",
+    }) or []
+    member_nos = list(dict.fromkeys(str(x["member_no"]) for x in assigned if x.get("member_no") is not None))
     registry = _sb_rest("blessing_member_portfolio_registry", {
         "select": "member_no,portfolio_type,mode,paper_slot_id,assigned_user_id",
-        "assigned_user_id": "eq." + str(user["id"]),
-        "portfolio_type": "in.(crypto_paper,stock_paper)",
-        "mode": "eq.paper", "limit": "4",
-    }) or []
+        "member_no": "in.(" + ",".join(member_nos) + ")", "limit": "4",
+    }) if member_nos else []
+    paper_registry = [x for x in registry if x.get("mode") == "paper" and x.get("portfolio_type") in ("crypto_paper", "stock_paper")]
     crypto_slot_ids = list(dict.fromkeys(
         str(row["paper_slot_id"]) for row in registry
         if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id")
@@ -2458,7 +2461,7 @@ def member_member_portfolios_daily_trades(request: Request, day: str = ""):
         "assigned_user_id": "eq." + str(user["id"]), "limit": "4",
     }) if stock_member_nos else []
     slots = []
-    for row in registry:
+    for row in paper_registry:
         ptype = row.get("portfolio_type")
         if ptype == "crypto_paper" and row.get("paper_slot_id"):
             slots.append({"slot_id": str(row["paper_slot_id"]), "portfolio_type": ptype})
@@ -2497,6 +2500,10 @@ def member_member_portfolios_daily_trades(request: Request, day: str = ""):
                 "createdAt": order.get("created_at"),
             } for order in orders],
         })
+    # Show the member's two Live portfolio tiles as locked; no member Live order execution is enabled.
+    for row in registry:
+        if row.get("mode") == "live" and row.get("portfolio_type") in ("crypto_live", "stock_live"):
+            reports.append({"portfolioType": row.get("portfolio_type"), "orders": [], "liveTradingLocked": True})
     return {
         "ok": True, "day": report_day.isoformat(), "timezone": "Asia/Bangkok",
         "portfolios": reports, "liveOrdersIncluded": False,
