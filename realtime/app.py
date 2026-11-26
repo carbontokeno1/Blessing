@@ -1491,6 +1491,56 @@ def _binance_public_tickers():
             "askPrice": ask,
             "closeTime": int(_num(item.get("eventTime"), 0) or 0),
         })
+
+    # The all-market WebSocket may initially provide only a small partial universe.
+    # Top it up from Binance TH's official public 24h ticker REST endpoint so the
+    # scanner can still evaluate the full eligible market after a reconnect.
+    if len(rows) < 420:
+        try:
+            response = requests.get(
+                BINANCE_TH_API_BASE + "/api/v1/ticker/24hr",
+                timeout=(5, 15), headers=_binance_th_market_headers(),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict):
+                code = payload.get("code")
+                if code not in (None, 0, "0", "000000"):
+                    raise RuntimeError("BINANCE_TH_TICKER_API_ERROR:" + str(code))
+                rest_items = payload.get("data") if isinstance(payload.get("data"), list) else [payload]
+            elif isinstance(payload, list):
+                rest_items = payload
+            else:
+                rest_items = []
+            stream_by_symbol = {str(item.get("symbol") or "").upper(): item for item in rows}
+            rest_rows = []
+            for item in rest_items:
+                if not isinstance(item, dict):
+                    continue
+                pair = str(item.get("symbol") or "").upper()
+                if not pair.endswith("USDT") or not pair[:-4].isascii() or not pair[:-4].isalnum():
+                    continue
+                stream_item = stream_by_symbol.get(pair) or {}
+                price = _num(item.get("lastPrice") or item.get("last"), 0) or 0
+                open_price = _num(item.get("openPrice"), 0) or 0
+                if price <= 0 or open_price <= 0:
+                    continue
+                rest_rows.append({
+                    "symbol": pair,
+                    "lastPrice": price,
+                    "quoteVolume": _num(item.get("quoteVolume"), 0) or 0,
+                    "openPrice": open_price,
+                    "bidPrice": _num(item.get("bidPrice"), 0) or _num(stream_item.get("bidPrice"), 0) or 0,
+                    "askPrice": _num(item.get("askPrice"), 0) or _num(stream_item.get("askPrice"), 0) or 0,
+                    "closeTime": int(_num(item.get("closeTime"), 0) or 0),
+                })
+            if len(rest_rows) > len(rows):
+                log.info("Binance TH REST ticker top-up stream_pairs=%s rest_pairs=%s", len(rows), len(rest_rows))
+                rows = rest_rows
+        except Exception as rest_error:
+            log.warning("Binance TH REST ticker top-up unavailable (%s); keeping %s live stream pairs",
+                        type(rest_error).__name__, len(rows))
+
     if not rows:
         raise RuntimeError(
             "BINANCE_TH_LIVE_TICKERS_NOT_READY:"
