@@ -61,4 +61,4 @@ $("scan").onclick=async()=>{try{await api("/api/scan","POST");await refresh();}c
 $("apiUrl").value=sessionStorage.getItem("fpl-api")||"";$("token").value=sessionStorage.getItem("fpl-token")||"";
 if($("apiUrl").value&&$("token").value){refresh();refreshTimer=setInterval(refresh,15000);}
 })();
-</script><script src="/i18n.js" defer></script></body></html>
+</script><script src="/i18n.js?v=cbf7c095" defer></script></body></html>
