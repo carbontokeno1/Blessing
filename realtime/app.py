@@ -4851,6 +4851,10 @@ def _dual_paper_worker_cycle():
         DUAL_PAPER_WORKER_STATE["stocksScanDiagnostics"] = {
             "status":stock_scan.get("status"), "updatedAt":stock_scan.get("updatedAt"),
             "ageSeconds":round(stock_age,1), "fresh":bool(stock_fresh),
+            "provider":stock_scan.get("provider"), "lastError":stock_scan.get("lastError"),
+            "webullConnection":state.get("webullConnection"),
+            "webullConfigured":bool(APP_KEY and APP_SECRET),
+            "alpacaConfigured":bool(ALPACA_KEY and ALPACA_SECRET),
             "evaluated":len(stock_scan.get("candidates") or []),
             "paperStrategyCandidateCount":len(stock_candidates)
         }
