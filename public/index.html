@@ -461,14 +461,30 @@ function render(){if(!(role==='member'&&active==='portfolio'))stopMemberPortfoli
 
 async function loadMemberPortfolioControls(){
  const el=document.getElementById('memberPortfolioControls'),sb=window.BLESSING_AUTH?.client;
- if(!el||!sb)return;
+ if(!el||!sb||window.BLESSING_MEMBER_PORTFOLIOS_LOADING)return;
+ window.BLESSING_MEMBER_PORTFOLIOS_LOADING=true;
  try{
   const {data,error}=await sb.auth.getSession();
   if(error||!data.session?.access_token)throw Error('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
   const headers={'authorization':'Bearer '+data.session.access_token,'content-type':'application/json'};
-  const response=await fetch(MARKET_BRIDGE_URL+'/member/member-portfolios',{headers,cache:'no-store'});
-  const result=await response.json().catch(()=>({}));
-  if(!response.ok)throw Error(result.detail||'โหลดพอร์ตไม่สำเร็จ');
+  let response,result,lastError;
+  for(let attempt=0;attempt<3;attempt++){
+   try{
+    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+    try{response=await fetch(MARKET_BRIDGE_URL+'/member/member-portfolios',{headers,cache:'no-store',signal:controller.signal})}
+    finally{clearTimeout(timeout)}
+    result=await response.json().catch(()=>({}));
+    if(response.ok)break;
+    const detail=typeof result.detail==='string'?result.detail:(result.detail?.message||'เซิร์ฟเวอร์ปฏิเสธคำขอ');
+    if(response.status<500||attempt===2)throw Error(detail+' (HTTP '+response.status+')');
+    lastError=Error(detail);
+   }catch(err){
+    lastError=err;
+    if(attempt===2)throw Error(err.name==='AbortError'?'เซิร์ฟเวอร์ใช้เวลาตอบกลับนานเกินไป กรุณากดรีเฟรช':(err instanceof TypeError?'การเชื่อมต่อขัดข้องชั่วคราว ลองใหม่อัตโนมัติแล้ว 3 ครั้ง กรุณากดรีเฟรชอีกครั้ง':err.message));
+   }
+   await new Promise(resolve=>setTimeout(resolve,700*(attempt+1)));
+  }
+  if(!response?.ok)throw lastError||Error('โหลดพอร์ตไม่สำเร็จ');
   const rows=Array.isArray(result.portfolios)?result.portfolios:[];
   if(!rows.length){el.innerHTML='<div class="notice">บัญชีนี้ยังไม่มีพอร์ตที่ผู้ดูแลกำหนดให้ ระบบจะแสดงพอร์ตทั้ง 4 เมื่อผูกบัญชีสมาชิกเรียบร้อย</div>';return}
   const labels={crypto_paper:'คริปโตทดลอง',crypto_live:'คริปโตเงินจริง',stock_paper:'หุ้นทดลอง',stock_live:'หุ้นเงินจริง'};
@@ -484,7 +500,8 @@ async function loadMemberPortfolioControls(){
     await loadMemberPortfolioControls();
    }catch(e){alert(e.message);b.disabled=false}
   }));
- }catch(e){el.innerHTML='<div class="notice">โหลดพอร์ตไม่ได้: '+esc(e.message)+'</div><button class="secondary" type="button" onclick="loadMemberPortfolioControls()">ลองอีกครั้ง</button>'}
+ }catch(e){console.error('[BLESSING member portfolios]',e);el.innerHTML='<div class="notice">ระบบกำลังเชื่อมต่อข้อมูลพอร์ตไม่สำเร็จ: '+esc(e.message)+'</div><button class="secondary" type="button" onclick="loadMemberPortfolioControls()">เชื่อมต่อใหม่</button>'}
+ finally{window.BLESSING_MEMBER_PORTFOLIOS_LOADING=false}
 }
 
 const MARKET_BRIDGE_URL='https://blessing-webull-realtime-djfm.onrender.com';
