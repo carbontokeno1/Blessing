@@ -89,11 +89,18 @@ def register_member_access_routes(app, owner_auth, sb_rest, supabase_url, servic
         }) or []
         if not profiles:
             raise HTTPException(status_code=404, detail="ไม่พบบัญชีสมาชิก")
-        result = sb_rest("blessing_member_access_settings", {
-            "on_conflict": "user_id"
-        }, method="POST", body={
-            "user_id": user_id, "visible_pages": clean, "updated_by": owner.get("id")
-        }, prefer="resolution=merge-duplicates,return=representation")
+        existing = sb_rest("blessing_member_access_settings", {
+            "select": "user_id", "user_id": "eq." + user_id, "limit": "1"
+        }) or []
+        values = {"visible_pages": clean, "updated_by": owner.get("id"), "updated_at": "now()"}
+        if existing:
+            result = sb_rest("blessing_member_access_settings", {
+                "user_id": "eq." + user_id
+            }, method="PATCH", body=values)
+        else:
+            result = sb_rest("blessing_member_access_settings", {}, method="POST", body={
+                "user_id": user_id, **values
+            })
         return {"ok": True, "userId": user_id, "visiblePages": clean, "saved": bool(result)}
 
     @app.get("/member/member-access")
