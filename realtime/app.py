@@ -1603,11 +1603,26 @@ def _moderate_crypto_entry_metrics(row: dict):
 
 
 def _crypto_three_strategy_decision(row: dict):
-    """Paper-only selector for trend-follow, breakout and pullback setups.
+    """Paper-only selector using the shared moderate entry gate plus named setups.
 
     Requires real Binance TH candle-derived EMA/ATR metrics from altcoin_scanner;
     websocket ticker-only rows are intentionally rejected.
     """
+    # Apply the same moderate momentum/confirmation gate used by the owner strategy
+    # to member crypto Paper slots. This prevents the member engine silently using
+    # the older, stricter EMA-only selector while the owner uses the moderate gate.
+    moderate = _moderate_crypto_entry_metrics(row)
+    if moderate:
+        return {
+            **moderate,
+            "strategy": "MODERATE_MOMENTUM",
+            "strategyLabel": "Moderate Momentum",
+            "entryAllowed": True,
+            "paperOnly": True,
+            "liveEntryAllowed": False,
+            "atrStopPct": row.get("atrStopPct"),
+            "note": "Paper-only entry using the shared moderate EMA/momentum confirmation gate.",
+        }
     try:
         symbol = str(row.get("symbol") or "").upper()
         exchange_symbol = str(row.get("exchangeSymbol") or "").upper()
