@@ -556,8 +556,7 @@ async def startup():
     global crypto_book_stream_thread
     crypto_book_stream_thread = threading.Thread(target=binance_th_book_stream_main, name="binance-th-book-ticker", daemon=True)
     crypto_book_stream_thread.start()
-    # Webull is the authoritative live US-stock data provider. Alpaca, if
-    # configured, may continue its separate universe-scanner role only.
+    # Webull is the sole US-stock market-data and universe-scanner provider.
     state["provider"] = "webull"
     if APP_KEY and APP_SECRET:
         state["connection"] = "connecting"
@@ -572,15 +571,15 @@ async def startup():
         present = sorted(k for k in os.environ if k.startswith("WEBULL_"))
         log.warning("Webull primary stock market data credentials unavailable; Webull variable names=%s; webull_key_present=%s webull_secret_present=%s", present, bool(APP_KEY), bool(APP_SECRET))
     global UNIVERSE_THREAD
-    if ALPACA_KEY and ALPACA_SECRET:
+    if APP_KEY and APP_SECRET:
         if UNIVERSE_THREAD is None or not UNIVERSE_THREAD.is_alive():
-            UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="alpaca-iex-universe-scanner", daemon=True)
+            UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="webull-us-universe-scanner", daemon=True)
             UNIVERSE_THREAD.start()
-        log.info("Alpaca %s REST universe scanner started; interval=%ss", ALPACA_FEED.upper(), UNIVERSE_SCAN_INTERVAL)
+        log.info("Webull OpenAPI US universe scanner started; interval=%ss", max(180,UNIVERSE_SCAN_INTERVAL))
     else:
         with UNIVERSE_LOCK:
-            UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"alpaca","lastError":"ALPACA_CREDENTIALS_MISSING"})
-        log.warning("Alpaca stock scanner waiting for APCA_API_KEY_ID/APCA_API_SECRET_KEY.")
+            UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"Webull OpenAPI","lastError":"WEBULL_CREDENTIALS_MISSING"})
+        log.warning("Webull US universe scanner waiting for Webull App Key/Secret.")
 
 
 
@@ -671,124 +670,34 @@ def _scanner_stale_payload(cached: dict, rank_type: str, direction: str, error: 
 @app.get("/scanner")
 def scanner(rank_type: str = "DAY_1", direction: str = "DESC"):
     rank_type, direction = rank_type.upper(), direction.upper()
-    if rank_type not in SCANNER_TYPES or direction not in {"ASC", "DESC"}:
-        return {"status": "error", "message": "พารามิเตอร์การสแกนไม่ถูกต้อง", "candidates": [], "scanned": 0}
-    # Webull-only: expose only symbols actually received on the authenticated stream.
-    webull_rows = []
-    for symbol, quote in (state.get("quotes") or {}).items():
-        if not isinstance(quote, dict) or quote.get("source") != "Webull OpenAPI real-time stream":
-            continue
-        raw = quote.get("raw") if isinstance(quote.get("raw"), dict) else {}
-        price = _dual_price_number(raw or quote)
-        if not price or price <= 0:
-            continue
-        webull_rows.append({"symbol": symbol, "price": float(price),
-                            "source": "Webull OpenAPI real-time stream",
-                            "receivedAt": quote.get("receivedAt")})
-    webull_rows.sort(key=lambda row: row["symbol"])
+    if rank_type not in SCANNER_TYPES or direction not in {"ASC","DESC"}:
+        return {"status":"error","message":"พารามิเตอร์การสแกนไม่ถูกต้อง","candidates":[],"scanned":0}
+    with UNIVERSE_LOCK:
+        scan = dict(UNIVERSE_STATE)
+    candidates = list(scan.get("candidates") or [])
+    if rank_type == "PRE_MARKET":
+        candidates = [x for x in candidates if x.get("session") == "PRE_MARKET"]
+        key = lambda x: _num(x.get("changePct"),-999) or -999
+    elif rank_type == "AFTER_MARKET":
+        candidates = [x for x in candidates if x.get("session") == "AFTER_HOURS"]
+        key = lambda x: _num(x.get("changePct"),-999) or -999
+    elif rank_type == "MIN_3":
+        candidates = [x for x in candidates if x.get("m3") is not None]
+        key = lambda x: _num(x.get("m3"),-999) or -999
+    elif rank_type == "MIN_5":
+        candidates = [x for x in candidates if x.get("m5") is not None]
+        key = lambda x: _num(x.get("m5"),-999) or -999
+    else:
+        key = lambda x: _num(x.get("changePct"),-999) or -999
+    candidates.sort(key=key, reverse=(direction=="DESC"))
     return {
-        "provider": "Webull OpenAPI",
-        "status": "ok" if webull_rows else ("connecting" if APP_KEY and APP_SECRET else "waiting_credentials"),
-        "message": "แสดงเฉพาะหุ้นในรายการติดตามที่ได้รับข้อมูลจาก Webull เท่านั้น; ไม่ใช้ Alpaca หรือ Yahoo",
-        "rankType": rank_type, "direction": direction,
-        "scanned": len(webull_rows), "candidates": webull_rows[:100],
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "feed": "Webull OpenAPI", "coverage": "Webull subscribed watchlist symbols only",
+        "provider":"Webull OpenAPI","status":scan.get("status","waiting_scan"),
+        "message":"จัดอันดับจากข้อมูล snapshot และแท่งราคา Webull เท่านั้น; ไม่มีการใช้ Alpaca/Yahoo แทน",
+        "rankType":rank_type,"direction":direction,"scanned":scan.get("scanned",0),
+        "candidates":candidates[:100],"updatedAt":scan.get("updatedAt"),
+        "feed":"Webull OpenAPI","coverage":scan.get("coverage"),
+        "lastError":scan.get("lastError"),
     }
-    # Use the same verified Alpaca IEX universe scan for intraday and extended-hours
-    # movers. The daily Yahoo fallback remains separate and explicitly labeled.
-    if rank_type in {"PRE_MARKET", "AFTER_MARKET", "MIN_3", "MIN_5"}:
-        with UNIVERSE_LOCK:
-            scan = dict(UNIVERSE_STATE)
-        candidates = list(scan.get("candidates") or [])
-        if rank_type == "PRE_MARKET":
-            candidates = [x for x in candidates if x.get("session") == "PRE_MARKET"]
-            sort_key = lambda x: _num(x.get("changePct"), -999) or -999
-        elif rank_type == "AFTER_MARKET":
-            candidates = [x for x in candidates if x.get("session") == "AFTER_HOURS"]
-            sort_key = lambda x: _num(x.get("changePct"), -999) or -999
-        elif rank_type == "MIN_3":
-            candidates = [x for x in candidates if x.get("m3") is not None]
-            sort_key = lambda x: _num(x.get("m3"), -999) or -999
-        else:
-            candidates = [x for x in candidates if x.get("m5") is not None]
-            sort_key = lambda x: _num(x.get("m5"), -999) or -999
-        candidates.sort(key=sort_key, reverse=(direction == "DESC"))
-        return {
-            "provider": "none",
-            "status": scan.get("status", "waiting_scan"),
-            "message": (
-                "จัดอันดับจากข้อมูล IEX ในรอบสแกนล่าสุด · ไม่ใช่ข้อมูลครบทุกตลาด"
-                if candidates else
-                "รอบสแกนล่าสุดยังไม่มีหุ้นที่ผ่านเกณฑ์ในช่วงนี้ · อาจไม่มีข้อมูล IEX หรืออยู่นอกช่วงซื้อขาย"
-            ),
-            "rankType": rank_type, "direction": direction,
-            "scanned": len(candidates), "candidates": candidates[:100],
-            "updatedAt": scan.get("updatedAt"), "feed": "iex",
-            "coverage": scan.get("coverage"),
-            "limitations": scan.get("coverage"),
-        }
-
-    cache_key = rank_type + ":" + direction
-    now = time.time()
-    cached = SCANNER_CACHE.get(cache_key)
-    if cached and now - cached["at"] < SCANNER_CACHE_SECONDS:
-        payload = dict(cached["payload"])
-        payload["cacheState"] = "fresh"
-        return payload
-
-    # The public fallback does not provide verified intraday or extended-hours rankings.
-    if rank_type in {"MIN_3", "MIN_5", "PRE_MARKET", "AFTER_MARKET"}:
-        return {
-            "provider": "Yahoo Finance (unofficial fallback)",
-            "status": "unsupported_interval",
-            "message": "แหล่งข้อมูลสำรองไม่รองรับช่วงเวลานี้ ต้องรอ Webull Market Data API",
-            "rankType": rank_type, "direction": direction,
-            "scanned": 0, "candidates": [],
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-        }
-
-    # Serialize refreshes: multiple visitors should not all hit Yahoo simultaneously.
-    with SCANNER_LOCK:
-        now = time.time()
-        cached = SCANNER_CACHE.get(cache_key)
-        if cached and now - cached["at"] < SCANNER_CACHE_SECONDS:
-            payload = dict(cached["payload"])
-            payload["cacheState"] = "fresh"
-            return payload
-        scr_id = "day_gainers" if direction == "DESC" else "day_losers"
-        try:
-            candidates = _yahoo_screener(scr_id, "DESC" if direction == "DESC" else "ASC")
-            if not candidates:
-                raise ValueError("Yahoo returned an empty screener result")
-            fetched_at = datetime.now(timezone.utc).isoformat()
-            payload = {
-                "provider": "Yahoo Finance (unofficial fallback)",
-                "status": "ok",
-                "message": "ข้อมูลจัดอันดับรายวันจาก Yahoo Finance · ไม่ใช่ Webull และอาจล่าช้า",
-                "rankType": rank_type, "direction": direction,
-                "scanned": len(candidates), "candidates": candidates,
-                "updatedAt": fetched_at,
-                "cacheState": "fresh",
-                "dataDisclaimer": "Unofficial source. Not guaranteed real-time; verify quotes with your broker before trading."
-            }
-            SCANNER_CACHE[cache_key] = {"at": time.time(), "payload": payload}
-            return payload
-        except Exception as exc:
-            error = type(exc).__name__
-            log.warning("Yahoo fallback screener failed: %s", error)
-            cached = SCANNER_CACHE.get(cache_key)
-            if cached and time.time() - cached["at"] <= SCANNER_STALE_MAX_SECONDS:
-                return _scanner_stale_payload(cached, rank_type, direction, error)
-            return {
-                "provider": "Yahoo Finance (unofficial fallback)",
-                "status": "source_unavailable",
-                "message": "แหล่งข้อมูลหุ้นยังไม่ตอบกลับ · กรุณาลองใหม่ภายหลัง",
-                "rankType": rank_type, "direction": direction,
-                "scanned": 0, "candidates": [],
-                "updatedAt": datetime.now(timezone.utc).isoformat(),
-                "sourceError": error,
-            }
 
 
 # Server-side Yahoo chart cache for the eight watchlist symbols. This avoids
@@ -1322,114 +1231,77 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
 
 def _universe_scan_cycle():
     started = time.time()
-    assets = _load_active_universe()
-    snapshots: dict[str, dict] = {}
-    symbols = [x["symbol"] for x in assets]
-    batches = [symbols[i:i + UNIVERSE_BATCH_SIZE] for i in range(0, len(symbols), UNIVERSE_BATCH_SIZE)]
-    # A bounded worker pool keeps the Basic 200-requests/minute quota in view.
-    snapshot_errors = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {pool.submit(_alpaca_snapshots, batch): batch for batch in batches}
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                batch_data = future.result()
-            except Exception as exc:
-                snapshot_errors += 1
-                log.warning("Universe snapshot batch failed (%s)", type(exc).__name__)
-                continue
-            for symbol, value in batch_data.items():
-                if isinstance(value, dict):
-                    snapshots[str(symbol).upper()] = value
-
-    exchange_by_symbol = {x["symbol"]: x["exchange"] for x in assets}
+    assets = _webull_list_active_universe()
+    snapshots_raw = _webull_snapshot_batch(assets)
+    exchange_by_symbol = {x["symbol"]:x.get("exchange","") for x in assets}
+    asset_by_symbol = {x["symbol"]:x for x in assets}
+    snapshots = {s:_normalize_webull_snapshot(row) for s,row in snapshots_raw.items()}
     liquid = []
     for symbol, snap in snapshots.items():
         daily = snap.get("dailyBar") or {}
-        previous_daily = snap.get("prevDailyBar") or {}
+        prev = snap.get("prevDailyBar") or {}
         volume = _num(daily.get("v"), 0) or 0
-        previous_volume = _num(previous_daily.get("v"), 0) or 0
         price = _num((snap.get("latestTrade") or {}).get("p"),
-                     _num((snap.get("minuteBar") or {}).get("c"),
-                          _num(daily.get("c"), _num(previous_daily.get("c")))))
-        liquidity_volume = volume if volume > 0 else previous_volume
-        if price and price >= 1 and liquidity_volume >= 10000:
-            liquid.append((liquidity_volume * price, symbol))
+                      _num(daily.get("c"), _num(prev.get("c"))))
+        if price and price >= 1 and volume >= 10000:
+            liquid.append((volume * price, symbol))
     liquid.sort(reverse=True)
-    selected = [symbol for _, symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
-
-    bars_by_symbol: dict[str, list] = {}
-    bar_batches = [selected[i:i + UNIVERSE_BATCH_SIZE] for i in range(0, len(selected), UNIVERSE_BATCH_SIZE)]
-    bars_errors = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {pool.submit(_alpaca_recent_bars, batch): batch for batch in bar_batches}
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                batch_bars = future.result()
-            except Exception as exc:
-                bars_errors += 1
-                log.warning("Universe minute-bar batch failed (%s)", type(exc).__name__)
-                continue
-            for symbol, values in batch_bars.items():
-                bars_by_symbol[str(symbol).upper()] = values if isinstance(values, list) else []
-
+    selected = [symbol for _,symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
+    bars_by_symbol = _webull_bar_batches(selected)
     candidates = []
     for symbol in selected:
-        snap = snapshots.get(symbol) or {}
-        row = _universe_candidate(symbol, snap, bars_by_symbol.get(symbol) or [], exchange_by_symbol.get(symbol, ""))
+        row = _universe_candidate(symbol, snapshots.get(symbol) or {},
+                                  bars_by_symbol.get(symbol) or [], exchange_by_symbol.get(symbol,""))
         if row:
+            row["exchange"] = exchange_by_symbol.get(symbol,"")
+            row["companyName"] = (asset_by_symbol.get(symbol) or {}).get("name")
+            row["dataFeed"] = "Webull OpenAPI"
+            row["volumeSource"] = "WEBULL_SNAPSHOT"
             candidates.append(row)
     candidates.sort(key=lambda x: (
-        (x.get("score") or 0) * 2
-        + (x.get("relativeVolume") or 0)
+        (x.get("score") or 0)*2 + (x.get("relativeVolume") or 0)
         + (x.get("m5") or 0) + (x.get("m1") or 0)
-        + min((x.get("dailyVolumeIex") or 0) / 1000000, 5)
+        + min((x.get("dailyVolumeIex") or x.get("volume") or 0)/1000000,5)
     ), reverse=True)
     now = datetime.now(timezone.utc).isoformat()
-    elapsed = round(time.time() - started, 2)
+    elapsed = round(time.time()-started,2)
     with UNIVERSE_LOCK:
         UNIVERSE_STATE.update({
-            "status": "ok", "provider": "Alpaca Basic · IEX",
-            "universeCount": len(assets), "snapshotCount": len(snapshots),
-            "scanned": len(snapshots), "evaluated": len(selected),
-            "candidateCount": len(candidates),
-            "fastEntryCount": sum(1 for x in candidates if x.get("fastEntry")),
-            "fastEntryWatchCount": sum(1 for x in candidates if not x.get("fastEntry") and x.get("score", 0) >= 3),
-            "candidates": candidates[:UNIVERSE_CANDIDATE_LIMIT],
-            "updatedAt": now, "lastError": None, "cycleSeconds": elapsed,
-            "batchCount": len(batches) + len(bar_batches),
-            "snapshotBatchErrors": snapshot_errors,
-            "barBatchErrors": bars_errors,
-            "symbolsWithMinuteBars": len(bars_by_symbol),
-            "symbolsWithCurrentIexVolume": sum(1 for x in snapshots.values()
-                                               if (_num(((x.get("dailyBar") or {}).get("v")), 0) or 0) > 0),
-            "symbolsWithLiveBidAsk": sum(1 for x in snapshots.values()
-                                          if _num(((x.get("latestQuote") or {}).get("bp"))) and
-                                             _num(((x.get("latestQuote") or {}).get("ap")))),
-            "feed": "iex",
-            "coverage": "IEX-only real-time feed; not consolidated all-exchange data",
+            "status":"ok" if snapshots else "no_quotes",
+            "provider":"Webull OpenAPI",
+            "universeCount":len(assets),"snapshotCount":len(snapshots),
+            "scanned":len(snapshots),"evaluated":len(selected),
+            "candidateCount":len(candidates),
+            "fastEntryCount":sum(1 for x in candidates if x.get("fastEntry")),
+            "fastEntryWatchCount":sum(1 for x in candidates if not x.get("fastEntry") and x.get("score",0)>=3),
+            "candidates":candidates[:UNIVERSE_CANDIDATE_LIMIT],
+            "updatedAt":now,"lastError":None,"cycleSeconds":elapsed,
+            "batchCount":((len(assets)+99)//100)+((len(selected)+99)//100),
+            "snapshotBatchErrors":0,"barBatchErrors":0,
+            "symbolsWithMinuteBars":len(bars_by_symbol),
+            "symbolsWithLiveBidAsk":sum(1 for x in snapshots.values()
+                if _num((x.get("latestQuote") or {}).get("bp")) and _num((x.get("latestQuote") or {}).get("ap"))),
+            "feed":"Webull OpenAPI",
+            "coverage":"Webull US_STOCK + US_ETF instrument catalogue; quotes subject to active market-data entitlements",
         })
-    log.info("Universe scan complete: assets=%d snapshots=%d evaluated=%d candidates=%d fast=%d snapshot_errors=%d bar_errors=%d duration=%.1fs",
-             len(assets), len(snapshots), len(selected), len(candidates),
-             UNIVERSE_STATE.get("fastEntryCount", 0), snapshot_errors, bars_errors, elapsed)
-
+    log.info("Webull universe scan complete: instruments=%d snapshots=%d evaluated=%d candidates=%d duration=%.1fs",
+             len(assets),len(snapshots),len(selected),len(candidates),elapsed)
 
 def _universe_scanner_loop():
     while True:
-        if not (ALPACA_KEY and ALPACA_SECRET):
+        if not (APP_KEY and APP_SECRET):
             with UNIVERSE_LOCK:
-                UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"alpaca","lastError":"ALPACA_CREDENTIALS_MISSING"})
+                UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"Webull OpenAPI","lastError":"WEBULL_CREDENTIALS_MISSING"})
             time.sleep(60)
             continue
         try:
             _universe_scan_cycle()
-            state["alpacaAuthenticated"] = True
-            state["alpacaAuthenticatedAt"] = datetime.now(timezone.utc).isoformat()
         except Exception as exc:
-            state["alpacaAuthenticated"] = False
-            log.exception("Alpaca IEX universe scan failed")
+            log.exception("Webull US universe scan failed")
             with UNIVERSE_LOCK:
-                UNIVERSE_STATE.update({"status":"source_error","provider":"alpaca","lastError":type(exc).__name__,"updatedAt":datetime.now(timezone.utc).isoformat()})
-        time.sleep(UNIVERSE_SCAN_INTERVAL)
+                UNIVERSE_STATE.update({"status":"source_error","provider":"Webull OpenAPI",
+                    "lastError":type(exc).__name__,"updatedAt":datetime.now(timezone.utc).isoformat()})
+        time.sleep(max(180, UNIVERSE_SCAN_INTERVAL))
 
 
 @app.get("/universe-scanner")
@@ -3862,9 +3734,12 @@ def _stock_snapshot_price(symbol: str):
 
 
 def _stock_paper_worker_cycle():
-    if not (ALPACA_KEY and ALPACA_SECRET):
-        STOCK_PAPER_WORKER_STATE.update({"status":"waiting_credentials","lastError":"ALPACA_CREDENTIALS_MISSING"})
+    # Stock Paper entry/management is gated by the Webull scanner and verified Webull prices.
+    if not (APP_KEY and APP_SECRET):
+        STOCK_PAPER_WORKER_STATE.update({"status":"waiting_credentials","lastError":"WEBULL_CREDENTIALS_MISSING"})
         return
+    STOCK_PAPER_WORKER_STATE.update({"status":"waiting_webull_scanner","lastError":"WEBULL_SNAPSHOT_PIPELINE_REQUIRED"})
+    return
     settings_rows = _sb_rest("stock_paper_settings", {
         "select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,fee_pct,slippage_bps",
         "mode":"eq.paper", "limit":"100"
@@ -5943,6 +5818,129 @@ def owner_live_auto_stop(request: Request):
         "event_data":{"source":"owner_confirmed_stop","openPositionsRemainMonitored":True}})
     return {"ok":True,"runState":"STOPPED",
             "message":"หยุดเปิดสถานะใหม่แล้ว; ระบบยังติดตามและปิดสถานะที่เปิดอยู่ตาม Stop Loss/Take Profit"}
+
+
+
+# Webull REST market-data client: used for the complete US instrument universe.
+_WEBULL_DATA_CLIENT = None
+_WEBULL_DATA_CLIENT_LOCK = threading.Lock()
+
+def _webull_data_client():
+    global _WEBULL_DATA_CLIENT
+    with _WEBULL_DATA_CLIENT_LOCK:
+        if _WEBULL_DATA_CLIENT is None:
+            from webull.core.client import ApiClient
+            from webull.data.data_client import DataClient
+            api = ApiClient(APP_KEY, APP_SECRET, REGION)
+            api.add_endpoint(REGION, HTTP_HOST)
+            _WEBULL_DATA_CLIENT = DataClient(api)
+        return _WEBULL_DATA_CLIENT
+
+def _webull_json(response):
+    if hasattr(response, "raise_for_status"):
+        response.raise_for_status()
+    if hasattr(response, "json"):
+        return response.json()
+    return response
+
+def _webull_list_active_universe(force=False):
+    global UNIVERSE_ASSETS, UNIVERSE_ASSETS_AT
+    if UNIVERSE_ASSETS and not force and time.time() - UNIVERSE_ASSETS_AT < UNIVERSE_CACHE_SECONDS:
+        return UNIVERSE_ASSETS
+    if not (APP_KEY and APP_SECRET):
+        raise RuntimeError("WEBULL_CREDENTIALS_MISSING")
+    client = _webull_data_client()
+    assets, seen = [], set()
+    for category in ("US_STOCK", "US_ETF"):
+        page_key = None
+        for _ in range(500):
+            response = client.instrument.list_instruments(category=category, pagination_key=page_key)
+            payload = _webull_json(response)
+            rows = payload.get("data", []) if isinstance(payload, dict) else payload if isinstance(payload, list) else []
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                symbol = str(item.get("symbol") or "").strip().upper()
+                if not symbol or symbol in seen or not symbol.replace(".", "").replace("-", "").isalnum():
+                    continue
+                seen.add(symbol)
+                assets.append({"symbol":symbol,"exchange":str(item.get("exchange_code") or ""),
+                               "name":item.get("name") or "", "category":category,
+                               "instrumentId":item.get("instrument_id")})
+            page_key = payload.get("pagination_key") if isinstance(payload, dict) else None
+            if not page_key:
+                break
+            time.sleep(1.05)
+    if not assets:
+        raise RuntimeError("WEBULL_INSTRUMENT_UNIVERSE_EMPTY")
+    UNIVERSE_ASSETS, UNIVERSE_ASSETS_AT = assets, time.time()
+    return assets
+
+def _webull_snapshot_batch(assets):
+    client = _webull_data_client()
+    result = {}
+    for category in ("US_STOCK", "US_ETF"):
+        symbols = [x["symbol"] for x in assets if x.get("category") == category]
+        for offset in range(0, len(symbols), 100):
+            batch = symbols[offset:offset+100]
+            if not batch:
+                continue
+            response = client.market_data.get_snapshot(batch, category,
+                extend_hour_required=True, overnight_required=True)
+            payload = _webull_json(response)
+            rows = payload if isinstance(payload, list) else payload.get("data", payload.get("snapshots", [])) if isinstance(payload, dict) else []
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get("symbol") or "").upper()
+                if symbol:
+                    result[symbol] = row
+            time.sleep(1.05)
+    return result
+
+def _webull_bar_batches(symbols):
+    client = _webull_data_client()
+    result = {}
+    for offset in range(0, len(symbols), 100):
+        batch = symbols[offset:offset+100]
+        if not batch:
+            continue
+        try:
+            response = client.market_data.get_batch_history_bar(
+                batch, "US_STOCK", "M1", count="15",
+                real_time_required=True, trading_sessions="ALL"
+            )
+            payload = _webull_json(response)
+            data = payload.get("data", payload.get("bars", payload)) if isinstance(payload, dict) else payload
+            if isinstance(data, dict):
+                for symbol, bars in data.items():
+                    if isinstance(bars, dict):
+                        bars = bars.get("bars") or bars.get("data") or []
+                    result[str(symbol).upper()] = bars if isinstance(bars, list) else []
+            elif isinstance(data, list):
+                for row in data:
+                    if isinstance(row, dict) and row.get("symbol"):
+                        result[str(row["symbol"]).upper()] = row.get("bars") or row.get("data") or []
+        except Exception as exc:
+            log.warning("Webull minute-bar batch failed (%s)", type(exc).__name__)
+        time.sleep(1.05)
+    return result
+
+def _normalize_webull_snapshot(row):
+    price = _num(row.get("price"), _num(row.get("extend_hour_last_price"), _num(row.get("ovn_price"))))
+    open_price = _num(row.get("open"), _num(row.get("pre_close")))
+    volume = _num(row.get("volume"), _num(row.get("extend_hour_volume"), _num(row.get("ovn_volume"), 0))) or 0
+    bid, ask = _num(row.get("bid")), _num(row.get("ask"))
+    stamp = row.get("last_trade_time") or row.get("extend_hour_last_trade_time") or row.get("ovn_last_trade_time")
+    if isinstance(stamp, (int, float)):
+        stamp = datetime.fromtimestamp(stamp/1000, timezone.utc).isoformat()
+    return {
+        "latestTrade":{"p":price,"t":stamp},
+        "latestQuote":{"bp":bid,"ap":ask},
+        "minuteBar":{"c":price,"t":stamp},
+        "dailyBar":{"o":open_price,"c":price,"v":volume},
+        "prevDailyBar":{"c":_num(row.get("pre_close")),"v":0},
+    }
 
 
 # === SET/mai market-data bridge ===
