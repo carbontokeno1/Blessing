@@ -1302,7 +1302,7 @@ async function paperRefresh(forceScan=false){
   if(forceScan||!paperPriceFresh())await loadAltcoinScanner(!!forceScan);
   const [a,p,o]=await Promise.all([
    sb.from('paper_bot_accounts').select('starting_balance,cash_balance,realized_pnl,fees_paid').maybeSingle(),
-   sb.from('paper_bot_positions').select('id,symbol,quantity,entry_price,current_price,take_profit_price,stop_loss_price,unrealized_pnl,updated_at,opened_at').eq('status','open').order('opened_at',{ascending:false}),
+   sb.from('paper_bot_positions').select('id,symbol,position_side,quantity,entry_price,current_price,take_profit_price,stop_loss_price,unrealized_pnl,updated_at,opened_at').eq('status','open').order('opened_at',{ascending:false}),
    sb.from('paper_bot_orders').select('id,symbol,side,quantity,price,fee,realized_pnl,created_at').order('created_at',{ascending:false}).limit(30)
   ]);
   if(a.error)throw a.error;if(p.error)throw p.error;if(o.error)throw o.error;
@@ -1319,10 +1319,10 @@ function paperRenderPortfolio(){
  let marketValue=0,unrealized=0;
  const rows=paperPositions.map(p=>{
   const q=Number(p.quantity),entry=Number(p.average_entry_price),price=paperPriceOf(p.symbol);
-  const value=price===null?q*entry:q*price,pnl=price===null?0:(price-entry)*q;
+  const isShort=String(p.position_side||'long').toLowerCase()==='short',value=(price===null?q*entry:q*(isShort?entry:price)),pnl=price===null?0:(isShort?(entry-price):(price-entry))*q;
   marketValue+=value;unrealized+=pnl;
-  const tp=entry*1.03,sl=entry*.985;
-  return '<tr><td><b>'+esc(p.symbol)+'</b></td><td>'+paperFmt(q,8)+'</td><td>'+paperFmt(entry,8)+'</td><td>'+ (price===null?'<span class="muted">รอราคา</span>':paperFmt(price,8))+'</td><td class="'+(pnl>0?'positive':pnl<0?'negative':'')+'">'+(price===null?'—':(pnl>=0?'+':'')+paperFmt(pnl,4)+' USDT')+'</td><td>TP '+paperFmt(tp,8)+'<br>SL '+paperFmt(sl,8)+'</td><td><button class="secondary" disabled title="Backend จัดการ TP/SL อัตโนมัติ">'+esc(p.symbol)+'\')">ปิดสถานะ</button></td></tr>';
+  const tp=Number(p.take_profit_price||entry*(isShort?.97:1.03)),sl=Number(p.stop_loss_price||entry*(isShort?1.015:.985));
+  return '<tr><td><b>'+esc(p.symbol)+'</b><br><span class="small '+(isShort?'negative':'positive')+'">'+(isShort?'SHORT':'LONG')+'</span></td><td>'+paperFmt(q,8)+'</td><td>'+paperFmt(entry,8)+'</td><td>'+ (price===null?'<span class="muted">รอราคา</span>':paperFmt(price,8))+'</td><td class="'+(pnl>0?'positive':pnl<0?'negative':'')+'">'+(price===null?'—':(pnl>=0?'+':'')+paperFmt(pnl,4)+' USDT')+'</td><td>TP '+paperFmt(tp,8)+'<br>SL '+paperFmt(sl,8)+'</td><td><button class="secondary" disabled title="Backend จัดการ TP/SL อัตโนมัติ">'+esc(p.symbol)+'\')">ปิดสถานะ</button></td></tr>';
  }).join('');
  const equity=cash+marketValue,total=realized+unrealized;
  const put=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};
@@ -1366,10 +1366,10 @@ async function paperAutoCheck(){
   if(paperAutoBusy[p.symbol])continue;
   const price=paperPriceOf(p.symbol),entry=Number(p.average_entry_price);
   if(price===null||!entry)continue;
-  const change=(price/entry-1)*100,hit=change>=3||change<=-1.5;
+  const isShort=String(p.position_side||'long').toLowerCase()==='short',change=(isShort?(entry-price):(price-entry))/entry*100,hit=isShort?(price<=Number(p.take_profit_price||entry*.97)||price>=Number(p.stop_loss_price||entry*1.015)):(price>=Number(p.take_profit_price||entry*1.03)||price<=Number(p.stop_loss_price||entry*.985));
   if(!hit)continue;
   paperAutoBusy[p.symbol]=true;
-  try{await paperExecute(p.symbol,'sell',Number(p.quantity));const st=document.getElementById('paperStatus');if(st)st.textContent='AUTO '+(change>=3?'TAKE PROFIT':'STOP LOSS')+' · ปิด '+p.symbol+' ตามราคาตลาดจำลอง'}
+  try{await paperExecute(p.symbol,isShort?'cover':'sell',Number(p.quantity));const st=document.getElementById('paperStatus');if(st)st.textContent='AUTO '+(change>0?'TAKE PROFIT':'STOP LOSS')+' · ปิด '+(isShort?'SHORT ':'LONG ')+p.symbol+' ตามราคาตลาดจำลอง'}
   catch(e){console.warn('Paper auto exit:',e.message||e)}
   finally{paperAutoBusy[p.symbol]=false}
  }
