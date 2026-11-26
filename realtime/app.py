@@ -5029,6 +5029,24 @@ def _dual_market_price(market: str, symbol: str) -> float:
             price = _dual_price_number(quote.get("raw") or quote)
             if 0 <= age <= 5 and price and price > 0:
                 return price
+        # Reuse the server-side Alpaca snapshot already accepted by the stock scanner.
+        # This keeps execution and scanner prices consistent and avoids a second
+        # per-symbol API request returning an empty/stale response.
+        try:
+            with UNIVERSE_LOCK:
+                universe = dict(UNIVERSE_STATE)
+            scan_stamp = datetime.fromisoformat(str(universe.get("updatedAt")).replace("Z", "+00:00"))
+            scan_age = (datetime.now(timezone.utc) - scan_stamp).total_seconds()
+            scan_limit = max(180, UNIVERSE_SCAN_INTERVAL * 3)
+            if 0 <= scan_age <= scan_limit:
+                match = next((row for row in (universe.get("candidates") or [])
+                              if str(row.get("symbol") or "").upper() == symbol), None)
+                if match:
+                    scanned_price = _num(match.get("price"), 0)
+                    if scanned_price > 0:
+                        return float(scanned_price)
+        except Exception as exc:
+            log.info("Paper stock scanner quote fallback unavailable for %s (%s)", symbol, type(exc).__name__)
         if not (ALPACA_KEY and ALPACA_SECRET):
             raise HTTPException(status_code=503, detail="ไม่มีราคา Webull สด และยังไม่ได้ตั้งค่า Alpaca IEX สำหรับ Paper Trading")
         try:
