@@ -386,6 +386,15 @@ const pairs=[
 ['ยังไม่อนุมัติ LIVE','LIVE not approved'],
 ['สมาชิกและวงเงิน','Members & Allocations'],
 ['PAPER ONLY','PAPER ONLY'],
+['OWNER CONTROL · รวมพอร์ตสมาชิก 10 คน','OWNER CONTROL · 10-Member Portfolio Overview'],
+['สมาชิก 01–10 · คนละ 4 พอร์ต · รวม 40 พอร์ต | PAPER เปิด–ปิดแยกรายพอร์ต · LIVE เตรียมพร้อมในโหมด STANDBY','Members 01–10 · 4 portfolios each · 40 total | Individual PAPER switches · LIVE prepared in STANDBY'],
+['▶ เปิด PAPER ทั้ง 20 พอร์ต','▶ Enable all 20 PAPER portfolios'],
+['■ ปิด PAPER ทั้ง 20 พอร์ต','■ Disable all 20 PAPER portfolios'],
+['กำลังอ่านสถานะพอร์ตทั้ง 40 พอร์ต...','Loading status of all 40 portfolios...'],
+['STANDBY · พร้อมใช้งานเมื่ออนุมัติ','STANDBY · Ready when approved'],
+['ไม่พบพอร์ต','Portfolio missing'],
+['ทะเบียนมี','Registry contains'],
+['ไม่ครบ 40','Fewer than 40'],
 ];
 const map=new Map(pairs);
 const replacements=[...map.entries()].sort((a,b)=>b[0].length-a[0].length);
