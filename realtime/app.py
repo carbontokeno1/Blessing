@@ -477,7 +477,7 @@ def public_status() -> dict:
         "alpacaAuthenticated": bool(state.get("alpacaAuthenticated")),
         "alpacaAuthenticatedAt": state.get("alpacaAuthenticatedAt"),
         "alpacaConnected": UNIVERSE_STATE.get("status") == "ok",
-        "stockProvider": "Alpaca " + ALPACA_FEED.upper() + " REST scanner" if ALPACA_KEY and ALPACA_SECRET else "waiting for Alpaca credentials",
+        "stockProvider": "Webull OpenAPI REST universe scanner" if APP_KEY and APP_SECRET else "waiting for Webull credentials",
         "webullConfigured": bool(APP_KEY and APP_SECRET),
         "webullRegion": REGION,
         "webullConnection": state.get("webullConnection"),
@@ -969,11 +969,11 @@ UNIVERSE_BATCH_SIZE = 100
 UNIVERSE_CANDIDATE_LIMIT = 150
 UNIVERSE_CACHE_SECONDS = 6 * 60 * 60
 UNIVERSE_STATE: dict[str, Any] = {
-    "status": "disabled", "provider": "none", "disabledProvider": "Alpaca",
+    "status": "waiting_scan", "provider": "Webull OpenAPI",
     "universeCount": 0, "scanned": 0, "evaluated": 0,
     "candidateCount": 0, "candidates": [], "updatedAt": None,
-    "lastError": None, "cycleSeconds": None, "feed": "iex",
-    "coverage": "IEX-only; not consolidated US market coverage",
+    "lastError": None, "cycleSeconds": None, "feed": "Webull OpenAPI",
+    "coverage": "Webull US_STOCK + US_ETF catalogue; data entitlement and exchange coverage apply",
 }
 UNIVERSE_LOCK = threading.Lock()
 UNIVERSE_ASSETS: list[dict] = []
@@ -5901,29 +5901,32 @@ def _webull_snapshot_batch(assets):
 def _webull_bar_batches(symbols):
     client = _webull_data_client()
     result = {}
-    for offset in range(0, len(symbols), 100):
-        batch = symbols[offset:offset+100]
-        if not batch:
-            continue
-        try:
-            response = client.market_data.get_batch_history_bar(
-                batch, "US_STOCK", "M1", count="15",
-                real_time_required=True, trading_sessions="ALL"
-            )
-            payload = _webull_json(response)
-            data = payload.get("data", payload.get("bars", payload)) if isinstance(payload, dict) else payload
-            if isinstance(data, dict):
-                for symbol, bars in data.items():
-                    if isinstance(bars, dict):
-                        bars = bars.get("bars") or bars.get("data") or []
-                    result[str(symbol).upper()] = bars if isinstance(bars, list) else []
-            elif isinstance(data, list):
-                for row in data:
-                    if isinstance(row, dict) and row.get("symbol"):
-                        result[str(row["symbol"]).upper()] = row.get("bars") or row.get("data") or []
-        except Exception as exc:
-            log.warning("Webull minute-bar batch failed (%s)", type(exc).__name__)
-        time.sleep(1.05)
+    categories = {x["symbol"]:x.get("category","US_STOCK") for x in UNIVERSE_ASSETS}
+    for category in ("US_STOCK","US_ETF"):
+        category_symbols = [s for s in symbols if categories.get(s,"US_STOCK") == category]
+        for offset in range(0,len(category_symbols),100):
+            batch = category_symbols[offset:offset+100]
+            if not batch:
+                continue
+            try:
+                response = client.market_data.get_batch_history_bar(
+                    batch, category, "M1", count="15",
+                    real_time_required=True, trading_sessions="ALL"
+                )
+                payload = _webull_json(response)
+                data = payload.get("data",payload.get("bars",payload)) if isinstance(payload,dict) else payload
+                if isinstance(data,dict):
+                    for symbol,bars in data.items():
+                        if isinstance(bars,dict):
+                            bars = bars.get("bars") or bars.get("data") or []
+                        result[str(symbol).upper()] = bars if isinstance(bars,list) else []
+                elif isinstance(data,list):
+                    for row in data:
+                        if isinstance(row,dict) and row.get("symbol"):
+                            result[str(row["symbol"]).upper()] = row.get("bars") or row.get("data") or []
+            except Exception as exc:
+                log.warning("Webull %s minute-bar batch failed (%s)",category,type(exc).__name__)
+            time.sleep(1.05)
     return result
 
 def _normalize_webull_snapshot(row):
