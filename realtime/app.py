@@ -5076,8 +5076,8 @@ def _member_slot_engine_cycle():
                 price = _num(row.get("price"), 0)
                 if not symbol or not price or not symbol.endswith("USDT"):
                     continue
-                decision = paper_opportunity_decision(row, fee_bps=10, slippage_bps=5)
-                if decision.get("decision") == "PAPER_CANDIDATE":
+                decision = _moderate_crypto_entry_metrics(row)
+                if decision:
                     crypto_candidates[symbol] = (price, decision)
 
         # Stock entries use the current Alpaca IEX universe scan and current USD/THB FX.
