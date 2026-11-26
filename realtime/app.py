@@ -3949,8 +3949,16 @@ def _binance_public_price(symbol: str):
 def _paper_worker_cycle():
     settings_rows = _sb_rest("paper_bot_settings", {"select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,allowed_exchanges",
                                                      "mode":"eq.paper", "limit":"100"})
+    setting_user_ids = list(dict.fromkeys(str(row.get("user_id")) for row in settings_rows if row.get("user_id")))
+    active_member_rows = _sb_rest("profiles", {
+        "select":"user_id", "user_id":"in.(" + ",".join(setting_user_ids) + ")",
+        "role":"eq.member", "status":"eq.active", "limit":"200"
+    }) if setting_user_ids else []
+    active_member_ids = {str(row.get("user_id")) for row in (active_member_rows or [])}
     for setting in settings_rows:
         uid = setting["user_id"]
+        if str(uid) not in active_member_ids:
+            continue
         positions = _sb_rest("paper_bot_positions", {"select":"*", "user_id":"eq." + uid, "status":"eq.open", "limit":"20"})
         if not setting.get("enabled") and not positions:
             continue
@@ -4375,7 +4383,7 @@ def paper_trading_report(market: str, request: Request, period: str = "30d"):
         "select":account_select, "user_id":"eq." + uid, "limit":"1"
     })
     positions = _sb_rest(prefix + "_positions", {
-        "select":"id,symbol,quantity,entry_price,current_price,entry_fee,exit_fee,realized_pnl,unrealized_pnl,status,opened_at,closed_at,close_reason,signal_score",
+        "select":"id,symbol,position_side,quantity,entry_price,current_price,entry_fee,exit_fee,realized_pnl,unrealized_pnl,status,opened_at,closed_at,close_reason,signal_score",
         "user_id":"eq." + uid, "order":"opened_at.desc", "limit":"1000"
     })
     orders = _sb_rest(prefix + "_orders", {
