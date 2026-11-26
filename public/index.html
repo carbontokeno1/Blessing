@@ -1450,6 +1450,46 @@ connectMarketBridge();
 #authGate .forgot-link{display:block;width:100%;margin:12px 0 4px;padding:5px;border:0;background:transparent;color:#e8bd62;text-decoration:underline;font-size:12px}
 #authGate #forgotPanel{margin-top:12px;padding:12px;border:1px solid #344258;border-radius:12px;background:#0b1220}
 #authGate #forgotPanel .authmsg{color:#e8bd62}
+
+/* Mobile-first auth and signup layout */
+#authGate{box-sizing:border-box;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;overscroll-behavior:contain;padding: max(12px,env(safe-area-inset-top)) 12px max(16px,env(safe-area-inset-bottom))}
+#authGate *{box-sizing:border-box}
+#authGate .authbox{width:min(440px,100%);max-height:none;margin:auto 0;padding:clamp(16px,4vw,26px);overflow:visible}
+#authGate .authsub{margin-bottom:14px}
+#authGate .field{min-width:0;margin:10px 0}
+#authGate .field label{display:block;margin-bottom:6px;font-size:13px;line-height:1.4}
+#authGate .field input{display:block;width:100%;min-width:0;min-height:48px;padding:12px 13px;font-size:16px;line-height:1.35;border-radius:10px}
+#authGate button{min-height:44px;touch-action:manipulation}
+#authGate #signupPanel{max-height:none;overflow:visible;padding:14px!important;margin-top:10px!important}
+#authGate #signupPanel h2{margin-bottom:8px!important}
+#authGate #signupPanel label{font-size:13px!important}
+#authGate #signupPanel input:not([type=checkbox]){font-size:16px;min-height:48px}
+#authGate #signupPanel #signupTerms{margin-right:2px}
+#authGate #signupSubmit{margin-top:8px}
+#authGate #signupMessage{overflow-wrap:anywhere}
+#authGate #authForm.signup-open>.field,
+#authGate #authForm.signup-open>#authSubmit,
+#authGate #authForm.signup-open>#showForgot,
+#authGate #authForm.signup-open>#showSignup,
+#authGate #authForm.signup-open>#forgotPanel{display:none!important}
+@media(max-width:600px){
+ #authGate{padding-left:10px;padding-right:10px}
+ #authGate .authbox{width:100%;border-radius:17px;padding:15px}
+ #authGate .authbrand .logo-frame img{width:108px;height:52px}
+ #authGate .authbrand{margin-bottom:6px}
+ #authGate .authsub{font-size:10px;margin-bottom:10px}
+ #authGate #signupPanel{padding:12px!important}
+ #authGate #signupPanel .field{margin:8px 0}
+ #authGate #signupPanel .field label{margin-bottom:5px}
+ #authGate #signupPanel #signupTerms{width:18px;height:18px}
+}
+@media(max-height:720px){
+ #authGate{align-items:flex-start}
+ #authGate .authbox{margin-top:0;margin-bottom:0}
+ #authGate .authbrand .logo-frame img{width:96px;height:46px}
+ #authGate .authsub{margin-bottom:8px}
+ #authGate #signupPanel .field{margin:7px 0}
+}
 </style>
 <section id="authGate">
  <form class="authbox" id="authForm">
@@ -1487,9 +1527,10 @@ function signupSay(t,ok=false){signupMessage.textContent=t;signupMessage.style.c
 document.getElementById('showSignup').addEventListener('click',()=>{
  document.getElementById('forgotPanel').classList.add('hidden');
  signupPanel.classList.remove('hidden');
+ document.getElementById('authForm').classList.add('signup-open');
  document.getElementById('signupName').focus();
 });
-document.getElementById('hideSignup').addEventListener('click',()=>{signupPanel.classList.add('hidden');signupSay('')});
+document.getElementById('hideSignup').addEventListener('click',()=>{signupPanel.classList.add('hidden');document.getElementById('authForm').classList.remove('signup-open');signupSay('')});
 document.getElementById('signupSubmit').addEventListener('click',async()=>{
  const btn=document.getElementById('signupSubmit');
  const displayName=document.getElementById('signupName').value.trim();
