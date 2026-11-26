@@ -4708,6 +4708,11 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     symbol = str(candidate.get("symbol") or "").upper()
     if not symbol:
         return None
+    # Safety interlock: the current database executor only opens long positions.
+    # Never route a bearish Short signal through the BUY-only automatic entry path.
+    if market == "crypto" and str(candidate.get("side") or "long").lower() == "short":
+        log.info("Dual Paper Short candidate held: short-side database execution migration is not installed")
+        return None
     try:
         market_price = _dual_market_price(market, symbol)
     except Exception as exc:
