@@ -62,6 +62,7 @@ def register_member_access_routes(app, owner_auth, sb_rest, sb_rpc, supabase_url
                 "portfolios": []
             })
             m["portfolios"].append({
+                "portfolioId": row.get("id"),
                 "portfolioType": row.get("portfolio_type"),
                 "authorizedLimit": row.get("authorized_limit"),
                 "allocatedCapital": row.get("allocated_capital"),
