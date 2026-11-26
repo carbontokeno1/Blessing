@@ -7,7 +7,7 @@ DEFAULT_MEMBER_PAGES = ["overview", "settings"]
 PORTFOLIO_TYPES = {"crypto_paper", "stock_paper", "crypto_live", "stock_live"}
 
 
-def register_member_access_routes(app, owner_auth, sb_rest, supabase_url, service_key):
+def register_member_access_routes(app, owner_auth, sb_rest, sb_rpc, supabase_url, service_key):
     def member_user(request: Request):
         if not (supabase_url and service_key):
             raise HTTPException(status_code=503, detail="Render ยังไม่ได้ตั้งค่า Supabase")
@@ -103,6 +103,44 @@ def register_member_access_routes(app, owner_auth, sb_rest, supabase_url, servic
                 "user_id": user_id, **values
             })
         return {"ok": True, "userId": user_id, "visiblePages": clean, "saved": bool(result)}
+
+    @app.put("/admin/member-access/portfolio-limit")
+    async def admin_set_member_portfolio_limit(request: Request):
+        owner = owner_auth(request)
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="ข้อมูลไม่ถูกต้อง")
+        portfolio_id = str(payload.get("portfolioId") or "").strip()
+        amount = payload.get("limit")
+        if not portfolio_id:
+            raise HTTPException(status_code=400, detail="ต้องระบุพอร์ต")
+        rows = sb_rest("blessing_member_portfolio_registry", {
+            "select": "id,member_no,portfolio_type,assigned_user_id,authorized_limit,base_currency,live_trading_approved,enabled",
+            "id": "eq." + portfolio_id, "limit": "1"
+        }) or []
+        if not rows:
+            raise HTTPException(status_code=404, detail="ไม่พบพอร์ต")
+        if amount is None or str(amount).strip() == "":
+            action, normalized = "unlimited", None
+        else:
+            try:
+                from decimal import Decimal, InvalidOperation
+                value = Decimal(str(amount))
+                if not value.is_finite() or value <= 0:
+                    raise InvalidOperation()
+                normalized = format(value, "f")
+                action = "set"
+            except (InvalidOperation, TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="วงเงินต้องเป็นตัวเลขมากกว่า 0 หรือเว้นว่างเพื่อไม่จำกัด")
+        result = sb_rpc("blessing_admin_set_member_capital_limit", {
+            "p_portfolio_id": portfolio_id, "p_action": action, "p_amount": normalized,
+            "p_actor": owner.get("id"), "p_reason": "Owner per-member portfolio limit",
+            "p_idempotency_key": __import__("uuid").uuid4().hex
+        })
+        return {"ok": True, "portfolioId": portfolio_id, "portfolioType": rows[0].get("portfolio_type"),
+                "limit": result.get("newLimit") if isinstance(result, dict) else normalized,
+                "result": result, "liveOrdersStillLocked": str(rows[0].get("portfolio_type", "")).endswith("_live")}
 
     @app.get("/member/member-access")
     def member_get_access(request: Request):
