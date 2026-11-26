@@ -288,6 +288,12 @@ export default {
     // Same-origin member API proxy: avoids browser CORS/network failures
     // while preserving backend authentication and per-user ownership checks.
     // Same-origin owner-only member access management proxy.
+    if (pathname.startsWith("/api/admin/members/") && pathname.endsWith("/remove")) {
+      if (request.method !== "POST") return json({ok:false,message:"POST only"},405,{allow:"POST"});
+      const match = pathname.match(/^\\/api\\/admin\\/members\\/([0-9a-fA-F-]{36})\\/remove$/);
+      if (!match) return json({ok:false,message:"รหัสสมาชิกไม่ถูกต้อง"},400);
+      return binanceThLiveProxy(request,"/admin/members/"+match[1]+"/remove","POST");
+    }
     if (pathname === "/api/admin/member-access" || pathname === "/api/admin/member-access/portfolio-limit") {
       const isLimit = pathname.endsWith("/portfolio-limit");
       const allowedMethod = isLimit ? "PUT" : (request.method === "GET" ? "GET" : "PUT");
