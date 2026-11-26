@@ -2407,11 +2407,17 @@ def _member_portfolio_auth(request: Request):
 def member_member_portfolios(request: Request):
     """Members can view only portfolio rows explicitly assigned to their authenticated user id."""
     user = _member_portfolio_auth(request)
+    assigned = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "member_no", "assigned_user_id": "eq." + str(user["id"]), "limit": "4",
+    }) or []
+    member_nos = list(dict.fromkeys(str(x["member_no"]) for x in assigned if x.get("member_no") is not None))
     rows = _sb_rest("blessing_member_portfolio_registry", {
         "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,allocated_capital,authorized_limit,status,enabled,live_trading_approved",
-        "assigned_user_id": "eq." + str(user["id"]),
+        "member_no": "in.(" + ",".join(member_nos) + ")",
         "order": "portfolio_type.asc", "limit": "4",
-    })
+    }) if member_nos else []
+    # Live rows are visible as locked placeholders for the member's own member_no;
+    # they are never enabled or made executable by this read endpoint.
     return {
         "ok": True, "portfolioCount": len(rows), "portfolios": rows,
         "liveTradingEnabled": False,
