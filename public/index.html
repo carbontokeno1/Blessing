@@ -1809,9 +1809,7 @@ if(recoveryMode){showRecoveryForm()}else{await enter(session)}
 #ownerCenterIntegrated .portfolioStat{background:#0a1221;border-radius:8px;padding:7px}
 #ownerCenterIntegrated .portfolioStat small{display:block;font-size:10px}
 #ownerCenterIntegrated .portfolioStat b{font-size:12px;overflow-wrap:anywhere}
-#ownerCenterIntegrated @media(max-width:680px){.centerSplit{grid-template-columns:1fr}
-#ownerCenterIntegrated .centerHero{padding:13px}
-#ownerCenterIntegrated .centerMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:680px){#ownerCenterIntegrated .centerSplit{grid-template-columns:1fr}#ownerCenterIntegrated .centerHero{padding:13px}#ownerCenterIntegrated .centerMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 <div id="ownerCenterMount" style="display:none"></div>
 <div id="ownerCenterIntegrated" style="display:none"><main>
@@ -1846,7 +1844,7 @@ if(recoveryMode){showRecoveryForm()}else{await enter(session)}
 <script type="module">
 import {createClient} from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb=createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
-const $=id=>document.getElementById(id);let current=null,ownerMode=false,profileCache=[],dashboardTimer=null;
+const $=id=>document.querySelector('#ownerCenterIntegrated [id="'+id+'"]');let current=null,ownerMode=false,profileCache=[],dashboardTimer=null;
 const fmt=(n,c)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c;
 function msg(t){$('loginMsg').textContent=t}
 async function start(session){
