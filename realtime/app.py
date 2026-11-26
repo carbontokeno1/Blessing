@@ -1539,15 +1539,26 @@ def _binance_public_tickers():
             if (symbol != pair or price <= 0 or open_price <= 0
                     or quote_volume < 250000 or bid <= 0 or ask < bid):
                 return None
+            received_at = datetime.now(timezone.utc).isoformat()
             return {
                 "symbol":symbol,"lastPrice":price,"quoteVolume":quote_volume,
                 "openPrice":open_price,"bidPrice":bid,"askPrice":ask,
                 "closeTime":int(_num(item.get("closeTime"), 0) or 0),
+                "receivedAt":received_at,
             }
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             for item in pool.map(fetch_symbol_24h, fallback_symbols):
                 if item:
                     rows.append(item)
+                    # Reuse this fresh official ticker snapshot for the server-side
+                    # Paper fill quote; do not issue a second price request.
+                    state.setdefault("crypto_quotes", {})[item["symbol"]] = {
+                        "symbol":item["symbol"],"price":item["lastPrice"],
+                        "quoteVolume24h":item["quoteVolume"],"bid":item["bidPrice"],
+                        "ask":item["askPrice"],"receivedAt":item["receivedAt"],
+                        "bookReceivedAt":item["receivedAt"],
+                        "source":"Binance TH official REST ticker",
+                    }
         if rows:
             log.warning("Binance TH ticker WebSocket unavailable; recovered %d liquid symbols via per-symbol official REST",len(rows))
     if not rows:
