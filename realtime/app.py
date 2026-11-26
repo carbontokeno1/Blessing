@@ -3700,9 +3700,11 @@ def dual_paper_initialize(request: Request):
             "user_id": uid, "market": market, "broker": config["broker"],
             "currency": config["currency"], "initial_capital": config["capital"],
             "cash_balance": config["capital"], "mode": "paper", "enabled": False,
-            "reserve_cash_pct": 0, "risk_per_trade_pct": 1,
-            "max_daily_loss_pct": 3, "max_weekly_loss_pct": 6,
-            "max_drawdown_pct": 10, "max_open_positions": 5,
+            "reserve_cash_pct": 20 if market == "crypto" else 0,
+            "risk_per_trade_pct": 0.5 if market == "crypto" else 1,
+            "max_daily_loss_pct": 2 if market == "crypto" else 3, "max_weekly_loss_pct": 6,
+            "max_drawdown_pct": 5 if market == "crypto" else 10,
+            "max_open_positions": 3 if market == "crypto" else 5,
             "peak_equity": config["capital"],
         }
         rows = _sb_rest("blessing_dual_portfolios", {}, "POST", payload)
@@ -3725,7 +3727,7 @@ def dual_paper_status(request: Request):
     for portfolio in portfolios:
         pid = str(portfolio["id"])
         positions = _sb_rest("blessing_dual_positions", {
-            "select": "id,market,symbol,quantity,entry_price,current_price,stop_loss_price,take_profit_price,entry_fee,unrealized_pnl,status,opened_at",
+            "select": "id,market,symbol,side,quantity,entry_price,current_price,best_price,stop_loss_price,take_profit_price,entry_fee,unrealized_pnl,status,opened_at",
             "portfolio_id": "eq." + pid, "user_id": "eq." + uid, "status": "eq.open",
             "order": "opened_at.desc", "limit": "50",
         })
@@ -3735,23 +3737,41 @@ def dual_paper_status(request: Request):
             "order": "created_at.desc", "limit": "30",
         })
         unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
-        position_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
+        position_value = sum(
+            (float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
+             + float(p.get("unrealized_pnl") or 0))
+            if p.get("side") == "short"
+            else float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0)
+            for p in positions
+        )
         cash = float(portfolio.get("cash_balance") or 0)
+        realized = float(portfolio.get("realized_pnl") or 0)
+        long_closed = [o for o in orders if o.get("side") == "sell" and o.get("realized_pnl") is not None]
+        short_closed = [o for o in orders if o.get("side") == "cover" and o.get("realized_pnl") is not None]
+        long_pnl = sum(float(o.get("realized_pnl") or 0) for o in long_closed)
+        short_pnl = sum(float(o.get("realized_pnl") or 0) for o in short_closed)
         result[portfolio["market"]] = {
             "id": pid, "broker": portfolio["broker"], "currency": portfolio["currency"],
             "initialCapital": float(portfolio["initial_capital"]), "cashBalance": cash,
-            "equity": cash + position_value, "realizedPnl": float(portfolio.get("realized_pnl") or 0),
+            "equity": cash + position_value, "realizedPnl": realized,
             "unrealizedPnl": unrealized, "feesPaid": float(portfolio.get("fees_paid") or 0),
             "enabled": bool(portfolio.get("enabled")), "configured": True, "mode": "paper",
-            "marketValue": position_value, "totalPnl": float(portfolio.get("realized_pnl") or 0) + unrealized,
-            "riskLimits": {"reserveCashPct": 0,
-                     "maxPositionLossPct": 25,
-                     "maxTotalAllocationPct": 100,
-                     "dailyLossLimitEnabled": False,
-                     "weeklyLossLimitEnabled": False,
-                     "cumulativeLossLimitEnabled": False,
-                     "drawdownStopEnabled": False,
-                     "maxOpenPositions": 5 if portfolio["market"] == "stocks" else None},
+            "marketValue": position_value, "totalPnl": realized + unrealized,
+            "directionStats": {
+                "longClosedTrades": len(long_closed), "shortClosedTrades": len(short_closed),
+                "longRealizedPnl": long_pnl, "shortRealizedPnl": short_pnl,
+            },
+            "riskLimits": {
+                "reserveCashPct": float(portfolio.get("reserve_cash_pct") or 0),
+                "riskPerTradePct": float(portfolio.get("risk_per_trade_pct") or 0),
+                "dailyLossLimitPct": float(portfolio.get("max_daily_loss_pct") or 0),
+                "weeklyLossLimitPct": float(portfolio.get("max_weekly_loss_pct") or 0),
+                "maxDrawdownPct": float(portfolio.get("max_drawdown_pct") or 0),
+                "dailyLossLimitEnabled": portfolio["market"] == "crypto",
+                "weeklyLossLimitEnabled": True,
+                "drawdownStopEnabled": True,
+                "maxOpenPositions": int(portfolio.get("max_open_positions") or 0),
+            },
             "positions": positions, "orders": orders,
             "openPositions": positions, "recentOrders": orders,
         }
