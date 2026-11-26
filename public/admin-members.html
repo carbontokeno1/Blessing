@@ -47,7 +47,7 @@ main{max-width:1100px;margin:auto;padding:22px 14px 60px}.top{display:flex;justi
 <script type="module">
 import {createClient} from 'https://esm.sh/@supabase/supabase-js@2.95.0';
 const sb=createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
-const $=id=>document.getElementById(id);let current=null,ownerMode=false,profileCache=[];
+const $=id=>document.getElementById(id);let current=null,ownerMode=false,profileCache=[],dashboardTimer=null;
 const fmt=(n,c)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c;
 function msg(t){$('loginMsg').textContent=t}
 async function start(session){
@@ -57,7 +57,7 @@ async function start(session){
  if(!p||p.status!=='active'||!['admin','super_admin'].includes(p.role))throw Error('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ');
  current=session.user;ownerMode=p.role==='super_admin';$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');
  $('tradingControls').style.display=ownerMode?'block':'none';$('centerDashboard').style.display=ownerMode?'block':'none';
- await loadMembers();if(ownerMode)await loadTradingControls();
+ await loadMembers();if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},10000)}
 }
 async function loadMembers(){
  const box=$('members');box.textContent='กำลังโหลด...';
