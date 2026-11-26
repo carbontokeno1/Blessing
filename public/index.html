@@ -339,7 +339,7 @@ async function blessingSetStatusLed(id,level,label){
  el.innerHTML='<span style="display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:7px;background:'+(colors[level]||colors.gray)+';box-shadow:0 0 8px '+(colors[level]||colors.gray)+'"></span>'+esc(label);
  el.style.color=colors[level]||colors.gray;
 }
-function dualApi(path,body){
+async function dualApi(path,body){
  const sb=window.BLESSING_AUTH?.client;if(!sb)throw Error('กรุณาเข้าสู่ระบบใหม่');
  const {data,error}=await sb.auth.getSession();if(error||!data.session?.access_token)throw Error('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
  const r=await fetch(MARKET_BRIDGE_URL+path,{method:body?'POST':'GET',headers:{'content-type':'application/json','authorization':'Bearer '+data.session.access_token},body:body?JSON.stringify(body):undefined,cache:'no-store'});
