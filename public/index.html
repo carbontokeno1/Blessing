@@ -1332,7 +1332,7 @@ function paperRenderPortfolio(){
  const pnlEl=document.getElementById('paperTotalPnL');if(pnlEl)pnlEl.className=total>=0?'positive':'negative';
  put('paperPositionCount',paperPositions.length+' / 5');
  const pr=document.getElementById('paperPositionRows');if(pr)pr.innerHTML=rows||'<tr><td colspan="7">ยังไม่มีสถานะเปิดอยู่</td></tr>';
- const or=document.getElementById('paperOrderRows');if(or)or.innerHTML=paperOrders.length?paperOrders.map(x=>'<tr><td>'+new Date(x.created_at).toLocaleString('th-TH')+'</td><td>'+esc(x.symbol)+'</td><td class="'+(x.side==='buy'?'positive':'gold')+'">'+x.side.toUpperCase()+'</td><td>'+paperFmt(x.quantity,8)+'</td><td>'+paperFmt(x.fill_price,8)+'</td><td>'+paperFmt(x.fee,5)+'</td><td class="'+(Number(x.realized_pnl)>=0?'positive':'negative')+'">'+(x.side==='sell'?(Number(x.realized_pnl)>=0?'+':'')+paperFmt(x.realized_pnl,5):'—')+'</td></tr>').join(''):'<tr><td colspan="7">ยังไม่มีประวัติคำสั่ง</td></tr>';
+ const or=document.getElementById('paperOrderRows');if(or)or.innerHTML=paperOrders.length?paperOrders.map(x=>'<tr><td>'+new Date(x.created_at).toLocaleString('th-TH')+'</td><td>'+esc(x.symbol)+'</td><td class="'+(['buy','cover'].includes(x.side)?'positive':'gold')+'">'+x.side.toUpperCase()+'</td><td>'+paperFmt(x.quantity,8)+'</td><td>'+paperFmt(x.fill_price,8)+'</td><td>'+paperFmt(x.fee,5)+'</td><td class="'+(Number(x.realized_pnl)>=0?'positive':'negative')+'">'+(['sell','cover'].includes(x.side)?(Number(x.realized_pnl)>=0?'+':'')+paperFmt(x.realized_pnl,5):'—')+'</td></tr>').join(''):'<tr><td colspan="7">ยังไม่มีประวัติคำสั่ง</td></tr>';
 }
 async function paperExecute(symbol,side,quantity){
  if(paperOrderBusy)throw Error('กำลังประมวลผลคำสั่งก่อนหน้า');
