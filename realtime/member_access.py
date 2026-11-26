@@ -1,4 +1,5 @@
 import requests
+from datetime import datetime, timezone
 from fastapi import HTTPException, Request
 
 SAFE_MEMBER_PAGES = {"overview", "reports", "history", "settings"}
@@ -92,7 +93,7 @@ def register_member_access_routes(app, owner_auth, sb_rest, supabase_url, servic
         existing = sb_rest("blessing_member_access_settings", {
             "select": "user_id", "user_id": "eq." + user_id, "limit": "1"
         }) or []
-        values = {"visible_pages": clean, "updated_by": owner.get("id"), "updated_at": "now()"}
+        values = {"visible_pages": clean, "updated_by": owner.get("id"), "updated_at": datetime.now(timezone.utc).isoformat()}
         if existing:
             result = sb_rest("blessing_member_access_settings", {
                 "user_id": "eq." + user_id
