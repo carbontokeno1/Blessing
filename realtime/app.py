@@ -5943,3 +5943,155 @@ def owner_live_auto_stop(request: Request):
         "event_data":{"source":"owner_confirmed_stop","openPositionsRemainMonitored":True}})
     return {"ok":True,"runState":"STOPPED",
             "message":"หยุดเปิดสถานะใหม่แล้ว; ระบบยังติดตามและปิดสถานะที่เปิดอยู่ตาม Stop Loss/Take Profit"}
+
+
+# === SET/mai market-data bridge ===
+# Thailand listed-equity market data is provided by the Stock Exchange of Thailand,
+# not Webull OpenAPI. This endpoint is read-only and does not place orders.
+SET_MARKET_DATA_API_KEY = (os.getenv("SET_MARKET_DATA_API_KEY") or "").strip()
+SET_MARKET_DATA_MODE = (os.getenv("SET_MARKET_DATA_MODE") or "realtime").strip().lower()
+if SET_MARKET_DATA_MODE not in {"realtime", "delay"}:
+    SET_MARKET_DATA_MODE = "realtime"
+SET_MARKET_DATA_CACHE_SECONDS = max(10, min(120, int(os.getenv("SET_MARKET_DATA_CACHE_SECONDS", "30"))))
+SET_MARKET_DATA_STATE: dict[str, Any] = {
+    "provider": "Stock Exchange of Thailand",
+    "status": "waiting_credentials" if not SET_MARKET_DATA_API_KEY else "not_checked",
+    "market": ["SET", "mai"],
+    "universeCount": 0,
+    "updatedAt": None,
+    "lastError": None,
+    "mode": SET_MARKET_DATA_MODE,
+}
+SET_MARKET_DATA_CACHE: dict[str, Any] = {"at": 0.0, "payload": None}
+SET_MARKET_DATA_LOCK = threading.Lock()
+
+
+def _set_market_data_fetch(force: bool = False) -> dict[str, Any]:
+    """Fetch the official SET/mai all-listed-stock quote feed; never fabricate prices."""
+    if not SET_MARKET_DATA_API_KEY:
+        return {
+            "status": "waiting_credentials",
+            "provider": "Stock Exchange of Thailand",
+            "market": ["SET", "mai"],
+            "message": "ต้องตั้งค่า SET_MARKET_DATA_API_KEY ใน Render ก่อนเปิดข้อมูลหุ้นไทย",
+            "quotes": [],
+            "universeCount": 0,
+            "readOnly": True,
+        }
+    now = time.time()
+    with SET_MARKET_DATA_LOCK:
+        cached = SET_MARKET_DATA_CACHE.get("payload")
+        if cached and not force and now - SET_MARKET_DATA_CACHE.get("at", 0) < SET_MARKET_DATA_CACHE_SECONDS:
+            return {**cached, "cached": True}
+    mode_path = "realtime-data" if SET_MARKET_DATA_MODE == "realtime" else "delay-data"
+    url = f"https://marketplace.set.or.th/api/public/{mode_path}/stock"
+    try:
+        response = requests.get(
+            url,
+            params={"market": "SET,mai", "oddLotFlag": "false"},
+            headers={"api-key": SET_MARKET_DATA_API_KEY, "Accept": "application/json"},
+            timeout=(5, 20),
+        )
+        response.raise_for_status()
+        body = response.json()
+        if isinstance(body, list):
+            rows = body
+        elif isinstance(body, dict):
+            rows = body.get("data") or body.get("result") or body.get("stocks") or []
+            if isinstance(rows, dict):
+                rows = rows.get("data") or rows.get("items") or []
+        else:
+            rows = []
+        quotes = []
+        newest = None
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            stamp = row.get("time")
+            if stamp and (newest is None or str(stamp) > str(newest)):
+                newest = stamp
+            last = row.get("last")
+            prior = row.get("prior")
+            try:
+                change = float(last) - float(prior) if last is not None and prior is not None else None
+                change_pct = (change / float(prior) * 100.0) if change is not None and float(prior) else None
+            except (TypeError, ValueError, ZeroDivisionError):
+                change, change_pct = None, None
+            quotes.append({
+                "symbol": symbol,
+                "name": row.get("fullName"),
+                "market": row.get("market"),
+                "securityType": row.get("securityType"),
+                "industry": row.get("industry"),
+                "sector": row.get("sector"),
+                "price": last,
+                "priorClose": prior,
+                "change": change,
+                "changePercent": change_pct,
+                "open": row.get("open"),
+                "high": row.get("high"),
+                "low": row.get("low"),
+                "volume": row.get("totalVolume", row.get("aomVolume")),
+                "value": row.get("totalValue", row.get("aomValue")),
+                "bid": row.get("bid") or [],
+                "offer": row.get("offer") or [],
+                "timestamp": stamp,
+                "source": "SET official Market Data API",
+                "currency": "THB",
+            })
+        quotes.sort(key=lambda x: (x.get("changePercent") is not None, x.get("changePercent") or 0), reverse=True)
+        payload = {
+            "status": "ok",
+            "provider": "Stock Exchange of Thailand",
+            "market": ["SET", "mai"],
+            "mode": SET_MARKET_DATA_MODE,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "dataTime": newest,
+            "universeCount": len(quotes),
+            "quotes": quotes,
+            "cached": False,
+            "readOnly": True,
+            "message": "ข้อมูลหุ้น SET/mai จาก API ทางการ; ระบบนี้ยังไม่ส่งคำสั่งซื้อขาย",
+        }
+        with SET_MARKET_DATA_LOCK:
+            SET_MARKET_DATA_CACHE.update({"at": now, "payload": payload})
+            SET_MARKET_DATA_STATE.update({
+                "status": "ok", "universeCount": len(quotes),
+                "updatedAt": payload["updatedAt"], "lastError": None,
+                "dataTime": newest, "mode": SET_MARKET_DATA_MODE,
+            })
+        return payload
+    except Exception as exc:
+        error = type(exc).__name__
+        with SET_MARKET_DATA_LOCK:
+            SET_MARKET_DATA_STATE.update({"status": "source_error", "lastError": error})
+        log.exception("SET/mai market-data fetch failed (%s)", error)
+        return {
+            "status": "source_error",
+            "provider": "Stock Exchange of Thailand",
+            "market": ["SET", "mai"],
+            "lastError": error,
+            "quotes": [],
+            "universeCount": 0,
+            "readOnly": True,
+            "message": "ดึงข้อมูลจาก SET ไม่สำเร็จ; ไม่ใช้ข้อมูลจากแหล่งอื่นแทน",
+        }
+
+
+@app.get("/th-stock-market")
+def th_stock_market(refresh: int = 0):
+    """Read-only all-listed-stock universe and quote feed for SET and mai."""
+    return _set_market_data_fetch(force=bool(refresh))
+
+
+@app.get("/th-stock-market/health")
+def th_stock_market_health():
+    with SET_MARKET_DATA_LOCK:
+        return {
+            **SET_MARKET_DATA_STATE,
+            "configured": bool(SET_MARKET_DATA_API_KEY),
+            "readOnly": True,
+        }
