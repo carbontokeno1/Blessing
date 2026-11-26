@@ -1463,6 +1463,10 @@ def _binance_public_tickers():
         if age < 0 or age > 60:
             continue
         pair = str(item.get("symbol") or "").upper()
+        # Normalize standard BASE_USDT symbols, but keep Alpha identifiers such
+        # as ALPHA_772USDT excluded because they are not Spot /api/v1/klines pairs.
+        if pair.endswith("_USDT"):
+            pair = pair[:-5] + "USDT"
         # Binance TH Alpha tickers may use identifiers such as ALPHA_772USDT.
         # These are not standard Spot symbol names for /api/v1/klines.
         # Only send conventional ASCII alphanumeric BASEUSDT pairs to the Spot scanner.
@@ -1493,10 +1497,13 @@ def _binance_public_tickers():
         })
 
     if not rows:
+        quote_cache = state.get("crypto_quotes") or {}
+        sample_symbols = list(quote_cache.keys())[:8]
         raise RuntimeError(
             "BINANCE_TH_LIVE_TICKERS_NOT_READY:"
             + "connection=" + str(state.get("cryptoConnection"))
-            + ",quotes=" + str(len(state.get("crypto_quotes") or {}))
+            + ",quotes=" + str(len(quote_cache))
+            + ",sample=" + ",".join(str(x) for x in sample_symbols)
             + ",lastMessage=" + str(state.get("lastCryptoMessageAt"))
         )
     return rows
@@ -1809,7 +1816,7 @@ def altcoin_scanner(refresh: int = 0):
         try:
             tickers = _binance_public_tickers()
         except Exception as primary_error:
-            raise RuntimeError("BINANCE_TH_LIVE_TICKERS_UNAVAILABLE:" + type(primary_error).__name__)
+            raise RuntimeError("BINANCE_TH_LIVE_TICKERS_UNAVAILABLE:" + type(primary_error).__name__ + ":" + str(primary_error)[:180])
     except Exception as binance_error:
         log.error("Binance scanner unavailable: %s", str(binance_error)[:240])
         try:
