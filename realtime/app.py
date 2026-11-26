@@ -2190,6 +2190,60 @@ def _binance_th_owner_auth(request: Request):
 
 
 
+@app.post("/admin/members/{member_user_id}/remove")
+def admin_remove_member(member_user_id: str, request: Request):
+    """Soft-remove a member: revoke login, disable assigned portfolios, preserve all history."""
+    _binance_th_owner_auth(request)
+    try:
+        member_uuid = str(uuid.UUID(member_user_id))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="รหัสสมาชิกไม่ถูกต้อง")
+
+    profiles = _sb_rest("profiles", {
+        "select": "user_id,email,role,status",
+        "user_id": "eq." + member_uuid,
+        "limit": "1",
+    })
+    if not profiles or profiles[0].get("role") == "super_admin":
+        raise HTTPException(status_code=404, detail="ไม่พบสมาชิก หรือไม่อนุญาตให้ดำเนินการกับบัญชีเจ้าของ")
+    if profiles[0].get("status") == "removed":
+        return {"ok": True, "removed": True, "message": "สมาชิกถูกนำออกจากระบบแล้ว และเก็บประวัติทั้งหมดไว้"}
+
+    # Ban sign-in at the Auth layer first. Existing profile and trade rows are retained.
+    auth_response = _SB_HTTP.put(
+        SUPABASE_URL + "/auth/v1/admin/users/" + member_uuid,
+        json={"ban_duration": "876000h"},
+        headers=_sb_headers(),
+        timeout=(5, 12),
+    )
+    if auth_response.status_code not in (200, 201):
+        log.error("Member soft-remove Auth ban failed: status=%s", auth_response.status_code)
+        raise HTTPException(status_code=502, detail="ระงับการเข้าสู่ระบบไม่สำเร็จ จึงยังไม่เปลี่ยนสถานะสมาชิก")
+
+    now = datetime.now(timezone.utc).isoformat()
+    _sb_rest("profiles", {"user_id": "eq." + member_uuid}, "PATCH", {
+        "status": "removed", "updated_at": now,
+    })
+    _sb_rest("blessing_member_portfolio_registry", {
+        "assigned_user_id": "eq." + member_uuid,
+    }, "PATCH", {
+        "enabled": False, "status": "suspended",
+        "live_trading_approved": False, "live_ready": False,
+        "updated_at": now,
+    })
+    _sb_rest("blessing_stock_paper_member_slots", {
+        "assigned_user_id": "eq." + member_uuid,
+    }, "PATCH", {
+        "enabled": False, "status": "suspended", "updated_at": now,
+    })
+    return {
+        "ok": True, "removed": True, "historyPreserved": True,
+        "loginRevoked": True, "portfoliosDisabled": True,
+        "message": "นำสมาชิกออกจากระบบและปิดพอร์ตที่ผูกไว้แล้ว โดยเก็บประวัติการเทรดและข้อมูลเดิมทั้งหมด",
+    }
+
+
+
 # Webull Trading API bootstrap is read-only until the owner explicitly enables
 # live execution in a later, separately reviewed release.
 _WEBULL_TRADE_CLIENT = None
