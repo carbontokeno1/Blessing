@@ -1302,6 +1302,21 @@ def _universe_scanner_loop():
                 UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"Webull OpenAPI","lastError":"WEBULL_CREDENTIALS_MISSING"})
             time.sleep(60)
             continue
+        # Wait for the MQTT-created authenticated REST client before scanning;
+        # otherwise the first cycle would fail and sleep for the full scan interval.
+        wait_started = time.time()
+        while time.time() - wait_started < 120:
+            with _WEBULL_SHARED_API_CLIENT_LOCK:
+                ready = _WEBULL_SHARED_API_CLIENT is not None
+            if ready:
+                break
+            time.sleep(2)
+        if not ready:
+            with UNIVERSE_LOCK:
+                UNIVERSE_STATE.update({"status":"waiting_webull_auth","provider":"Webull OpenAPI",
+                    "lastError":"WEBULL_SHARED_AUTH_CLIENT_NOT_READY"})
+            time.sleep(30)
+            continue
         try:
             _universe_scan_cycle()
         except Exception as exc:
