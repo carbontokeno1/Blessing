@@ -389,6 +389,10 @@ export default {
       if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
       return binanceThLiveProxy(request,"/admin/member-portfolios","GET");
     }
+    if (pathname === "/api/admin/member-portfolios/report") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      return binanceThLiveProxy(request,"/admin/member-portfolios/report","GET");
+    }
     if (pathname === "/api/admin/member-portfolios/control") {
       if (request.method !== "POST") return json({ok:false,message:"POST only"},405,{allow:"POST"});
       try { return binanceThLiveProxy(request,"/admin/member-portfolios/control","POST",await request.json()); }
