@@ -2752,7 +2752,7 @@ def admin_member_portfolios_report(request: Request):
     """Owner-only consolidated read-only report for all 40 isolated member portfolios."""
     _binance_th_owner_auth(request)
     registry = _sb_rest("blessing_member_portfolio_registry", {
-        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,assigned_user_id,paper_slot_id,allocated_capital,status,enabled,live_trading_approved,updated_at",
+        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,assigned_user_id,paper_slot_id,allocated_capital,status,enabled,live_trading_approved,live_ready,updated_at",
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     }) or []
@@ -2800,7 +2800,7 @@ def admin_member_portfolios_report(request: Request):
         "order": "created_at.desc",
     }) if stock_ids else []
     crypto_orders = _sb_rest("blessing_paper_slot_orders", {
-        "select": "slot_id,side,status,fee_thb,created_at",
+        "select": "slot_id,symbol,side,status,fee_thb,created_at",
         "slot_id": "in.(" + ",".join(crypto_ids) + ")", "limit": "5000",
         "order": "created_at.desc",
     }) if crypto_ids else []
@@ -2819,10 +2819,14 @@ def admin_member_portfolios_report(request: Request):
         "paperPortfolios": 0, "paperCapital": 0.0, "paperCash": 0.0,
         "paperMarketValue": 0.0, "paperEquity": 0.0, "paperRealizedPnl": 0.0,
         "paperUnrealizedPnl": 0.0, "paperFees": 0.0, "paperNetPnl": 0.0,
-        "openPositions": 0, "filledOrders": 0, "liveLocked": 0, "paperActive": 0, "paperOff": 0, "liveStandby": 0, "liveOff": 0,
+        "openPositions": 0, "filledOrders": 0, "openOrders": 0, "liveLocked": 0, "paperActive": 0, "paperOff": 0, "liveStandby": 0, "liveOff": 0,
     }
     for row in registry:
         ptype = row.get("portfolio_type")
+        if row.get("mode") == "paper":
+            totals["paperActive" if row.get("enabled") else "paperOff"] += 1
+        elif row.get("mode") == "live":
+            totals["liveStandby" if row.get("live_ready") else "liveOff"] += 1
         is_paper = row.get("mode") == "paper" and ptype in ("crypto_paper", "stock_paper")
         slot = None
         positions = []
@@ -2856,7 +2860,8 @@ def admin_member_portfolios_report(request: Request):
                 "capital": capital, "cash": cash, "marketValue": market_value,
                 "equity": equity, "realizedPnl": realized, "unrealizedPnl": unrealized,
                 "netPnl": realized + unrealized, "returnPct": ((equity - capital) / capital * 100) if capital else 0,
-                "fees": fees, "openPositions": len(positions), "orderCount": len(orders),\n                "openOrders": sum(1 for o in orders if str(o.get("status") or "").lower() in ("new", "open", "pending", "partially_filled", "accepted")),\n                "recentOrders": [{ "symbol": o.get("symbol"), "side": o.get("side"), "status": o.get("status"), "createdAt": o.get("created_at"), "portfolioType": ptype } for o in orders[:5]],
+                "fees": fees, "openPositions": len(positions), "orderCount": len(orders),
+                "openOrders": sum(1 for o in orders if str(o.get("status") or "").lower() in ("new", "open", "pending", "partially_filled", "accepted")),\n                "recentOrders": [{ "symbol": o.get("symbol"), "side": o.get("side"), "status": o.get("status"), "createdAt": o.get("created_at"), "portfolioType": ptype } for o in orders[:5]],
                 "filledOrders": filled_orders, "buyOrders": buy_orders, "sellOrders": sell_orders,
                 "positions": [{
                     "symbol": p.get("symbol"), "quantity": num(p.get("quantity")),
@@ -2872,7 +2877,8 @@ def admin_member_portfolios_report(request: Request):
                 ("paperEquity", equity), ("paperRealizedPnl", realized),
                 ("paperUnrealizedPnl", unrealized), ("paperFees", fees),
                 ("paperNetPnl", realized + unrealized), ("openPositions", len(positions)),
-                ("filledOrders", filled_orders),\n                ("openOrders", sum(1 for o in orders if str(o.get("status") or "").lower() in ("new", "open", "pending", "partially_filled", "accepted"))),
+                ("filledOrders", filled_orders),
+                ("openOrders", sum(1 for o in orders if str(o.get("status") or "").lower() in ("new", "open", "pending", "partially_filled", "accepted"))),
             ):
                 totals[key] += value
         else:
