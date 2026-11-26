@@ -313,6 +313,7 @@ function stopStockPaperPolling(){if(stockPaperTimer){clearInterval(stockPaperTim
 
 function dualView(){
  return '<div class="heading"><div><h1>BLESSING · DUAL PAPER PORTFOLIOS</h1><div class="muted">พอร์ตทดลองแยกอิสระ · Binance TH Spot 100 USDT · Webull US Equities 100 USD</div></div><span class="pill">PAPER ONLY · LIVE ORDERS LOCKED</span></div>'+
+ '<div class="card section"><div class="heading"><div><h3>สถานะระบบ Paper Trading</h3><div class="small muted">ไฟสถานะมอนิเตอร์และผลคัดกรองสัญญาณแบบเรียลไทม์</div></div><span class="pill">PAPER ONLY</span></div><div class="grid"><div class="card metric"><label>Paper Monitor</label><div id="dualWorkerLed" class="small">● กำลังตรวจสอบ</div><div id="dualWorkerCycle" class="small muted">รอรอบตรวจล่าสุด</div></div><div class="card metric"><label>Crypto Scanner</label><div id="dualCryptoLed" class="small">● กำลังตรวจสอบ</div><div id="dualCryptoDiag" class="small muted">รอผลสแกน</div></div><div class="card metric"><label>Stock Scanner</label><div id="dualStockLed" class="small">● กำลังตรวจสอบ</div><div id="dualStockDiag" class="small muted">รอผลสแกน</div></div></div><div id="dualSkipReasons" class="small muted" style="margin-top:10px">รอข้อมูลเหตุผลที่ยังไม่เปิดคำสั่ง</div><div class="toolbar" style="margin-top:12px"><button class="secondary" onclick="dualRefresh(false)">ตรวจสถานะใหม่</button></div></div>'+
  '<div class="card section"><div class="heading"><div><h3>เริ่มต้นระบบทดลอง</h3><div class="small muted">สร้างพอร์ตใหม่โดยไม่แก้ไขบัญชี Paper เดิม</div></div><div class="toolbar"><button class="primary" onclick="dualInitialize()">สร้างพอร์ตทดลอง 2 บัญชี</button><button class="secondary" onclick="dualRefresh(true)">รีเฟรชพอร์ต</button></div></div><div class="notice">ค่าธรรมเนียมจำลอง 0.10% ต่อด้าน · Slippage 0.05% ต่อด้าน · สูงสุด 5 สถานะต่อพอร์ต<br>หุ้นสหรัฐฯ BUY อัตโนมัติเมื่อผ่านเกณฑ์ · Stop Loss -25% / Take Profit +5% ถึง +15% · สูงสุด 5 สถานะ · ทำงานต่อเนื่องจนกด STOP · Backend ติดตามปิดอัตโนมัติ · ไม่มีคำสั่งเงินจริง</div><div id="dualMessage" class="small muted" style="margin-top:10px">กำลังตรวจสอบพอร์ต...</div></div>'+
  '<div id="dualPortfolioCards" class="grid"><div class="card">กำลังโหลดพอร์ต...</div></div>'+
  '<div class="card section"><div class="heading"><div><h3>Adaptive Paper · ทดลอง 14 วัน</h3><div class="small muted">เลือกกลยุทธ์ตามสภาพตลาดอัตโนมัติ · Crypto และหุ้นสหรัฐฯ · วัดกำไรสุทธิหลัง Fee/Slippage และ Maximum Drawdown</div></div><div class="toolbar"><button class="primary" onclick="adaptivePaperStart()">เริ่มทดลอง 14 วัน</button><button class="secondary" onclick="adaptivePaperStop()">หยุดทดลอง</button><button class="secondary" onclick="adaptivePaperRefresh()">รีเฟรชผล</button></div></div><div id="adaptivePaperReport" class="small muted">ยังไม่มีการทดลอง 14 วัน</div></div>'+
@@ -422,7 +423,22 @@ function dualRender(snapshot){
   }
  }
  const count=document.getElementById('dualOpenCount');if(count)count.textContent=String(allPos.length);
- if(msg){const w=snapshot?.worker||{};msg.textContent=(snapshot?.liveOrdersEnabled===false?'เชื่อมต่อแล้ว · Paper only':'สถานะระบบไม่พร้อม')+' · Monitor: '+(w.status||'unknown')+' · รอบตรวจ '+(w.cycles||0)+' · ปิดอัตโนมัติ '+(w.automaticExits||0);}
+ const w=snapshot?.worker||{},diag=w.cryptoScanDiagnostics||{};
+ const age=w.lastCycleAt?Math.max(0,(Date.now()-Date.parse(w.lastCycleAt))/1000):Infinity;
+ const fresh=Number.isFinite(age)&&age<=Math.max(240,Number(w.intervalSeconds||90)*4);
+ const state=w.status==='running'&&fresh?'green':(['error','paused'].includes(w.status)?'red':'yellow');
+ const led=(id,level,label)=>{const el=document.getElementById(id);if(el){const c={green:'#32e58a',yellow:'#f5c451',red:'#ff5252',gray:'#89919e'}[level]||'#89919e';el.innerHTML='<span style="display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:7px;background:'+c+';box-shadow:0 0 8px '+c+'"></span>'+esc(label);el.style.color=c}};
+ led('dualWorkerLed',state,(w.status||'unknown')==='running'&&fresh?'กำลังทำงาน':w.status==='paused'?'หยุดอยู่':w.status==='error'?'ขัดข้อง':'กำลังเริ่ม/รอรอบ');
+ led('dualCryptoLed',diag.fresh?'green':diag.status==='source_error'?'red':'yellow',diag.fresh?'สแกน Binance TH สำเร็จ':('รอข้อมูลสด · '+(diag.status||'unknown')));
+ const sd=w.stocksScanDiagnostics||{};
+ led('dualStockLed',sd.fresh?'green':sd.status==='source_error'?'red':'yellow',sd.fresh?'สแกนหุ้นสำเร็จ':('รอข้อมูลสด · '+(sd.status||'unknown')));
+ const setText=(id,t)=>{const el=document.getElementById(id);if(el)el.textContent=t};
+ setText('dualWorkerCycle','รอบ '+Number(w.cycles||0)+' · เริ่ม '+(w.lastCycleStartedAt?new Date(w.lastCycleStartedAt).toLocaleTimeString('th-TH'):'—')+' · จบ '+(w.lastCycleAt?new Date(w.lastCycleAt).toLocaleTimeString('th-TH'):'—')+' · BUY '+Number(w.entriesOpened||0)+' · ตรวจสถานะ '+Number(w.positionsChecked||0));
+ setText('dualCryptoDiag','ประเมิน '+Number(diag.evaluated||0)+' เหรียญ · ผ่านเกณฑ์ Paper '+Number(diag.paperStrategyCandidateCount||0)+' · เข้าโอกาส '+Number(diag.opportunityEntryCount||0));
+ setText('dualStockDiag','ผ่านเกณฑ์ '+Number(w.stocksCandidates||0)+' หุ้น · พร้อมคำสั่ง Paper');
+ const reasons=diag.signalDiagnostics||{},reasonText=Object.entries(reasons).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>k+': '+v).join(' · ');
+ setText('dualSkipReasons','เหตุผลคัดกรองคริปโต: '+(reasonText||'ยังไม่มีข้อมูล')+(w.lastError?' · Engine Error: '+w.lastError:'')+(diag.ageSeconds!=null?' · อายุข้อมูล '+diag.ageSeconds+' วินาที':''));
+ if(msg){msg.textContent=(snapshot?.liveOrdersEnabled===false?'เชื่อมต่อแล้ว · Paper only':'สถานะระบบไม่พร้อม')+' · Monitor: '+(w.status||'unknown')+' · รอบตรวจ '+(w.cycles||0)+' · ปิดอัตโนมัติ '+(w.automaticExits||0);}
 }
 async function dualRefresh(markPrices=true){
  if(dualBusy||role!=='admin')return;dualBusy=true;
