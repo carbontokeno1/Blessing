@@ -2666,11 +2666,11 @@ def admin_member_portfolios(request: Request):
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     })
-    if len(rows) != 40:
+    if len(rows) != 20:
         raise HTTPException(status_code=503, detail={
             "code": "PORTFOLIO_REGISTRY_INCOMPLETE",
-            "expected": 40, "found": len(rows),
-            "message": "ทะเบียนสมาชิกต้องมีพอร์ตครบ 40 พอร์ต (Paper 20 และ Live 20) จึงจะแสดงข้อมูลได้",
+            "expected": 20, "found": len(rows),
+            "message": "ทะเบียนสมาชิกต้องมีพอร์ตครบ 20 พอร์ต (Paper 10 และ Live 10) จึงจะแสดงข้อมูลได้",
         })
 
     # Enrich the owner-only portfolio list with the actual assigned member
@@ -2756,11 +2756,11 @@ def admin_member_portfolios_report(request: Request):
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     }) or []
-    if len(registry) != 40:
+    if len(registry) != 20:
         raise HTTPException(status_code=503, detail={
             "code": "PORTFOLIO_REGISTRY_INCOMPLETE",
-            "expected": 40, "found": len(registry),
-            "message": "ทะเบียนสมาชิกต้องมีพอร์ตครบ 40 พอร์ต (Paper 20 และ Live 20)",
+            "expected": 20, "found": len(registry),
+            "message": "ทะเบียนสมาชิกต้องมีพอร์ตครบ 20 พอร์ต (Paper 10 และ Live 10)",
         })
 
     def num(value):
