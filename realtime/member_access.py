@@ -34,23 +34,37 @@ def register_member_access_routes(app, owner_auth, sb_rest, sb_rpc, supabase_url
     def admin_get_member_access(request: Request):
         owner_auth(request)
         registry = sb_rest("blessing_member_portfolio_registry", {
-            "select": "member_no,member_label,assigned_user_id,portfolio_type,authorized_limit,allocated_capital,enabled,status,live_trading_approved",
-            "order": "member_no.asc,portfolio_type.asc", "limit": "100"
+            "select": "id,member_no,member_label,assigned_user_id,portfolio_type,authorized_limit,allocated_capital,enabled,status,live_trading_approved",
+            "order": "member_no.asc,portfolio_type.asc", "limit": "200"
         }) or []
-        user_ids = list(dict.fromkeys(str(x["assigned_user_id"]) for x in registry if x.get("assigned_user_id")))
+        # Live rows are intentionally unassigned/locked. Pair them to the
+        # member's Paper rows by member_no for display and limit management only.
+        member_user_by_no = {}
+        for row in registry:
+            uid = str(row.get("assigned_user_id") or "")
+            if uid and row.get("member_no") is not None:
+                member_user_by_no[str(row["member_no"])] = uid
+        row_user = {}
+        for row in registry:
+            uid = str(row.get("assigned_user_id") or "")
+            if not uid and str(row.get("portfolio_type") or "").endswith("_live"):
+                uid = member_user_by_no.get(str(row.get("member_no")), "")
+            if uid:
+                row_user[id(row)] = uid
+        user_ids = list(dict.fromkeys(row_user.values()))
         profiles = sb_rest("profiles", {
             "select": "user_id,email,display_name,status", "user_id": "in.(" + ",".join(user_ids) + ")",
-            "role": "eq.member", "limit": "100"
+            "role": "eq.member", "limit": "200"
         }) if user_ids else []
         settings = sb_rest("blessing_member_access_settings", {
             "select": "user_id,visible_pages,updated_at", "user_id": "in.(" + ",".join(user_ids) + ")",
-            "limit": "100"
+            "limit": "200"
         }) if user_ids else []
         profile_map = {str(x["user_id"]): x for x in (profiles or [])}
         setting_map = {str(x["user_id"]): x for x in (settings or [])}
         grouped = {}
         for row in registry:
-            uid = str(row.get("assigned_user_id") or "")
+            uid = row_user.get(id(row), "")
             if not uid or uid not in profile_map:
                 continue
             m = grouped.setdefault(uid, {
