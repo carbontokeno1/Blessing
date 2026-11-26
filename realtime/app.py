@@ -4751,6 +4751,11 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         "portfolio_id":"eq."+str(portfolio["id"]), "user_id":"eq."+user_id,
         "status":"eq.open", "limit":"1000"
     }) or []
+    # Hard cap at three concurrent positions per member/market, while respecting
+    # any stricter portfolio setting already stored in the database.
+    max_open_positions = max(1, min(3, int(portfolio.get("max_open_positions") or 3)))
+    if len(positions) >= max_open_positions:
+        return None
     position_value = sum(
         (float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
          + float(p.get("unrealized_pnl") or 0) + float(p.get("entry_fee") or 0))
@@ -4762,6 +4767,23 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     if any(str(p.get("symbol") or "").upper() == symbol for p in positions):
         return None
 
+    # Enforce a 2% maximum daily loss using Bangkok calendar days. Include both
+    # closed P&L today and the current unrealized P&L before allowing another entry.
+    bangkok_now = datetime.now(ZoneInfo("Asia/Bangkok"))
+    day_start_utc = bangkok_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+    closed_today = _sb_rest("blessing_dual_positions", {
+        "select":"realized_pnl", "portfolio_id":"eq."+str(portfolio["id"]),
+        "user_id":"eq."+user_id, "status":"eq.closed",
+        "closed_at":"gte."+day_start_utc, "limit":"1000"
+    }) or []
+    realized_today = sum(float(row.get("realized_pnl") or 0) for row in closed_today)
+    unrealized_now = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+    daily_pnl = realized_today + unrealized_now
+    configured_daily_limit = float(portfolio.get("max_daily_loss_pct") or 2.0)
+    daily_loss_limit_pct = max(0.25, min(2.0, configured_daily_limit))
+    if equity > 0 and daily_pnl <= -(equity * daily_loss_limit_pct / 100.0):
+        return None
+
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
     if market == "stocks":
         stop_pct = 25.0
@@ -4770,9 +4792,9 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
             target_pct = 20.0
     else:
         stop_pct = float(candidate.get("atrStopPct") or strategy_config.get("crypto_stop_loss_pct", 1.5))
-        target_pct = float(strategy_config.get("crypto_take_profit_pct", 3.0))
         stop_pct = min(2.0, max(0.8, stop_pct))
-        target_pct = min(5.0, max(1.5, target_pct))
+        # Target at least +3% or 2R, capped at +5%; Short mirrors Long.
+        target_pct = min(5.0, max(3.0, stop_pct * 2.0))
 
     all_portfolios = _sb_rest("blessing_dual_portfolios", {
         "select":"id,market,cash_balance,initial_capital",
@@ -4794,11 +4816,18 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     )
     total_equity = max(0.0, total_cash + total_exposure)
     remaining_allocation = max(0.0, total_equity - total_exposure)
-    reserve_pct = float(portfolio.get("reserve_cash_pct") or (20.0 if market == "crypto" else 0.0))
+    reserve_pct = max(20.0, float(portfolio.get("reserve_cash_pct") or 0.0)) if market == "crypto" else float(portfolio.get("reserve_cash_pct") or 0.0)
     deployable_cash = max(0.0, cash_balance - equity * reserve_pct / 100.0)
     if market == "crypto":
-        # Size from a 0.5% equity risk budget and the actual ATR stop distance.
-        risk_budget = equity * 0.005
+        # Risk 0.5% of equity per trade; total open stop risk may not exceed 1.5%.
+        open_risk = sum(
+            abs(float(p.get("entry_price") or 0) - float(p.get("stop_loss_price") or p.get("entry_price") or 0))
+            * float(p.get("quantity") or 0) for p in positions
+        )
+        aggregate_risk_remaining = max(0.0, equity * 0.015 - open_risk)
+        risk_budget = min(equity * 0.005, aggregate_risk_remaining)
+        if risk_budget <= 0:
+            return None
         risk_sized_notional = risk_budget / (stop_pct / 100.0)
         notional = min(deployable_cash, remaining_allocation, risk_sized_notional, total_equity)
     else:
@@ -5386,6 +5415,14 @@ def adaptive_paper_preview(request: Request):
         "experiment": experiment_window(14),
         "policy": {
             "adaptiveRegimeSelection": True,
+            "cryptoDirections": ["long", "short"],
+            "stocksDirections": ["long"],
+            "cryptoRiskPerTradePct": 0.5,
+            "cryptoMaxAggregateOpenRiskPct": 1.5,
+            "cryptoMaxDailyLossPct": 2.0,
+            "cryptoMaxOpenPositions": 3,
+            "cryptoReserveCashPct": 20,
+            "cryptoShortMode": "paper_simulation_only_no_leverage",
             "markets": ["crypto", "stocks"],
             "cryptoSource": "Binance TH scanner/candles; Binance-only candidates",
             "stockSource": "disabled_pending_Webull_stock_scanner",
