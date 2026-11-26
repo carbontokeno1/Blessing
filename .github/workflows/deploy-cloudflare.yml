@@ -1,5 +1,6 @@
 name: Deploy Blessing to Cloudflare Workers
 
+# Triggered by repository updates after deployment secrets are configured.
 on:
   push:
     branches:
