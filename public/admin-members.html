@@ -113,4 +113,5 @@ async function saveAllocation(id,market,amount,enabled){
 $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error)throw error;await start(data.session)}catch(err){await sb.auth.signOut();msg(err.message||'เข้าสู่ระบบไม่สำเร็จ')}});
 $('logout').onclick=async()=>{await sb.auth.signOut();location.reload()};
 try{const {data,error}=await sb.auth.getSession();if(error)throw error;if(data.session)await start(data.session)}catch(e){msg(e.message||'ไม่สามารถตรวจสอบบัญชีได้')}
-</script></body></html>
+</script><script src="/i18n.js" defer></script>
+</body></html>
