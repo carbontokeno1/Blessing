@@ -324,7 +324,7 @@ function dualView(){
  '<div><label class="small">Stop Loss (%)</label><input id="dualStopPct" class="input" type="number" min="0.1" max="25" step="0.1" value="1"></div>'+
  '<div><label class="small">Take Profit (%)</label><input id="dualTargetPct" class="input" type="number" min="0.1" max="50" step="0.1" value="2"></div></div>'+
  '<div class="toolbar" style="margin-top:12px"><button class="primary" onclick="dualSubmitOrder()">BUY · เปิดสถานะจำลอง</button><span class="small muted">ปิดสถานะจากตารางด้านล่าง</span></div></div>'+
- '<div class="card section"><div class="heading"><h3>สถานะที่เปิดอยู่</h3><span class="pill" id="dualOpenCount">0</span></div><div class="tablewrap"><table><thead><tr><th>ตลาด</th><th>สินทรัพย์</th><th>จำนวน</th><th>ราคาเข้า</th><th>ราคาล่าสุด</th><th>กำไร/ขาดทุน</th><th>Stop / Target</th><th>คำสั่ง</th></tr></thead><tbody id="dualPositions"><tr><td colspan="8">ยังไม่มีสถานะ</td></tr></tbody></table></div></div>'+
+ '<div class="card section"><div class="heading"><h3>สถานะที่เปิดอยู่</h3><span class="pill" id="dualOpenCount">0</span></div><div class="tablewrap"><table><thead><tr><th>ตลาด</th><th>สินทรัพย์</th><th>ทิศทาง</th><th>จำนวน</th><th>ราคาเข้า</th><th>ราคาล่าสุด</th><th>กำไร/ขาดทุน</th><th>Stop / Target</th><th>คำสั่ง</th></tr></thead><tbody id="dualPositions"><tr><td colspan="8">ยังไม่มีสถานะ</td></tr></tbody></table></div></div>'+
  '<div class="card section"><h3>ประวัติคำสั่งล่าสุด</h3><div class="tablewrap"><table><thead><tr><th>เวลา</th><th>ตลาด</th><th>สินทรัพย์</th><th>ด้าน</th><th>จำนวน</th><th>ราคา</th><th>Fee</th><th>Realized P/L</th></tr></thead><tbody id="dualOrders"><tr><td colspan="8">ยังไม่มีคำสั่ง</td></tr></tbody></table></div></div>'+
  '<div class="notice dangerbox">บัญชีนี้เป็น Paper Trading เท่านั้น · ไม่มีการเชื่อมคำสั่งซื้อขายจริง · ไม่มี Futures, Margin, Leverage หรือการโอนเงินข้ามพอร์ต</div>';
 }
@@ -393,7 +393,7 @@ async function dualClosePosition(market,positionId,symbol){
  const p=(dualSnapshot?.portfolios?.[market]?.openPositions||[]).find(x=>x.id===positionId);
  if(!p){alert('ไม่พบสถานะที่ต้องการปิด');return}
  let q;try{q=await dualApi('/ai/dual-paper/quote?market='+encodeURIComponent(market)+'&symbol='+encodeURIComponent(symbol))}catch(e){alert('ไม่มีราคาตลาดจริง จึงไม่ปิดสถานะ: '+e.message);return}
- if(!confirm('ยืนยันปิด '+symbol+' ด้วยราคาตลาดจริงล่าสุด '+dualFmt(q.price,8)+' '+q.currency+'?'))return;
+ if(!confirm('ยืนยันปิด '+(p.side==='short'?'SHORT ':'LONG ')+symbol+' ด้วยราคาตลาดจริงล่าสุด '+dualFmt(q.price,8)+' '+q.currency+'?'))return;
  try{const order={market,symbol,side:'sell',positionId};order.idempotencyKey=dualOrderKey(order);const r=await dualApi('/ai/dual-paper/order',order);dualOrderSucceeded();alert('ปิดสถานะ Paper แล้ว · ราคาตลาด '+dualFmt(r.marketPrice,8)+' · P/L '+dualFmt(r.result?.realizedPnl,4));await dualRefresh(false)}catch(e){alert(e.message)}
 }
 function dualRender(snapshot){
@@ -408,7 +408,7 @@ function dualRender(snapshot){
  for(const k of ['crypto','stocks']){const p=ps[k]||{};(p.openPositions||[]).forEach(x=>allPos.push({...x,marketKey:k,currency:p.currency}));(p.recentOrders||[]).forEach(x=>allOrders.push({...x,marketKey:k,currency:p.currency}))}
  allPos.sort((a,b)=>String(b.opened_at||'').localeCompare(String(a.opened_at||'')));
  allOrders.sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
- if(positions){positions.innerHTML=allPos.length?allPos.map(x=>'<tr><td>'+x.marketKey+'</td><td><b>'+esc(x.symbol)+'</b></td><td>'+dualFmt(x.quantity,6)+'</td><td>'+dualFmt(x.entry_price,6)+'</td><td>'+dualFmt(x.current_price,6)+'</td><td class="'+(Number(x.unrealized_pnl)>=0?'positive':'negative')+'">'+dualFmt(x.unrealized_pnl,4)+' '+x.currency+'</td><td>'+dualFmt(x.stop_loss_price,6)+' / '+dualFmt(x.take_profit_price,6)+'</td><td><button class="secondary" onclick="dualClosePosition(\''+x.marketKey+'\',\''+x.id+'\',\''+esc(x.symbol)+'\')">ปิดสถานะ</button></td></tr>').join(''):'<tr><td colspan="8">ยังไม่มีสถานะเปิด</td></tr>'}
+ if(positions){positions.innerHTML=allPos.length?allPos.map(x=>'<tr><td>'+x.marketKey+'</td><td><b>'+esc(x.symbol)+'</b></td><td><b class="'+(x.side==='short'?'negative':'positive')+'">'+(x.side==='short'?'SHORT':'LONG')+'</b></td><td>'+dualFmt(x.quantity,6)+'</td><td>'+dualFmt(x.entry_price,6)+'</td><td>'+dualFmt(x.current_price,6)+'</td><td class="'+(Number(x.unrealized_pnl)>=0?'positive':'negative')+'">'+dualFmt(x.unrealized_pnl,4)+' '+x.currency+'</td><td>'+dualFmt(x.stop_loss_price,6)+' / '+dualFmt(x.take_profit_price,6)+'</td><td><button class="secondary" onclick="dualClosePosition(\''+x.marketKey+'\',\''+x.id+'\',\''+esc(x.symbol)+'\')">'+(x.side==='short'?'ปิด Short':'ปิด Long')+'</button></td></tr>').join(''):'<tr><td colspan="9">ยังไม่มีสถานะเปิด</td></tr>'}
  if(orders){orders.innerHTML=allOrders.length?allOrders.slice(0,30).map(x=>'<tr><td>'+new Date(x.created_at).toLocaleString('th-TH')+'</td><td>'+x.marketKey+'</td><td>'+esc(x.symbol)+'</td><td>'+String(x.side).toUpperCase()+'</td><td>'+dualFmt(x.quantity,6)+'</td><td>'+dualFmt(x.price,6)+'</td><td>'+dualFmt(x.fee,4)+'</td><td>'+ (x.realized_pnl==null?'—':dualFmt(x.realized_pnl,4)+' '+x.currency)+'</td></tr>').join(''):'<tr><td colspan="8">ยังไม่มีประวัติคำสั่ง</td></tr>'}
  const adaptiveEl=document.getElementById('adaptivePaperReport');
  if(adaptiveEl){
