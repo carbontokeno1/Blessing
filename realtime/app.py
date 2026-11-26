@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
-from broker_adapters import brokerage_readonly_snapshot
+from broker_adapters import brokerage_readonly_snapshot, set_webull_api_client
 from ai_decision import build_decision_preview
 from adaptive_strategy import adaptive_decision, paper_opportunity_decision, build_binance_th_candidates, experiment_window
 from dual_portfolio import portfolio_overview
@@ -203,6 +203,9 @@ def on_connect(client, api_client, session_id):
     # and can exhaust the account's verification-attempt limit.
     with _WEBULL_SHARED_API_CLIENT_LOCK:
         _WEBULL_SHARED_API_CLIENT = api_client
+    # Share the stream's already-authenticated client with read-only account checks.
+    # A second ApiClient would start another Webull 2FA/token flow.
+    set_webull_api_client(api_client)
     log.info("Webull market stream connected; shared authenticated REST client ready")
     state["connection"] = "connected"
     state["webullConnection"] = "connected"
