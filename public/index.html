@@ -1538,7 +1538,7 @@ document.getElementById('signupSubmit').addEventListener('click',async()=>{
  const password=document.getElementById('signupPassword').value;
  const confirm=document.getElementById('signupConfirm').value;
  if(displayName.length<2){signupSay('กรุณากรอกชื่ออย่างน้อย 2 ตัวอักษร');return}
- if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)){signupSay('กรุณาตรวจสอบรูปแบบอีเมล');return}
+ if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){signupSay('กรุณากรอกอีเมลให้ถูกต้อง เช่น name@gmail.com');return}
  if(password.length<12||password.length>128){signupSay('รหัสผ่านต้องมี 12–128 ตัวอักษร');return}
  if(password!==confirm){signupSay('รหัสผ่านทั้งสองช่องไม่ตรงกัน');return}
  if(!document.getElementById('signupTerms').checked){signupSay('กรุณายอมรับข้อตกลงก่อนสมัคร');return}
