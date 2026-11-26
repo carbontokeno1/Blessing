@@ -4708,80 +4708,100 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     symbol = str(candidate.get("symbol") or "").upper()
     if not symbol:
         return None
-    # Safety interlock: the current database executor only opens long positions.
-    # Never route a bearish Short signal through the BUY-only automatic entry path.
-    if market == "crypto" and str(candidate.get("side") or "long").lower() == "short":
-        log.info("Dual Paper Short candidate held: short-side database execution migration is not installed")
+    direction = str(candidate.get("side") or "long").lower() if market == "crypto" else "long"
+    if direction not in {"long", "short"}:
+        return None
+    if market == "stocks" and direction != "long":
         return None
     try:
         market_price = _dual_market_price(market, symbol)
     except Exception as exc:
         log.info("Dual Paper entry skipped %s/%s: price unavailable (%s: %s)", market, symbol, type(exc).__name__, getattr(exc, "detail", str(exc))[:160])
         return None
-    equity = float(portfolio.get("cash_balance") or 0)
+
     positions = _sb_rest("blessing_dual_positions", {
-        "select":"id,symbol,quantity,entry_price,current_price,stop_loss_price",
+        "select":"id,symbol,side,quantity,entry_price,current_price,stop_loss_price,unrealized_pnl",
         "portfolio_id":"eq."+str(portfolio["id"]), "user_id":"eq."+user_id,
         "status":"eq.open", "limit":"1000"
     }) or []
-    market_value = sum(float(p.get("quantity") or 0)*float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
-    equity += market_value
-    if any(p.get("symbol")==symbol for p in positions):
+    position_value = sum(
+        (float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
+         + float(p.get("unrealized_pnl") or 0))
+        if p.get("side") == "short"
+        else float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0)
+        for p in positions
+    )
+    equity = float(portfolio.get("cash_balance") or 0) + position_value
+    if any(str(p.get("symbol") or "").upper() == symbol for p in positions):
         return None
-    # No artificial open-position count limit; available cash and risk controls apply.
+
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
     if market == "stocks":
-        # Member Stock Paper: automatic +20% take-profit / -25% stop-loss.
         stop_pct = 25.0
         target_pct = float(strategy_config.get("stocks_take_profit_pct", 20.0))
         if not 5.0 <= target_pct <= 30.0:
             target_pct = 20.0
     else:
-        stop_pct = float(strategy_config.get(market + "_stop_loss_pct", 1.5))
-        target_pct = float(strategy_config.get(market + "_take_profit_pct", 3.0))
-        stop_pct = min(25.0, max(0.1, stop_pct))
-    max_notional_pct = float(strategy_config.get("max_notional_pct") or 100.0)
-    max_total_allocation_pct = float(strategy_config.get("max_total_allocation_pct") or 100.0)
+        stop_pct = float(candidate.get("atrStopPct") or strategy_config.get("crypto_stop_loss_pct", 1.5))
+        target_pct = float(strategy_config.get("crypto_take_profit_pct", 3.0))
+        stop_pct = min(2.0, max(0.8, stop_pct))
+        target_pct = min(5.0, max(1.5, target_pct))
+
     all_portfolios = _sb_rest("blessing_dual_portfolios", {
         "select":"id,market,cash_balance,initial_capital",
         "user_id":"eq."+user_id,"mode":"eq.paper","limit":"2"
     }) or []
     portfolio_ids = [str(row["id"]) for row in all_portfolios]
     all_positions = _sb_rest("blessing_dual_positions", {
-        "select":"portfolio_id,quantity,current_price,entry_price",
+        "select":"portfolio_id,side,quantity,current_price,entry_price,unrealized_pnl",
         "user_id":"eq."+user_id,"status":"eq.open","limit":"1000"
     }) or []
     cash_balance = float(portfolio.get("cash_balance") or 0)
     total_cash = sum(float(row.get("cash_balance") or 0) for row in all_portfolios)
-    total_exposure = sum(float(p.get("quantity") or 0)*float(p.get("current_price") or p.get("entry_price") or 0)
-                         for p in all_positions if str(p.get("portfolio_id")) in portfolio_ids)
-    total_equity = total_cash + total_exposure
-    remaining_allocation = max(0.0, total_equity * max_total_allocation_pct / 100 - total_exposure)
-    # No reserve: each entry targets a 6% slice of combined crypto + stock equity.
-    # Crypto has no per-cycle symbol-count cap; all entries still share one 30% allocation cap.
-    notional_cap = total_equity * min(max_notional_pct, 100.0) / 100
-    if market == "stocks":
-        # No fixed position-count cap; size orders against remaining stock cash.
-        stock_equity = cash_balance + market_value
-        notional_cap = min(notional_cap, stock_equity)
-    notional = min(cash_balance, remaining_allocation, notional_cap)
+    total_exposure = sum(
+        (float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
+         + float(p.get("unrealized_pnl") or 0))
+        if p.get("side") == "short"
+        else float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0)
+        for p in all_positions if str(p.get("portfolio_id")) in portfolio_ids
+    )
+    total_equity = max(0.0, total_cash + total_exposure)
+    remaining_allocation = max(0.0, total_equity - total_exposure)
+    reserve_pct = float(portfolio.get("reserve_cash_pct") or (20.0 if market == "crypto" else 0.0))
+    deployable_cash = max(0.0, cash_balance - equity * reserve_pct / 100.0)
+    if market == "crypto":
+        # Size from a 0.5% equity risk budget and the actual ATR stop distance.
+        risk_budget = equity * 0.005
+        risk_sized_notional = risk_budget / (stop_pct / 100.0)
+        notional = min(deployable_cash, remaining_allocation, risk_sized_notional, total_equity)
+    else:
+        notional = min(cash_balance, remaining_allocation, total_equity)
     if notional < 1.0:
         return None
-    fill_price = market_price * 1.0005
-    quantity = round(notional/fill_price, 10 if market=="crypto" else 6)
+
+    is_short = market == "crypto" and direction == "short"
+    fill_price = market_price * (0.9995 if is_short else 1.0005)
+    quantity = round(notional / fill_price, 10 if market == "crypto" else 6)
     if quantity <= 0:
         return None
-    stop_price = fill_price*(1-stop_pct/100)
-    target_price = fill_price*(1+target_pct/100)
+    if is_short:
+        stop_price = fill_price * (1 + stop_pct / 100)
+        target_price = fill_price * (1 - target_pct / 100)
+        order_side = "short"
+    else:
+        stop_price = fill_price * (1 - stop_pct / 100)
+        target_price = fill_price * (1 + target_pct / 100)
+        order_side = "buy"
+
     result = _dual_rpc_order({
-        "p_user_id":user_id,"p_market":market,"p_symbol":symbol,"p_side":"buy",
+        "p_user_id":user_id,"p_market":market,"p_symbol":symbol,"p_side":order_side,
         "p_quantity":quantity,"p_price":fill_price,"p_stop_loss_price":stop_price,
         "p_take_profit_price":target_price,"p_position_id":None,
-        "p_idempotency_key":"ADAPT14-"+str(experiment["id"])[:8]+"-"+market+"-"+symbol+"-"+str(int(time.time()//60))
+        "p_idempotency_key":"ADAPT14-"+str(experiment["id"])[:8]+"-"+market+"-"+symbol+"-"+direction+"-"+str(int(time.time()//60))
     })
     DUAL_PAPER_WORKER_STATE.setdefault("actions",[]).append({
-        "at":datetime.now(timezone.utc).isoformat(),"action":"buy","market":market,
-        "symbol":symbol,"strategy":candidate.get("strategy"),"result":result
+        "at":datetime.now(timezone.utc).isoformat(),"action":order_side,"direction":direction,
+        "market":market,"symbol":symbol,"strategy":candidate.get("strategy"),"result":result
     })
     DUAL_PAPER_WORKER_STATE["actions"]=DUAL_PAPER_WORKER_STATE["actions"][-30:]
     return result
