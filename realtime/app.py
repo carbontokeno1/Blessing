@@ -4928,7 +4928,7 @@ def _dual_price_number(value):
 
 
 def _dual_market_price(market: str, symbol: str) -> float:
-    """Return only fresh, server-observed live prices. Never use browser/manual/stale fallbacks."""
+    """Return a fresh server-side quote for Paper execution; never trust browser prices."""
     if market == "crypto":
         if not symbol.endswith("USDT"):
             raise HTTPException(status_code=422, detail="คู่เหรียญต้องเป็น Spot/USDT")
@@ -4947,7 +4947,9 @@ def _dual_market_price(market: str, symbol: str) -> float:
             return float(price)
         raise HTTPException(status_code=503, detail="ข้อมูล Binance TH WebSocket ไม่มีราคาซื้อขายจริง")
     if market == "stocks":
-        # Authenticated Webull streaming quotes are the only permitted stock price source.
+        # Prefer Webull streaming when it is fresh. The Paper stock scanner itself
+        # uses Alpaca IEX snapshots, so use that same server-side feed as a safe
+        # fallback instead of rejecting every candidate when Webull has no tick.
         quote = state.get("quotes", {}).get(symbol)
         if isinstance(quote, dict):
             try:
@@ -4958,9 +4960,33 @@ def _dual_market_price(market: str, symbol: str) -> float:
             price = _dual_price_number(quote.get("raw") or quote)
             if 0 <= age <= 5 and price and price > 0:
                 return price
-        if state.get("provider") != "webull" or state.get("webullConnection") not in {"connected", "streaming"}:
-            raise HTTPException(status_code=503, detail="Webull ยังไม่เชื่อมต่อ จึงไม่อนุญาตให้ใช้ราคาหุ้นจากแหล่งอื่น")
-        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้นสดจาก Webull ที่ยืนยันเวลาได้ภายใน 5 วินาที จึงปฏิเสธคำสั่ง")
+        if not (ALPACA_KEY and ALPACA_SECRET):
+            raise HTTPException(status_code=503, detail="ไม่มีราคา Webull สด และยังไม่ได้ตั้งค่า Alpaca IEX สำหรับ Paper Trading")
+        try:
+            snapshot = _alpaca_snapshots([symbol]).get(symbol) or {}
+            trade = snapshot.get("latestTrade") or {}
+            latest_quote = snapshot.get("latestQuote") or {}
+            minute = snapshot.get("minuteBar") or {}
+            timestamp = trade.get("t") or latest_quote.get("t") or minute.get("t")
+            if timestamp:
+                stamp = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - stamp).total_seconds()
+            else:
+                age = 999999
+            price = _num(trade.get("p"), 0)
+            if price <= 0:
+                bid, ask = _num(latest_quote.get("bp"), 0), _num(latest_quote.get("ap"), 0)
+                if bid > 0 and ask >= bid:
+                    price = (bid + ask) / 2
+            if price <= 0:
+                price = _num(minute.get("c"), 0)
+            if 0 <= age <= 90 and price > 0:
+                return float(price)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.info("Paper stock Alpaca quote unavailable for %s (%s)", symbol, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้น Webull/Alpaca ที่สดพอสำหรับส่งคำสั่ง Paper")
     raise HTTPException(status_code=422, detail="เลือกตลาด crypto หรือ stocks เท่านั้น")
 
 
