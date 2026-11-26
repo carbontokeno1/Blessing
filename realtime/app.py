@@ -3997,6 +3997,23 @@ def _paper_worker_cycle():
             _sb_rpc("paper_bot_worker_trade", {"p_user_id":uid,"p_action":"mark","p_symbol":pos["symbol"],
                     "p_exchange":"Binance","p_price":price,"p_position_id":pos["id"],"p_reason":"MARK_TO_MARKET","p_signal_score":None})
             position_side = str(pos.get("position_side") or "long").lower()
+            # Adaptive ATR trailing stop: only tighten protection, never widen risk.
+            if row and fresh:
+                atr_stop_pct = min(2.0, max(0.8, _num(row.get("atrStopPct"), 1.5) or 1.5))
+                entry_price = _num(pos.get("entry_price"), 0)
+                old_stop = _num(pos.get("stop_loss_price"), 0)
+                if entry_price > 0 and position_side == "short" and price < entry_price:
+                    proposed_stop = price * (1 + atr_stop_pct / 100)
+                    if old_stop <= 0 or proposed_stop < old_stop:
+                        _sb_rest("paper_bot_positions", {
+                            "id":"eq." + str(pos["id"]), "user_id":"eq." + str(uid), "status":"eq.open"
+                        }, "PATCH", {"stop_loss_price":proposed_stop})
+                elif entry_price > 0 and position_side != "short" and price > entry_price:
+                    proposed_stop = price * (1 - atr_stop_pct / 100)
+                    if old_stop <= 0 or proposed_stop > old_stop:
+                        _sb_rest("paper_bot_positions", {
+                            "id":"eq." + str(pos["id"]), "user_id":"eq." + str(uid), "status":"eq.open"
+                        }, "PATCH", {"stop_loss_price":proposed_stop})
             if position_side == "short":
                 reason = "TAKE_PROFIT" if price <= float(pos["take_profit_price"]) else (
                          "STOP_LOSS" if price >= float(pos["stop_loss_price"]) else None)
@@ -4065,6 +4082,17 @@ def _paper_worker_cycle():
                                   "p_exchange":"Binance","p_price":float(candidate["price"]),"p_position_id":None,
                                   "p_reason":"ADAPTIVE_"+entry_action.upper()+"_"+str(decision.get("strategy") or "MOMENTUM"),
                                   "p_signal_score":int(min(100,decision.get("opportunityScore") or 0))})
+                if isinstance(result, dict) and result.get("position_id"):
+                    atr_stop_pct = min(2.0, max(0.8, _num(candidate.get("atrStopPct"), 1.5) or 1.5))
+                    target_pct = max(3.0, atr_stop_pct * 2.0)
+                    fill_price = float(candidate["price"])
+                    is_short = entry_action == "short"
+                    _sb_rest("paper_bot_positions", {
+                        "id":"eq." + str(result["position_id"]), "user_id":"eq." + str(uid), "status":"eq.open"
+                    }, "PATCH", {
+                        "stop_loss_price":fill_price * (1 + atr_stop_pct / 100 if is_short else 1 - atr_stop_pct / 100),
+                        "take_profit_price":fill_price * (1 - target_pct / 100 if is_short else 1 + target_pct / 100),
+                    })
                 PAPER_ENTRY_COOLDOWNS[cooldown_key] = time.time()
                 PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":entry_action,
                                                        "symbol":candidate["symbol"],"strategy":decision.get("strategy"),"result":result})
