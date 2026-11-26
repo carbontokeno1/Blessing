@@ -1987,6 +1987,87 @@ def _binance_th_owner_auth(request: Request):
     return user
 
 
+
+# Webull Trading API bootstrap is read-only until the owner explicitly enables
+# live execution in a later, separately reviewed release.
+_WEBULL_TRADE_CLIENT = None
+_WEBULL_TRADE_CLIENT_LOCK = threading.Lock()
+_WEBULL_TRADING_ACCOUNT_CACHE = None
+_WEBULL_TRADING_ACCOUNT_CACHE_AT = 0
+
+def _webull_trade_client():
+    global _WEBULL_TRADE_CLIENT
+    with _WEBULL_TRADE_CLIENT_LOCK:
+        if _WEBULL_TRADE_CLIENT is None:
+            with _WEBULL_SHARED_API_CLIENT_LOCK:
+                api = _WEBULL_SHARED_API_CLIENT
+            if api is None:
+                raise RuntimeError("WEBULL_SHARED_AUTH_CLIENT_NOT_READY")
+            from webull.trade.trade_client import TradeClient
+            _WEBULL_TRADE_CLIENT = TradeClient(api)
+        return _WEBULL_TRADE_CLIENT
+
+
+@app.get("/webull/trading/account")
+def webull_trading_account(request: Request, refresh: bool = False):
+    """Owner-only, read-only Production Trading API account handshake."""
+    global _WEBULL_TRADING_ACCOUNT_CACHE, _WEBULL_TRADING_ACCOUNT_CACHE_AT
+    _binance_th_owner_auth(request)
+    if not (APP_KEY and APP_SECRET):
+        raise HTTPException(status_code=503, detail="WEBULL_CREDENTIALS_MISSING")
+    if _WEBULL_TRADING_ACCOUNT_CACHE is not None and not refresh and time.time() - _WEBULL_TRADING_ACCOUNT_CACHE_AT < 60:
+        return _WEBULL_TRADING_ACCOUNT_CACHE
+    try:
+        response = _webull_trade_client().account_v2.get_account_list()
+        status_code = getattr(response, "status_code", None)
+        payload = response.json() if hasattr(response, "json") else response
+        if status_code != 200:
+            log.warning("Webull Trading API account-list returned HTTP %s", status_code)
+            raise HTTPException(status_code=502, detail={"code":"WEBULL_TRADING_ACCOUNT_LIST_FAILED","upstreamStatus":status_code})
+        rows = payload if isinstance(payload, list) else (
+            payload.get("data") or payload.get("accounts") or payload.get("account_list") or []
+            if isinstance(payload, dict) else []
+        )
+        if isinstance(rows, dict):
+            rows = rows.get("items") or rows.get("accounts") or []
+        accounts = []
+        for item in rows if isinstance(rows, list) else []:
+            if not isinstance(item, dict):
+                continue
+            account_id = item.get("account_id") or item.get("accountId") or item.get("id")
+            if not account_id:
+                continue
+            accounts.append({
+                "accountId": str(account_id),
+                "accountType": item.get("account_type") or item.get("accountType") or item.get("type"),
+                "status": item.get("status") or item.get("account_status"),
+                "currency": item.get("currency") or item.get("base_currency"),
+                "market": item.get("market") or "US",
+            })
+        if not accounts:
+            log.warning("Webull Trading API account-list returned no recognized account IDs")
+            raise HTTPException(status_code=502, detail={"code":"WEBULL_ACCOUNT_ID_NOT_FOUND","message":"API ตอบกลับแล้ว แต่ยังไม่พบ Account ID ในรูปแบบที่ระบบรู้จัก"})
+        result = {
+            "ok": True,
+            "provider": "Webull OpenAPI Trading API",
+            "environment": "production",
+            "readOnly": True,
+            "liveOrderExecutionEnabled": False,
+            "accountCount": len(accounts),
+            "accounts": accounts,
+            "checkedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        _WEBULL_TRADING_ACCOUNT_CACHE = result
+        _WEBULL_TRADING_ACCOUNT_CACHE_AT = time.time()
+        log.info("Webull Production Trading API account handshake succeeded; accounts=%d; live order execution remains disabled", len(accounts))
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("Webull Trading API account handshake failed (%s)", type(exc).__name__)
+        raise HTTPException(status_code=503, detail={"code":"WEBULL_TRADING_API_NOT_READY","errorType":type(exc).__name__,"message":"ตรวจสอบ Trading API ไม่สำเร็จ; ระบบยังไม่ส่งคำสั่งซื้อขายเงินจริง"})
+
+
 register_member_capital_routes(app, _binance_th_owner_auth, _sb_rest, _sb_rpc)
 
 @app.post("/admin/member-portfolios/control")
