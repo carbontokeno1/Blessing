@@ -334,6 +334,34 @@ export default {
       if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
       return memberBackendProxy(request, "/member/member-access");
     }
+    if (pathname.startsWith("/api/paper-reports/")) {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      const market = pathname.slice("/api/paper-reports/".length).toLowerCase();
+      if (!["crypto","stocks"].includes(market)) return json({ok:false,message:"UNKNOWN_PAPER_MARKET"},404);
+      const period = url.searchParams.get("period") || "24h";
+      if (!["24h","7d","30d","all"].includes(period)) return json({ok:false,message:"INVALID_REPORT_PERIOD"},400);
+      const authorization = request.headers.get("authorization") || "";
+      if (!authorization.startsWith("Bearer ")) return json({ok:false,message:"กรุณาเข้าสู่ระบบก่อน"},401);
+      try {
+        const target = "https://blessing-webull-realtime-djfm.onrender.com/paper-reports/" +
+          market + "?period=" + encodeURIComponent(period);
+        const response = await fetch(target, {
+          method:"GET",
+          headers:{"accept":"application/json","authorization":authorization},
+          signal:AbortSignal.timeout(30000),
+          cache:"no-store"
+        });
+        const payload = await response.json().catch(()=>({ok:false,message:"เซิร์ฟเวอร์รายงานส่งข้อมูลกลับมาไม่ถูกต้อง"}));
+        return json(payload,response.status,{"x-blessing-report-proxy":"same-origin-v1"});
+      } catch(error) {
+        console.error("paper_report_proxy_failed",market,error?.message||error);
+        return json({
+          ok:false,
+          code:"PAPER_REPORT_BACKEND_UNAVAILABLE",
+          message:"เชื่อมต่อเซิร์ฟเวอร์รายงานไม่สำเร็จ กรุณากดรีเฟรชอีกครั้ง"
+        },502,{"x-blessing-report-proxy":"same-origin-v1"});
+      }
+    }
     if (pathname === "/api/altcoin-scanner") {
       if (request.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: {
