@@ -2299,7 +2299,7 @@ async def admin_control_member_portfolios(request: Request):
     if requested_mode in ("paper", "live"):
         query["mode"] = "eq." + requested_mode
     registry = _sb_rest("blessing_member_portfolio_registry", query) or []
-    expected = 40 if requested_mode == "all" else 20
+    expected = {"paper": 10, "live": 10, "all": 20}[requested_mode]
     if len(registry) != expected:
         raise HTTPException(status_code=503, detail=f"ทะเบียนพอร์ต {requested_mode} ต้องครบ {expected} พอร์ต")
 
