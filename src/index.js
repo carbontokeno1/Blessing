@@ -25,6 +25,30 @@ async function isBlessingOwner(request) {
   return profiles?.[0]?.role === "super_admin" && profiles?.[0]?.status === "active";
 }
 
+async function memberBackendProxy(request, backendPath) {
+  const authorization = request.headers.get("authorization") || "";
+  if (!authorization.startsWith("Bearer ")) {
+    return json({ ok: false, message: "กรุณาเข้าสู่ระบบก่อน" }, 401);
+  }
+  try {
+    const response = await fetch("https://blessing-webull-realtime-djfm.onrender.com" + backendPath, {
+      method: request.method,
+      headers: { "accept": "application/json", "authorization": authorization },
+      signal: AbortSignal.timeout(25000),
+      cache: "no-store"
+    });
+    const payload = await response.json().catch(() => ({ ok: false, message: "Backend returned invalid JSON" }));
+    return json(payload, response.status);
+  } catch (error) {
+    console.error("member_backend_proxy_failed", backendPath, error?.message || error);
+    return json({
+      ok: false,
+      code: "MEMBER_BACKEND_UNAVAILABLE",
+      message: "ระบบกำลังเชื่อมต่อเซิร์ฟเวอร์ข้อมูลสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"
+    }, 502);
+  }
+}
+
 async function binanceThAccount(request) {
   // Forward the authenticated, read-only request to the existing Render backend.
   // Binance credentials remain only in Render secrets; never expose them to the browser.
@@ -261,6 +285,36 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const pathname = url.pathname.replace(/\/+$/, "") || "/";
+    // Same-origin member API proxy: avoids browser CORS/network failures
+    // while preserving backend authentication and per-user ownership checks.
+    if (pathname === "/api/member/member-portfolios") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      return memberBackendProxy(request, "/member/member-portfolios");
+    }
+    if (pathname === "/api/member/member-portfolios/daily-trades") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      const day = url.searchParams.get("day") || "";
+      return memberBackendProxy(request, "/member/member-portfolios/daily-trades" + (day ? "?day=" + encodeURIComponent(day) : ""));
+    }
+    if (pathname === "/api/member/member-portfolios/control") {
+      if (request.method !== "POST") return json({ok:false,message:"POST only"},405,{allow:"POST"});
+      try {
+        const body = await request.json();
+        const authorization = request.headers.get("authorization") || "";
+        if (!authorization.startsWith("Bearer ")) return json({ok:false,message:"กรุณาเข้าสู่ระบบก่อน"},401);
+        const response = await fetch("https://blessing-webull-realtime-djfm.onrender.com/member/member-portfolios/control", {
+          method:"POST", headers:{"accept":"application/json","content-type":"application/json","authorization":authorization},
+          body:JSON.stringify(body), signal:AbortSignal.timeout(25000), cache:"no-store"
+        });
+        return json(await response.json().catch(()=>({ok:false,message:"Backend returned invalid JSON"})),response.status);
+      } catch(error) {
+        return json({ok:false,code:"MEMBER_BACKEND_UNAVAILABLE",message:"บันทึกการตั้งค่าพอร์ตไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"},502);
+      }
+    }
+    if (pathname === "/api/member/member-access") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      return memberBackendProxy(request, "/member/member-access");
+    }
     if (pathname === "/api/altcoin-scanner") {
       if (request.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: {
