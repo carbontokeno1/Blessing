@@ -5705,22 +5705,49 @@ def _owner_live_engine_cycle():
                           and 0<=scan_age<=90)
             candidates = []
             if scan_fresh:
+                open_symbols = {str(p.get("symbol") or "").upper() for p in positions}
                 for row in (scan.get("candidates") or []):
                     symbol = str(row.get("symbol") or "").upper()
+                    price_value = Decimal(str(row.get("price") or "0"))
                     stop_value = Decimal(str(row.get("atrStopPct") or "0"))
                     spread_value = Decimal(str(row.get("spreadPct") or "999"))
-                    if (row.get("balancedEntry") is True and symbol.endswith("USDT")
-                            and row.get("exchangeSymbol")==symbol
-                            and Decimal(str(row.get("price") or "0"))>0
-                            and Decimal("0.8")<=stop_value<=Decimal("2.0")
-                            and Decimal("0")<spread_value<=Decimal("0.5")
-                            and symbol not in {str(p.get("symbol") or "").upper() for p in positions}):
-                        candidates.append(dict(row))
-            candidates.sort(key=lambda row:(float(row.get("balancedScore") or 0),
+                    m1_value = Decimal(str(row.get("m1") or "-999"))
+                    m5_value = Decimal(str(row.get("m5") or "-999"))
+                    m15_value = Decimal(str(row.get("m15") or "-999"))
+                    rvol_value = Decimal(str(row.get("rvol") or "0"))
+                    ema20_value = Decimal(str(row.get("ema20") or "0"))
+                    trend_ok = row.get("trendAligned") is True or row.get("opportunityTrendOk") is True
+                    momentum_ok = m5_value > 0 and m15_value > 0 and m1_value > Decimal("-0.20")
+                    confirmation_ok = (row.get("pullbackReclaim") is True or row.get("breakout") is True
+                                       or (ema20_value > 0 and price_value > ema20_value and m1_value > 0))
+                    # Moderate live gate: preserve 5m/15m direction and confirmation,
+                    # while allowing mild 1m pullback and RVOL >= 0.8 to avoid
+                    # requiring every strict balanced predicate at the same instant.
+                    moderate_entry = bool(
+                        trend_ok and momentum_ok and confirmation_ok
+                        and rvol_value >= Decimal("0.8")
+                        and Decimal("0") < spread_value <= Decimal("0.5")
+                        and Decimal("0.8") <= stop_value <= Decimal("2.0")
+                    )
+                    if (moderate_entry and symbol.endswith("USDT")
+                            and row.get("exchangeSymbol")==symbol and price_value > 0
+                            and symbol not in open_symbols):
+                        candidate = dict(row)
+                        candidate["liveEntryModel"] = "MODERATE_EMA_MOMENTUM_CONFIRMATION"
+                        candidate["liveEntryScore"] = (
+                            (25 if trend_ok else 0) + (25 if momentum_ok else 0)
+                            + (20 if confirmation_ok else 0)
+                            + (10 if rvol_value >= Decimal("0.8") else 0)
+                            + (10 if spread_value <= Decimal("0.5") else 0)
+                            + (10 if Decimal("0.8") <= stop_value <= Decimal("2.0") else 0)
+                        )
+                        candidates.append(candidate)
+            candidates.sort(key=lambda row:(float(row.get("liveEntryScore") or 0),
+                                             float(row.get("balancedScore") or 0),
                                              float(row.get("rvol") or 0)),reverse=True)
             candidates_count = len(candidates)
             reject_counts = scan.get("signalDiagnostics") or {}
-            log.info("Owner live balanced scan fresh=%s provider=%s evaluated=%s balanced_candidates=%s rejects=%s",
+            log.info("Owner live moderate scan fresh=%s provider=%s evaluated=%s moderate_candidates=%s rejects=%s",
                      scan_fresh, scan.get("provider"), scan.get("evaluated"),
                      candidates_count, reject_counts)
 
