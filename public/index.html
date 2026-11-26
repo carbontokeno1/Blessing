@@ -1226,7 +1226,7 @@ async function loadAdminMembers(){
  const {data,error}=await sb.from('profiles').select('user_id,email,display_name,role,status,created_at').neq('role','super_admin').order('created_at',{ascending:false}).limit(500);
  if(!document.getElementById('adminMembersTable'))return;
  if(error){el.textContent='โหลดรายชื่อไม่ได้: '+error.message+' · แต่ยังสามารถสร้างบัญชีสมาชิกได้';return}
- el.innerHTML='<div class="tablewrap"><table><thead><tr><th>ชื่อ</th><th>อีเมล</th><th>สิทธิ์</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody>'+(data||[]).map(x=>'<tr><td>'+esc(x.display_name||'—')+'</td><td>'+esc(x.email||'')+'</td><td>'+esc(x.role)+'</td><td>'+esc(x.status)+'</td><td><button class="secondary" data-member-status="active" data-user="'+esc(x.user_id)+'">อนุมัติ</button> <button class="secondary" data-member-status="suspended" data-user="'+esc(x.user_id)+'">ระงับ</button> <button class="secondary" data-member-remove="'+esc(x.user_id)+'">นำออก</button><div class="small" style="margin-top:7px"><select data-alloc-market="'+esc(x.user_id)+'"><option value="crypto">Crypto</option><option value="stocks">US Stocks</option></select> <input data-alloc-amount="'+esc(x.user_id)+'" type="number" min="0" step="0.01" placeholder="วงเงิน" style="width:105px;padding:6px"> <button class="secondary" data-alloc-save="'+esc(x.user_id)+'">จัดสรร Paper</button></div></td></tr>').join('')+'</tbody></table></div>';
+ el.innerHTML='<div class="tablewrap"><table><thead><tr><th>ชื่อ</th><th>อีเมล</th><th>สิทธิ์</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody>'+(data||[]).map(x=>'<tr><td>'+esc(x.display_name||'—')+'</td><td>'+esc(x.email||'')+'</td><td>'+esc(x.role)+'</td><td>'+esc(x.status)+'</td><td><button class="secondary" data-member-status="active" data-user="'+esc(x.user_id)+'">อนุมัติ</button> <button class="secondary" data-member-status="suspended" data-user="'+esc(x.user_id)+'">ระงับ</button> <button class="secondary" data-member-remove="'+esc(x.user_id)+'">'+(x.status==='removed'?'ลบแล้ว':'ลบสมาชิก')+'</button><div class="small" style="margin-top:7px"><select data-alloc-market="'+esc(x.user_id)+'"><option value="crypto">Crypto</option><option value="stocks">US Stocks</option></select> <input data-alloc-amount="'+esc(x.user_id)+'" type="number" min="0" step="0.01" placeholder="วงเงิน" style="width:105px;padding:6px"> <button class="secondary" data-alloc-save="'+esc(x.user_id)+'">จัดสรร Paper</button></div></td></tr>').join('')+'</tbody></table></div>';
  el.querySelectorAll('[data-member-status]').forEach(b=>b.addEventListener('click',async()=>{
   b.disabled=true;
   const {error}=await sb.rpc('blessing_admin_set_member_status',{p_user_id:b.dataset.user,p_status:b.dataset.memberStatus});
@@ -1237,7 +1237,7 @@ async function loadAdminMembers(){
   const id=b.dataset.memberRemove;
   const row=b.closest('tr');
   const email=row?.children?.[1]?.textContent||'สมาชิกนี้';
-  if(!confirm('ยืนยันนำ '+email+' ออกจากระบบ BLESSING?\\n\\nระบบจะระงับการเข้าสู่ระบบและปิดพอร์ตทั้งหมด แต่จะเก็บประวัติการเทรดและข้อมูลเดิมไว้ ไม่ลบถาวร'))return;
+  if(!confirm('ยืนยันลบสมาชิก '+email+' ออกจากระบบ BLESSING?\\n\\nระบบจะระงับการเข้าสู่ระบบและปิดพอร์ตทั้งหมด แต่จะเก็บประวัติการเทรดและข้อมูลเดิมไว้ ไม่ลบถาวร'))return;
   const {data}=await sb.auth.getSession();
   const token=data.session?.access_token;
   if(!token){alert('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');return}
@@ -1245,10 +1245,10 @@ async function loadAdminMembers(){
   try{
    const response=await fetch('/api/admin/members/'+encodeURIComponent(id)+'/remove',{method:'POST',headers:{authorization:'Bearer '+token},cache:'no-store'});
    const result=await response.json().catch(()=>({}));
-   if(!response.ok)throw Error(result.detail||result.message||'นำสมาชิกออกไม่สำเร็จ');
-   alert(result.message||'นำสมาชิกออกจากระบบแล้ว และเก็บประวัติไว้');
+   if(!response.ok)throw Error(result.detail||result.message||'ลบสมาชิกไม่สำเร็จ');
+   alert(result.message||'ลบสมาชิกออกจากระบบแล้ว และเก็บประวัติไว้');
    await loadAdminMembers();
-  }catch(e){alert(e.message);b.disabled=false;b.textContent='นำออก'}
+  }catch(e){alert(e.message);b.disabled=false;b.textContent='ลบสมาชิก'}
  }));
  el.querySelectorAll('[data-alloc-save]').forEach(b=>b.addEventListener('click',async()=>{
   const id=b.dataset.allocSave,market=el.querySelector('[data-alloc-market="'+id+'"]')?.value,amount=Number(el.querySelector('[data-alloc-amount="'+id+'"]')?.value);
