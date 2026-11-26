@@ -2408,7 +2408,7 @@ def member_member_portfolios(request: Request):
     """Members can view only portfolio rows explicitly assigned to their authenticated user id."""
     user = _member_portfolio_auth(request)
     rows = _sb_rest("blessing_member_portfolio_registry", {
-        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,allocated_capital,status,enabled,live_trading_approved",
+        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,allocated_capital,authorized_limit,status,enabled,live_trading_approved",
         "assigned_user_id": "eq." + str(user["id"]),
         "order": "portfolio_type.asc", "limit": "4",
     })
