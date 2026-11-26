@@ -1838,9 +1838,7 @@ if(recoveryMode){showRecoveryForm()}else{await enter(session)}
  </div>
  <div class="syncLine">หมายเหตุ: LIVE เป็น Standby เท่านั้น ไม่มี Equity / P&L จริงให้แสดงจนกว่าจะเชื่อมบัญชีและเปิดใช้ระบบ Live อย่างเป็นทางการ</div>
 </section>
-<div class="card"><div class="memberHead"><div><h1>สมาชิกและวงเงิน</h1><div class="muted">ทุนต้นทางอยู่ในบัญชีหลักของเจ้าของระบบ · แยกยอดภายในรายสมาชิก</div></div><span class="tag">ADMIN ONLY</span></div><div class="status">วงเงินที่จัดสรรในระยะนี้เป็น Paper Allocation เพื่อทดสอบบัญชีแยก ยังไม่ส่งคำสั่งซื้อขายเงินจริงและไม่ใช่ยอดเงินฝากที่ถอนได้</div></div>
-<div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>OWNER CONTROL · รวมพอร์ตสมาชิก 10 คน</h2><div class="muted">สมาชิก 01–10 · คนละ 4 พอร์ต · รวม 40 พอร์ต | แสดงสถานะและผลการดำเนินงานแยกรายพอร์ต</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="muted">LIVE READY คือเตรียมระบบเท่านั้น ไม่ใช่การอนุมัติส่งคำสั่งเงินจริง และไม่มีการส่งคำสั่งซื้อขายจากสวิตช์นี้</div><h3>ควบคุมรายสมาชิก / รายพอร์ต</h3><div id="tradingMembers" class="tradeGrid"></div></div>
-<div class="card"><h2>รายชื่อสมาชิก</h2><div id="members"><div class="status">กำลังโหลด...</div></div></div>
+<div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>สมาชิก 10 คน · พอร์ต 40 รายการ</h2><div class="muted">สมาชิก 01–10 · คนละ 4 พอร์ต · แสดงสถานะและข้อมูลรายพอร์ตเพียงชุดเดียว</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="muted">LIVE เป็น Standby เท่านั้น สวิตช์นี้ไม่ส่งคำสั่งซื้อขายเงินจริง</div><div id="tradingMembers" class="tradeGrid"></div></div>
 </section></div>
 <script type="module">
 import {createClient} from 'https://esm.sh/@supabase/supabase-js@2.95.0';
@@ -1858,38 +1856,9 @@ async function start(session){
  await loadMembers();if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},10000)}
 }
 async function loadMembers(){
- const box=$('members');box.textContent='กำลังโหลด...';
- const [{data:profiles,error:pe},{data:members,error:me},{data:allocs,error:ae}] = await Promise.all([
-  sb.from('profiles').select('user_id,email,display_name,role,status,created_at').eq('role','member').order('created_at',{ascending:false}).limit(500),
-  sb.from('blessing_members').select('user_id,status,terms_version,terms_accepted_at,approved_at'),
-  sb.from('blessing_member_allocations').select('id,user_id,market,broker,currency,allocated_capital,reserved_capital,realized_pnl,fees_paid,mode,enabled')
- ]);
- if(pe||me||ae){box.textContent='โหลดข้อมูลไม่สำเร็จ: '+(pe||me||ae).message;return}
- profileCache=profiles||[];const mMap=new Map((members||[]).map(x=>[x.user_id,x])),aMap=new Map();
- for(const a of allocs||[]){if(!aMap.has(a.user_id))aMap.set(a.user_id,[]);aMap.get(a.user_id).push(a)}
- box.replaceChildren();
- if(!profiles?.length){box.textContent='ยังไม่มีผู้สมัครสมาชิก';return}
- for(const p of profiles){
-  const m=mMap.get(p.user_id)||{},wrap=document.createElement('article');wrap.className='member';
-  const head=document.createElement('div');head.className='memberHead';
-  const info=document.createElement('div');const title=document.createElement('b');title.textContent=p.display_name||p.email||'สมาชิก';const sub=document.createElement('div');sub.className='muted';sub.textContent=(p.email||'')+' · '+p.status+' · '+(m.status||'no member record');info.append(title,sub);
-  const actions=document.createElement('div');actions.className='actions';
-  const approve=document.createElement('button');approve.textContent='อนุมัติสมาชิก';approve.onclick=()=>changeStatus(p.user_id,'active');
-  const suspend=document.createElement('button');suspend.className='danger';suspend.textContent='ระงับ';suspend.onclick=()=>changeStatus(p.user_id,'suspended');
-  actions.append(approve,suspend);head.append(info,actions);wrap.append(head);
-  const allocsWrap=document.createElement('div');allocsWrap.className='allocs';
-  for(const market of ['crypto','stocks']){
-   const a=(aMap.get(p.user_id)||[]).find(x=>x.market===market),c=market==='crypto'?'USDT':'USD';
-   const panel=document.createElement('div');panel.className='alloc';
-   const h=document.createElement('b');h.textContent=market==='crypto'?'BINANCE · CRYPTO':'WEBULL · US STOCKS';
-   const existing=document.createElement('div');existing.className='muted';existing.textContent=a?'วงเงิน '+fmt(a.allocated_capital,c)+' · P/L '+fmt(a.realized_pnl,c)+' · '+(a.enabled?'เปิด Paper':'ปิด'):'ยังไม่จัดสรรวงเงิน';
-   const label=document.createElement('label');label.textContent='วงเงินใหม่ ('+c+')';
-   const input=document.createElement('input');input.type='number';input.min='0';input.step='0.01';input.value=a?String(a.allocated_capital):'0';
-   const button=document.createElement('button');button.textContent='บันทึกวงเงิน';button.onclick=()=>saveAllocation(p.user_id,market,input.value,false);
-   panel.append(h,existing,label,input,button);allocsWrap.append(panel);
-  }
-  wrap.append(allocsWrap);box.append(wrap);
- }
+ const {data,error}=await sb.from('profiles').select('user_id,email,display_name,role,status').eq('role','member').order('created_at',{ascending:false}).limit(10);
+ if(error)throw error;
+ profileCache=data||[];
 }
 async function adminApi(path,method='GET',body){
  const response=await fetch(path,{method,headers:{'authorization':'Bearer '+(await sb.auth.getSession()).data.session.access_token,'content-type':'application/json','accept':'application/json'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});
@@ -1918,8 +1887,8 @@ function renderCenter(report,rows){
  $('centerMetrics').replaceChildren();
  for(const [label,value,note] of metrics){const box=document.createElement('div');box.className='metric';const a=document.createElement('small');a.textContent=label;const b=document.createElement('strong');b.textContent=value;const c=document.createElement('em');c.textContent=note;box.append(a,b,c);$('centerMetrics').append(box)}
  $('centerBreakdown').innerHTML='';
- const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 20 พอร์ต</b><small>'+paperOn+' Running · '+paperOff+' Off · Equity '+money(t.paperEquity)+'</small></div><b>'+(pnl>=0?'+':'')+money(pnl)+' ('+pct.toFixed(2)+'%)</b>';
- const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 20 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · Live execution locked</small></div><b>NO LIVE ORDERS</b>';
+ const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 20 พอร์ต</b><small>'+paperOn+' Running · '+paperOff+' Off</small></div><b>'+paperOn+'/20 ACTIVE</b>';
+ const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 20 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · Execution locked</small></div><b>'+liveReady+'/20 READY</b>';
  $('centerBreakdown').append(paperLine,liveLine);
  const activity=allOrders.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,8);
  $('centerActivity').replaceChildren();
@@ -1939,7 +1908,7 @@ async function loadTradingControls(){
   const paperRows=rows.filter(x=>x.mode==='paper'&&['crypto_paper','stock_paper'].includes(x.portfolio_type));
   const liveRows=rows.filter(x=>x.mode==='live'&&['crypto_live','stock_live'].includes(x.portfolio_type));
   const enabled=paperRows.filter(x=>x.enabled).length,liveReady=liveRows.filter(x=>x.live_ready).length;
-  status.textContent='10 สมาชิก · '+rows.length+'/40 พอร์ต · PAPER '+enabled+'/20 ACTIVE · LIVE '+liveReady+'/20 STANDBY · LIVE EXECUTION LOCKED';
+  status.textContent='ข้อมูลพอร์ตเชื่อมต่อแล้ว · '+rows.length+'/40 รายการ · LIVE EXECUTION LOCKED';
   renderCenter(report,rows);
   const labels={crypto_paper:'CRYPTO PAPER',stock_paper:'STOCK PAPER',crypto_live:'CRYPTO LIVE',stock_live:'STOCK LIVE'};
   const order=['crypto_paper','stock_paper','crypto_live','stock_live'];
@@ -1959,7 +1928,7 @@ async function loadTradingControls(){
     state.append(light,label);info.append(title,state);line.append(info);
     const control=document.createElement('div');control.className='portfolioSwitch';const button=document.createElement('button');
     if(!row){button.className='secondary';button.textContent='ไม่พบพอร์ต';button.disabled=true}
-    else{button.className=isLive?(active?'secondary isOn':'isOff'):(active?'isOn':'isOff');button.textContent=isLive?(active?'READY':'OFF'):(active?'ON':'OFF');button.setAttribute('aria-label',(active?'ปิด':'เปิด')+' '+labels[type]+' สมาชิก '+memberNo);
+    else{button.className=isLive?(active?'secondary isOn':'isOff'):(active?'isOn':'isOff');button.textContent=isLive?(active?'ปิด Standby':'ตั้ง Standby'):(active?'ปิดพอร์ต':'เปิดพอร์ต');button.setAttribute('aria-label',(active?'ปิด':'เปิด')+' '+labels[type]+' สมาชิก '+memberNo);
      button.onclick=async()=>{button.disabled=true;try{await adminApi('/api/admin/member-portfolios/control','POST',{portfolioId:row.id,mode:isLive?'live':'paper',enabled:!active});await loadTradingControls()}catch(e){alert('เปลี่ยนสถานะไม่สำเร็จ: '+e.message);button.disabled=false}};
     }control.append(button);line.append(control);card.append(line);
     const stats=document.createElement('div');stats.className='portfolioStats';
@@ -1987,173 +1956,11 @@ $('allTradingOff').addEventListener('click',()=>{if(confirm('ยืนยัน�
 $('allLiveOn').addEventListener('click',()=>{if(confirm('ตั้ง LIVE ทั้ง 20 พอร์ตเป็น READY / STANDBY? การดำเนินการนี้ไม่ส่งคำสั่งเงินจริง'))setPortfolioGroup('live',true)});
 $('allLiveOff').addEventListener('click',()=>{if(confirm('ยืนยันปิดสถานะ READY ของ LIVE ทั้ง 20 พอร์ต?'))setPortfolioGroup('live',false)});
 $('emergencyStop').addEventListener('click',()=>{if(confirm('EMERGENCY STOP: ยืนยันปิดสถานะทั้ง 40 พอร์ตทันที?'))setPortfolioGroup('all',false)});
-async function changeStatus(id,status){
- try{const {data,error}=await sb.rpc('blessing_admin_set_member_status',{p_user_id:id,p_status:status});if(error)throw error;await loadMembers()}catch(e){alert('บันทึกสถานะไม่สำเร็จ: '+e.message)}
-}
-async function saveAllocation(id,market,amount,enabled){
- const n=Number(amount);if(!Number.isFinite(n)||n<0){alert('กรุณากรอกวงเงินที่ถูกต้อง');return}
- try{const {data,error}=await sb.rpc('blessing_admin_set_allocation',{p_user_id:id,p_market:market,p_amount:n,p_enabled:enabled});if(error)throw error;await loadMembers();alert('บันทึกวงเงิน '+market+' เรียบร้อย (Paper only)')}catch(e){alert('จัดสรรวงเงินไม่สำเร็จ: '+e.message)}
-}
 $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error)throw error;await start(data.session)}catch(err){await sb.auth.signOut();msg(err.message||'เข้าสู่ระบบไม่สำเร็จ')}});
 $('logout').onclick=async()=>{await sb.auth.signOut();location.reload()};
 try{const {data,error}=await sb.auth.getSession();if(error)throw error;if(data.session)await start(data.session)}catch(e){msg(e.message||'ไม่สามารถตรวจสอบบัญชีได้')}
 </script><script src="/i18n.js" defer></script>
 </div>
-<script type="module">
-import {createClient} from 'https://esm.sh/@supabase/supabase-js@2.95.0';
-const sb=createClient('https://dyzumqcqvnznlkugimxo.supabase.co','sb_publishable_6RthgpRI_bdqxWjMjLVYkQ_nJzw1YWZ');
-const $=id=>document.getElementById(id);let current=null,ownerMode=false,profileCache=[],dashboardTimer=null;
-const fmt=(n,c)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c;
-function msg(t){$('loginMsg').textContent=t}
-async function start(session){
- if(!session?.user)throw Error('กรุณาเข้าสู่ระบบ');
- const {data:p,error}=await sb.from('profiles').select('email,display_name,role,status').eq('user_id',session.user.id).maybeSingle();
- if(error)throw error;
- if(!p||p.status!=='active'||!['admin','super_admin'].includes(p.role))throw Error('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ');
- current=session.user;ownerMode=p.role==='super_admin';$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');
- $('tradingControls').style.display=ownerMode?'block':'none';$('centerDashboard').style.display=ownerMode?'block':'none';
- await loadMembers();if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},10000)}
-}
-async function loadMembers(){
- const box=$('members');box.textContent='กำลังโหลด...';
- const [{data:profiles,error:pe},{data:members,error:me},{data:allocs,error:ae}] = await Promise.all([
-  sb.from('profiles').select('user_id,email,display_name,role,status,created_at').eq('role','member').order('created_at',{ascending:false}).limit(500),
-  sb.from('blessing_members').select('user_id,status,terms_version,terms_accepted_at,approved_at'),
-  sb.from('blessing_member_allocations').select('id,user_id,market,broker,currency,allocated_capital,reserved_capital,realized_pnl,fees_paid,mode,enabled')
- ]);
- if(pe||me||ae){box.textContent='โหลดข้อมูลไม่สำเร็จ: '+(pe||me||ae).message;return}
- profileCache=profiles||[];const mMap=new Map((members||[]).map(x=>[x.user_id,x])),aMap=new Map();
- for(const a of allocs||[]){if(!aMap.has(a.user_id))aMap.set(a.user_id,[]);aMap.get(a.user_id).push(a)}
- box.replaceChildren();
- if(!profiles?.length){box.textContent='ยังไม่มีผู้สมัครสมาชิก';return}
- for(const p of profiles){
-  const m=mMap.get(p.user_id)||{},wrap=document.createElement('article');wrap.className='member';
-  const head=document.createElement('div');head.className='memberHead';
-  const info=document.createElement('div');const title=document.createElement('b');title.textContent=p.display_name||p.email||'สมาชิก';const sub=document.createElement('div');sub.className='muted';sub.textContent=(p.email||'')+' · '+p.status+' · '+(m.status||'no member record');info.append(title,sub);
-  const actions=document.createElement('div');actions.className='actions';
-  const approve=document.createElement('button');approve.textContent='อนุมัติสมาชิก';approve.onclick=()=>changeStatus(p.user_id,'active');
-  const suspend=document.createElement('button');suspend.className='danger';suspend.textContent='ระงับ';suspend.onclick=()=>changeStatus(p.user_id,'suspended');
-  actions.append(approve,suspend);head.append(info,actions);wrap.append(head);
-  const allocsWrap=document.createElement('div');allocsWrap.className='allocs';
-  for(const market of ['crypto','stocks']){
-   const a=(aMap.get(p.user_id)||[]).find(x=>x.market===market),c=market==='crypto'?'USDT':'USD';
-   const panel=document.createElement('div');panel.className='alloc';
-   const h=document.createElement('b');h.textContent=market==='crypto'?'BINANCE · CRYPTO':'WEBULL · US STOCKS';
-   const existing=document.createElement('div');existing.className='muted';existing.textContent=a?'วงเงิน '+fmt(a.allocated_capital,c)+' · P/L '+fmt(a.realized_pnl,c)+' · '+(a.enabled?'เปิด Paper':'ปิด'):'ยังไม่จัดสรรวงเงิน';
-   const label=document.createElement('label');label.textContent='วงเงินใหม่ ('+c+')';
-   const input=document.createElement('input');input.type='number';input.min='0';input.step='0.01';input.value=a?String(a.allocated_capital):'0';
-   const button=document.createElement('button');button.textContent='บันทึกวงเงิน';button.onclick=()=>saveAllocation(p.user_id,market,input.value,false);
-   panel.append(h,existing,label,input,button);allocsWrap.append(panel);
-  }
-  wrap.append(allocsWrap);box.append(wrap);
- }
-}
-async function adminApi(path,method='GET',body){
- const response=await fetch(path,{method,headers:{'authorization':'Bearer '+(await sb.auth.getSession()).data.session.access_token,'content-type':'application/json','accept':'application/json'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});
- const payload=await response.json().catch(()=>({}));
- if(!response.ok)throw Error(payload.detail||payload.message||'HTTP '+response.status);
- return payload;
-}
-function money(v,c='THB'){return Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c}
-function stamp(v){if(!v)return '—';try{return new Date(v).toLocaleString('th-TH',{dateStyle:'short',timeStyle:'medium'})}catch{return String(v)}}
-function renderCenter(report,rows){
- const paper=rows.filter(x=>x.mode==='paper'),live=rows.filter(x=>x.mode==='live');
- const paperOn=paper.filter(x=>x.enabled).length,liveReady=live.filter(x=>x.live_ready).length,liveOff=live.length-liveReady;
- const t=report.totals||{},capital=Number(t.paperCapital||0),pnl=Number(t.paperNetPnl||0),pct=capital?pnl/capital*100:0;
- const openPositions=Number(t.openPositions||0);
- const allOrders=(report.portfolios||[]).flatMap(p=>p.recentOrders||[]);
- const openOrders=allOrders.filter(o=>['new','open','pending','partially_filled','accepted'].includes(String(o.status||'').toLowerCase())).length;
- const metrics=[
-  ['มูลค่ารวม PAPER Equity',money(t.paperEquity),'Cash + Market Value · THB'],
-  ['PAPER P&L รวม',(pnl>=0?'+':'')+money(pnl)+' · '+pct.toFixed(2)+'%','Realized + Unrealized'],
-  ['PAPER Portfolio',paperOn+'/20 Active',(20-paperOn)+' Off'],
-  ['LIVE Portfolio',liveReady+'/20 Standby',liveOff+' Off · Execution locked'],
-  ['Open Positions',String(openPositions),'รายการถือครอง Paper'],
-  ['Open Orders',String(openOrders),'คำสั่งที่ยังไม่ปิดสถานะ']
- ];
- $('centerMetrics').replaceChildren();
- for(const [label,value,note] of metrics){const box=document.createElement('div');box.className='metric';const a=document.createElement('small');a.textContent=label;const b=document.createElement('strong');b.textContent=value;const c=document.createElement('em');c.textContent=note;box.append(a,b,c);$('centerMetrics').append(box)}
- $('centerBreakdown').innerHTML='';
- const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 20 พอร์ต</b><small>'+paperOn+' Active · '+(20-paperOn)+' Off · Equity '+money(t.paperEquity)+'</small></div><b>'+(pnl>=0?'+':'')+money(pnl)+' ('+pct.toFixed(2)+'%)</b>';
- const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 20 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · ยังไม่ส่งคำสั่งเงินจริง</small></div><b>LOCKED</b>';
- $('centerBreakdown').append(paperLine,liveLine);
- const activity=allOrders.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,8);
- $('centerActivity').replaceChildren();
- if(!activity.length){const empty=document.createElement('div');empty.className='muted';empty.textContent='ยังไม่มี Order Log ในพอร์ตสมาชิก';$('centerActivity').append(empty)}
- for(const o of activity){const item=document.createElement('div');item.className='activityItem';const left=document.createElement('div');const title=document.createElement('b');title.textContent=(o.symbol||'Order')+' · '+String(o.side||'').toUpperCase();const sub=document.createElement('small');sub.textContent=(o.portfolioType||'PAPER')+' · '+stamp(o.createdAt);left.append(title,sub);const right=document.createElement('b');right.textContent=String(o.status||'—').toUpperCase();item.append(left,right);$('centerActivity').append(item)}
- $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก '+(report.refreshIntervalSeconds||10)+' วินาที';
-}
-async function loadTradingControls(){
- const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังอ่านข้อมูลเรียลไทม์ทั้ง 40 พอร์ต...';box.replaceChildren();
- try{
-  const [data,report]=await Promise.all([adminApi('/api/admin/member-portfolios'),adminApi('/api/admin/member-portfolios/report')]);
-  const rows=(data.portfolios||[]).filter(x=>['crypto_paper','stock_paper','crypto_live','stock_live'].includes(x.portfolio_type));
-  const reports=new Map((report.portfolios||[]).map(x=>[String(x.id),x]));
-  const profileMap=new Map(profileCache.map(p=>[p.user_id,p]));
-  const byMember=new Map();for(let n=1;n<=10;n++)byMember.set(String(n),[]);
-  for(const row of rows){const key=String(row.member_no);if(byMember.has(key))byMember.get(key).push(row)}
-  const paperRows=rows.filter(x=>x.mode==='paper'&&['crypto_paper','stock_paper'].includes(x.portfolio_type));
-  const liveRows=rows.filter(x=>x.mode==='live'&&['crypto_live','stock_live'].includes(x.portfolio_type));
-  const enabled=paperRows.filter(x=>x.enabled).length,liveReady=liveRows.filter(x=>x.live_ready).length;
-  status.textContent='10 สมาชิก · '+rows.length+'/40 พอร์ต · PAPER '+enabled+'/20 ACTIVE · LIVE '+liveReady+'/20 STANDBY · LIVE EXECUTION LOCKED';
-  renderCenter(report,rows);
-  const labels={crypto_paper:'CRYPTO PAPER',stock_paper:'STOCK PAPER',crypto_live:'CRYPTO LIVE',stock_live:'STOCK LIVE'};
-  const order=['crypto_paper','stock_paper','crypto_live','stock_live'];
-  for(const [memberNo,items] of byMember){
-   const card=document.createElement('article');card.className='tradeMember';
-   const assigned=items.find(x=>x.assigned_user_id),prof=assigned?profileMap.get(assigned.assigned_user_id):null;
-   const heading=document.createElement('h3');heading.textContent='สมาชิก '+String(memberNo).padStart(2,'0')+' · '+(prof?.display_name||assigned?.assigned_member_name||assigned?.member_label||('Member '+String(memberNo).padStart(2,'0')));
-   const count=document.createElement('div');count.className='memberPortfolioCount';count.textContent=items.length+'/4 พอร์ตในทะเบียน'+(items.some(x=>x.assigned_user_id)?' · ผูกบัญชีแล้ว':' · ยังไม่ผูกบัญชี');
-   card.append(heading,count);const map=new Map(items.map(x=>[x.portfolio_type,x]));
-   for(const type of order){
-    const row=map.get(type),rep=row?reports.get(String(row.id)):null,isLive=type.endsWith('_live');
-    const line=document.createElement('div');line.className='tradeAccount';const info=document.createElement('div');
-    const title=document.createElement('b');title.textContent=labels[type];const state=document.createElement('div');
-    const active=!!(isLive?row?.live_ready:row?.enabled);
-    const light=document.createElement('span');light.className='signal '+(isLive?(active?'standby':'off'):(active?'on':'off'));
-    const label=document.createElement('span');label.textContent=isLive?(active?' STANDBY · READY':' OFF · STOPPED'):(active?' ACTIVE · RUNNING':' OFF · STOPPED');
-    state.append(light,label);info.append(title,state);line.append(info);
-    const control=document.createElement('div');control.className='portfolioSwitch';const button=document.createElement('button');
-    if(!row){button.className='secondary';button.textContent='ไม่พบพอร์ต';button.disabled=true}
-    else{button.className=isLive?(active?'secondary isOn':'isOff'):(active?'isOn':'isOff');button.textContent=isLive?(active?'READY':'OFF'):(active?'ON':'OFF');button.setAttribute('aria-label',(active?'ปิด':'เปิด')+' '+labels[type]+' สมาชิก '+memberNo);
-     button.onclick=async()=>{button.disabled=true;try{await adminApi('/api/admin/member-portfolios/control','POST',{portfolioId:row.id,mode:isLive?'live':'paper',enabled:!active});await loadTradingControls()}catch(e){alert('เปลี่ยนสถานะไม่สำเร็จ: '+e.message);button.disabled=false}};
-    }control.append(button);line.append(control);card.append(line);
-    const stats=document.createElement('div');stats.className='portfolioStats';
-    const equity=rep?.dataAvailable?money(rep.equity,rep.base_currency||row.base_currency||'THB'):'—';
-    const pnl=rep?.dataAvailable?((Number(rep.netPnl||0)>=0?'+':'')+money(rep.netPnl,rep.base_currency||row.base_currency||'THB')+' · '+Number(rep.returnPct||0).toFixed(2)+'%'):'ข้อมูลยังไม่พร้อม';
-    const positions=rep?.dataAvailable?String(rep.openPositions||0):'—';
-    const sync=rep?.slotUpdatedAt?stamp(rep.slotUpdatedAt):(row.updated_at?stamp(row.updated_at):'—');
-    const cells=[['Equity',equity],['P&L',pnl],['Open Positions / Orders',rep?.dataAvailable?positions+' / '+String(rep.openOrders||0):'—'],['Sync',sync]];
-    for(const [k,v] of cells){const cell=document.createElement('div');cell.className='portfolioStat';const sm=document.createElement('small');sm.textContent=k;const strong=document.createElement('b');strong.textContent=v;cell.append(sm,strong);stats.append(cell)}
-    if(isLive){stats.querySelectorAll('.portfolioStat')[0].lastChild.textContent='— · ยังไม่เชื่อมบัญชีเงินจริง';stats.querySelectorAll('.portfolioStat')[1].lastChild.textContent='— · STANDBY';stats.querySelectorAll('.portfolioStat')[2].lastChild.textContent='0 · ไม่มี Live Orders';}
-    card.append(stats);
-   }
-   box.append(card);
-  }
-  if(rows.length!==40)status.textContent+=' · คำเตือน: ทะเบียนมี '+rows.length+' แถว ไม่ครบ 40';
- }catch(e){status.textContent='โหลดข้อมูล Dashboard ไม่สำเร็จ: '+e.message}
-}
-async function setPortfolioGroup(mode,enabled){
- const ids=mode==='paper'?['allTradingOn','allTradingOff']:mode==='live'?['allLiveOn','allLiveOff']:['emergencyStop'];const buttons=ids.map(id=>$(id));buttons.forEach(b=>b.disabled=true);
- try{const result=await adminApi('/api/admin/member-portfolios/control','POST',{mode,enabled});await loadTradingControls();alert((mode==='all'?'EMERGENCY STOP':(mode==='paper'?'PAPER':'LIVE'))+' · ปรับสถานะแล้ว '+(result.updatedCount||0)+' พอร์ต'+(mode==='live'?' · LIVE ยังคงไม่อนุมัติส่งคำสั่งเงินจริง':''))}
- catch(e){alert('สั่งงานไม่สำเร็จ: '+e.message)}finally{buttons.forEach(b=>b.disabled=false)}
-}
-$('allTradingOn').addEventListener('click',()=>{if(confirm('ยืนยันเปิด PAPER ทั้ง 20 พอร์ต?'))setPortfolioGroup('paper',true)});
-$('allTradingOff').addEventListener('click',()=>{if(confirm('ยืนยันปิด PAPER ทั้ง 20 พอร์ต?'))setPortfolioGroup('paper',false)});
-$('allLiveOn').addEventListener('click',()=>{if(confirm('ตั้ง LIVE ทั้ง 20 พอร์ตเป็น READY / STANDBY? การดำเนินการนี้ไม่ส่งคำสั่งเงินจริง'))setPortfolioGroup('live',true)});
-$('allLiveOff').addEventListener('click',()=>{if(confirm('ยืนยันปิดสถานะ READY ของ LIVE ทั้ง 20 พอร์ต?'))setPortfolioGroup('live',false)});
-$('emergencyStop').addEventListener('click',()=>{if(confirm('EMERGENCY STOP: ยืนยันปิดสถานะทั้ง 40 พอร์ตทันที?'))setPortfolioGroup('all',false)});
-async function changeStatus(id,status){
- try{const {data,error}=await sb.rpc('blessing_admin_set_member_status',{p_user_id:id,p_status:status});if(error)throw error;await loadMembers()}catch(e){alert('บันทึกสถานะไม่สำเร็จ: '+e.message)}
-}
-async function saveAllocation(id,market,amount,enabled){
- const n=Number(amount);if(!Number.isFinite(n)||n<0){alert('กรุณากรอกวงเงินที่ถูกต้อง');return}
- try{const {data,error}=await sb.rpc('blessing_admin_set_allocation',{p_user_id:id,p_market:market,p_amount:n,p_enabled:enabled});if(error)throw error;await loadMembers();alert('บันทึกวงเงิน '+market+' เรียบร้อย (Paper only)')}catch(e){alert('จัดสรรวงเงินไม่สำเร็จ: '+e.message)}
-}
-$('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error)throw error;await start(data.session)}catch(err){await sb.auth.signOut();msg(err.message||'เข้าสู่ระบบไม่สำเร็จ')}});
-$('logout').onclick=async()=>{await sb.auth.signOut();location.reload()};
-try{const {data,error}=await sb.auth.getSession();if(error)throw error;if(data.session)await start(data.session)}catch(e){msg(e.message||'ไม่สามารถตรวจสอบบัญชีได้')}
 
-</script>
 </body></html>
 <!-- BLESSING auth-recovery deployment trigger 2026-11-25 -->
