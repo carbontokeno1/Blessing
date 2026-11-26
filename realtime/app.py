@@ -5503,7 +5503,7 @@ def _member_slot_engine_cycle():
                  method="PATCH", body={"updated_at":heartbeat})
         fx = _member_slot_usd_thb()
         crypto_slots = _sb_rest("blessing_paper_member_slots", {
-            "select":"id,slot_no,initial_capital,cash_balance,max_open_positions,enabled,status",
+            "select":"id,slot_no,initial_capital,cash_balance,realized_pnl,max_open_positions,enabled,status",
             "enabled":"eq.true", "mode":"eq.paper", "limit":"20"
         }) or []
         stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
@@ -5562,7 +5562,7 @@ def _member_slot_engine_cycle():
         # Mark and manage all open crypto positions independently for each slot.
         for slot in crypto_slots:
             positions = _sb_rest("blessing_paper_slot_positions", {
-                "select":"id,symbol,quantity,average_entry_price_thb,current_price_thb,status",
+                "select":"id,symbol,quantity,average_entry_price_thb,current_price_thb,unrealized_pnl_thb,position_side,stop_loss_price_thb,take_profit_price_thb,strategy,status",
                 "slot_id":"eq."+str(slot["id"]), "status":"eq.open", "limit":"100"
             }) or []
             for pos in positions:
@@ -5580,27 +5580,52 @@ def _member_slot_engine_cycle():
                     })
                     current_thb = price * fx
                     entry_thb = float(pos.get("average_entry_price_thb") or 0)
-                    reason = "TAKE_PROFIT" if current_thb >= entry_thb * 1.03 else (
-                             "STOP_LOSS" if current_thb <= entry_thb * 0.985 else None)
+                    position_side = str(pos.get("position_side") or "long").lower()
+                    target_thb = _num(pos.get("take_profit_price_thb"),
+                                      entry_thb * (0.97 if position_side == "short" else 1.03))
+                    stop_thb = _num(pos.get("stop_loss_price_thb"),
+                                    entry_thb * (1.015 if position_side == "short" else 0.985))
+                    if position_side == "short":
+                        reason = "TAKE_PROFIT" if current_thb <= target_thb else (
+                                 "STOP_LOSS" if current_thb >= stop_thb else None)
+                        close_action = "cover"
+                    else:
+                        reason = "TAKE_PROFIT" if current_thb >= target_thb else (
+                                 "STOP_LOSS" if current_thb <= stop_thb else None)
+                        close_action = "sell"
                     if reason:
                         result = _sb_rpc("blessing_member_slot_paper_trade", {
-                            "p_market":"crypto","p_slot_id":str(slot["id"]),"p_action":"sell",
+                            "p_market":"crypto","p_slot_id":str(slot["id"]),"p_action":close_action,
                             "p_symbol":pos["symbol"],"p_price":price,"p_fx":fx,
-                            "p_reason":reason,
+                            "p_reason":reason,"p_position_side":position_side,
                             "p_idempotency_key":"slot-exit-"+str(slot["id"])+"-"+str(pos["id"])
                         })
-                        actions.append({"slotNo":slot["slot_no"],"market":"crypto","action":"sell",
-                                        "symbol":pos["symbol"],"reason":reason,"result":result})
+                        actions.append({"slotNo":slot["slot_no"],"market":"crypto","action":close_action,
+                                        "positionSide":position_side,"symbol":pos["symbol"],"reason":reason,"result":result})
                 except Exception as exc:
                     log.warning("Member crypto slot %s position monitor skipped (%s)",slot["slot_no"],type(exc).__name__)
 
             if not crypto_fresh:
                 continue
             open_now = _sb_rest("blessing_paper_slot_positions", {
-                "select":"symbol","slot_id":"eq."+str(slot["id"]),"status":"eq.open","limit":"100"
+                "select":"symbol,unrealized_pnl_thb","slot_id":"eq."+str(slot["id"]),"status":"eq.open","limit":"100"
             }) or []
             held = {x["symbol"] for x in open_now}
-            if len(open_now) >= int(slot.get("max_open_positions") or 4):
+            if len(open_now) >= int(slot.get("max_open_positions") or 3):
+                continue
+            day_start = now.replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+            daily_rows = _sb_rest("blessing_paper_slot_orders", {
+                "select":"realized_pnl_thb","slot_id":"eq."+str(slot["id"]),
+                "side":"in.(sell,cover)","status":"eq.filled","created_at":"gte."+day_start,"limit":"500"
+            }) or []
+            daily_pnl = sum(_num(x.get("realized_pnl_thb"),0) or 0 for x in daily_rows) + sum(
+                _num(x.get("unrealized_pnl_thb"),0) or 0 for x in open_now
+            )
+            initial_capital = _num(slot.get("initial_capital"),100000) or 100000
+            total_pnl = (_num(slot.get("realized_pnl"),0) or 0) + sum(
+                _num(x.get("unrealized_pnl_thb"),0) or 0 for x in open_now
+            )
+            if daily_pnl <= -(initial_capital*0.02) or total_pnl <= -(initial_capital*0.05):
                 continue
             ranked = sorted(crypto_candidates.items(),
                             key=lambda item: float(item[1][1].get("opportunityScore") or 0), reverse=True)
@@ -5611,15 +5636,30 @@ def _member_slot_engine_cycle():
                 if time.time()-MEMBER_SLOT_ENGINE_COOLDOWNS.get(key,0) < 300:
                     continue
                 try:
+                    entry_action = "short" if decision.get("side") == "short" else "buy"
+                    position_side = "short" if entry_action == "short" else "long"
                     result = _sb_rpc("blessing_member_slot_paper_trade", {
-                        "p_market":"crypto","p_slot_id":str(slot["id"]),"p_action":"buy",
-                        "p_symbol":symbol,"p_price":price,"p_fx":fx,
-                        "p_reason":"BINANCE_TH_ADAPTIVE_PAPER",
-                        "p_idempotency_key":"slot-buy-"+str(slot["id"])+"-"+symbol+"-"+str(int(time.time()//300))
+                        "p_market":"crypto","p_slot_id":str(slot["id"]),"p_action":entry_action,
+                        "p_symbol":symbol,"p_price":price,"p_fx":fx,"p_position_side":position_side,
+                        "p_reason":"ADAPTIVE_"+entry_action.upper()+"_"+str(decision.get("strategy") or "MOMENTUM"),
+                        "p_idempotency_key":"slot-"+entry_action+"-"+str(slot["id"])+"-"+symbol+"-"+str(int(time.time()//300))
                     })
+                    if isinstance(result,dict) and result.get("positionId"):
+                        atr_stop_pct = min(2.0,max(0.8,_num(decision.get("atrStopPct"),1.5) or 1.5))
+                        target_pct = max(3.0,atr_stop_pct*2.0)
+                        entry_thb = _num(result.get("priceTHB"),price*fx) or price*fx
+                        stop_thb = entry_thb*(1+atr_stop_pct/100 if position_side=="short" else 1-atr_stop_pct/100)
+                        target_thb = entry_thb*(1-target_pct/100 if position_side=="short" else 1+target_pct/100)
+                        _sb_rest("blessing_paper_slot_positions",{
+                            "id":"eq."+str(result["positionId"]),"slot_id":"eq."+str(slot["id"]),"status":"eq.open"
+                        },"PATCH",{
+                            "stop_loss_price_thb":stop_thb,"take_profit_price_thb":target_thb,
+                            "strategy":str(decision.get("strategy") or "ADAPTIVE")
+                        })
                     MEMBER_SLOT_ENGINE_COOLDOWNS[key] = time.time()
-                    actions.append({"slotNo":slot["slot_no"],"market":"crypto","action":"buy",
-                                    "symbol":symbol,"score":decision.get("opportunityScore"),"result":result})
+                    actions.append({"slotNo":slot["slot_no"],"market":"crypto","action":entry_action,
+                                    "positionSide":position_side,"symbol":symbol,"strategy":decision.get("strategy"),
+                                    "score":decision.get("opportunityScore"),"result":result})
                     break
                 except Exception as exc:
                     log.info("Member crypto slot %s entry skipped %s (%s)",slot["slot_no"],symbol,type(exc).__name__)
