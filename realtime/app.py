@@ -2288,8 +2288,11 @@ async def admin_control_member_portfolios(request: Request):
     if not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="ต้องระบุ enabled เป็น true หรือ false")
 
+    # This endpoint controls PAPER only. Filter at the database query so the
+    # 20 locked LIVE rows do not make the 20-PAPER-row validation fail.
     registry = _sb_rest("blessing_member_portfolio_registry", {
         "select": "id,member_no,assigned_user_id,portfolio_type,market,mode,paper_slot_id,live_trading_approved",
+        "mode": "eq.paper",
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     })
@@ -2681,6 +2684,25 @@ def admin_member_portfolios(request: Request):
             "expected": 40, "found": len(rows),
             "message": "ทะเบียนสมาชิกต้องมีพอร์ตครบ 40 พอร์ต (Paper 20 และ Live 20) จึงจะแสดงข้อมูลได้",
         })
+
+    # Enrich the owner-only portfolio list with the actual assigned member
+    # identity so the dashboard can group all four portfolios by person.
+    assigned_ids = list(dict.fromkeys(
+        str(row["assigned_user_id"]) for row in rows if row.get("assigned_user_id")
+    ))
+    profiles_by_user = {}
+    if assigned_ids:
+        member_profiles = _sb_rest("profiles", {
+            "select": "user_id,email,display_name,role,status",
+            "user_id": "in.(" + ",".join(assigned_ids) + ")",
+            "limit": "100",
+        }) or []
+        profiles_by_user = {str(x.get("user_id")): x for x in member_profiles}
+    for row in rows:
+        profile = profiles_by_user.get(str(row.get("assigned_user_id")), {})
+        row["assigned_member_name"] = profile.get("display_name") or row.get("member_label")
+        row["assigned_member_email"] = profile.get("email")
+        row["assigned_member_status"] = profile.get("status")
 
     # Fetch all paper slots and open-position counts in batches instead of
     # issuing two additional REST requests for each member (40+ requests -> 5).
