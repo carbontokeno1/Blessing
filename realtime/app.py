@@ -1814,8 +1814,7 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
         "candleTime": latest.get("closeTime") if latest else None,
     }
 
-@app.get("/altcoin-scanner")
-def altcoin_scanner(refresh: int = 0):
+def _altcoin_scanner_run(refresh: int = 0):
     now = time.time()
     with ALTCOIN_CACHE_LOCK:
         cached = ALTCOIN_CACHE.get("payload")
@@ -2005,6 +2004,57 @@ def altcoin_scanner(refresh: int = 0):
     with ALTCOIN_CACHE_LOCK:
         ALTCOIN_CACHE.update({"at": time.time(), "payload": payload})
     return payload
+
+
+# A single-flight guard prevents the owner engine, member Paper engine and UI
+# from launching duplicate 200+ symbol candle scans at the same time.
+ALTCOIN_SCAN_LOCK = threading.Lock()
+
+
+def altcoin_scanner(refresh: int = 0):
+    now = time.time()
+    with ALTCOIN_CACHE_LOCK:
+        cached = ALTCOIN_CACHE.get("payload")
+        cache_age = now - ALTCOIN_CACHE.get("at", 0)
+        if cached and cache_age < 30 and not refresh:
+            result = dict(cached)
+            result["cacheAgeSeconds"] = int(cache_age)
+            return result
+
+    if not ALTCOIN_SCAN_LOCK.acquire(blocking=False):
+        with ALTCOIN_CACHE_LOCK:
+            cached = ALTCOIN_CACHE.get("payload")
+            cache_age = now - ALTCOIN_CACHE.get("at", 0)
+            if cached:
+                result = dict(cached)
+                result["cacheAgeSeconds"] = int(cache_age)
+                result["scanInProgress"] = True
+                return result
+        return {
+            "status": "scanning", "provider": "Binance TH Spot API",
+            "exchange": "Binance TH Spot API", "scanned": 0, "evaluated": 0,
+            "candidateCount": 0, "candidates": [], "scanInProgress": True,
+            "updatedAt": None,
+        }
+
+    try:
+        # Re-check after taking the lock; another caller may have completed
+        # the scan between the first cache check and lock acquisition.
+        with ALTCOIN_CACHE_LOCK:
+            cached = ALTCOIN_CACHE.get("payload")
+            cache_age = time.time() - ALTCOIN_CACHE.get("at", 0)
+            if cached and cache_age < 30 and not refresh:
+                result = dict(cached)
+                result["cacheAgeSeconds"] = int(cache_age)
+                return result
+        return _altcoin_scanner_run(refresh=1)
+    finally:
+        ALTCOIN_SCAN_LOCK.release()
+
+
+@app.get("/altcoin-scanner")
+def altcoin_scanner_endpoint(refresh: int = 0):
+    return altcoin_scanner(refresh=refresh)
 
 
 @app.get("/health")
