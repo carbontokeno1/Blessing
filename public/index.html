@@ -1885,8 +1885,8 @@ function renderCenter(report,rows){
  $('centerMetrics').replaceChildren();
  for(const [label,value,note] of metrics){const box=document.createElement('div');box.className='metric';const a=document.createElement('small');a.textContent=label;const b=document.createElement('strong');b.textContent=value;const c=document.createElement('em');c.textContent=note;box.append(a,b,c);$('centerMetrics').append(box)}
  $('centerBreakdown').innerHTML='';
- const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 10 พอร์ต</b><small>'+paperOn+' Running · '+paperOff+' Off</small></div><b>'+paperOn+'/20 ACTIVE</b>';
- const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 10 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · Execution locked</small></div><b>'+liveReady+'/20 READY</b>';
+ const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 10 พอร์ต</b><small>'+paperOn+' Running · '+paperOff+' Off</small></div><b>'+paperOn+'/10 ACTIVE</b>';
+ const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 10 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · Execution locked</small></div><b>'+liveReady+'/10 READY</b>';
  $('centerBreakdown').append(paperLine,liveLine);
  const activity=allOrders.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,8);
  $('centerActivity').replaceChildren();
