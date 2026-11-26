@@ -1507,7 +1507,7 @@ def _binance_1m_klines(symbol: str):
     response = requests.get(
         BINANCE_TH_API_BASE + "/api/v1/klines",
         params={"symbol": symbol, "interval": "1m", "limit": 65},
-        timeout=(4, 12), headers=_binance_th_market_headers(),
+        timeout=(3, 8), headers=_binance_th_market_headers(),
     )
     try:
         response.raise_for_status()
@@ -1886,8 +1886,11 @@ def altcoin_scanner(refresh: int = 0):
     # Evaluate the 420 highest-volume eligible USDT pairs per scan; all eligible pairs are counted in scanned.
     selected = eligible[:420]
     candle_errors = 0
+    candle_scan_started = time.monotonic()
     if provider == "Binance TH Spot API" and selected:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+        # Candle requests are I/O-bound; wider bounded concurrency prevents the
+        # 420-pair scan from blocking Paper worker heartbeats for several minutes.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=48) as pool:
             futures = {pool.submit(_binance_1m_klines, row["symbol"]): row for row in selected}
             for future in concurrent.futures.as_completed(futures):
                 row = futures[future]
@@ -1902,6 +1905,7 @@ def altcoin_scanner(refresh: int = 0):
     else:
         metrics_source = provider + " ticker snapshot only; Paper entries disabled without Binance candles"
 
+    candle_scan_seconds = round(time.monotonic() - candle_scan_started, 2)
     selected.sort(key=lambda x: (
         x.get("balancedEntry", False), x.get("balancedScore", 0),
         x.get("opportunityEntry", False), x.get("opportunityScore", 0),
@@ -1958,6 +1962,7 @@ def altcoin_scanner(refresh: int = 0):
         "paperStrategyCandidateCount": sum(paper_strategy_counts.values()),
         "paperStrategyCounts": paper_strategy_counts,
         "candleErrors": candle_errors,
+        "candleScanSeconds": candle_scan_seconds,
         "filterCounts": reject,
         "signalDiagnostics": reject_signals,
         "fallbackFrom": bitmart_error,
@@ -1971,10 +1976,10 @@ def altcoin_scanner(refresh: int = 0):
             "Fallback feed is display-only; no Paper entries are allowed without Binance candle data."
         ),
     }
-    log.info("Altcoin scan provider=%s eligible=%s evaluated=%s balanced_entries=%s opportunity_entries=%s paper_strategy_candidates=%s paper_strategies=%s candle_errors=%s balanced_rejects=%s",
+    log.info("Altcoin scan provider=%s eligible=%s evaluated=%s balanced_entries=%s opportunity_entries=%s paper_strategy_candidates=%s paper_strategies=%s candle_errors=%s candle_scan_seconds=%s balanced_rejects=%s",
              provider, len(eligible), len(selected), payload["balancedEntryCount"],
              payload["opportunityEntryCount"], payload["paperStrategyCandidateCount"],
-             paper_strategy_counts, candle_errors, reject_signals)
+             paper_strategy_counts, candle_errors, candle_scan_seconds, reject_signals)
     with ALTCOIN_CACHE_LOCK:
         ALTCOIN_CACHE.update({"at": time.time(), "payload": payload})
     return payload
