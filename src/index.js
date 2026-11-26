@@ -293,6 +293,11 @@ export default {
       try { return binanceThLiveProxy(request,"/admin/member-portfolios/control","POST",await request.json()); }
       catch(error) { return json({ok:false,message:"ข้อมูลคำสั่งไม่ถูกต้อง"},400); }
     }
+    if (pathname === "/api/webull/trading/account") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      const refresh = new URL(request.url).searchParams.get("refresh") === "true";
+      return binanceThLiveProxy(request,"/webull/trading/account" + (refresh ? "?refresh=true" : ""),"GET");
+    }
     if (pathname === "/api/binance-th/auto-trade/portfolio") {
       return binanceThLiveProxy(request,"/binance-th/auto-trade/portfolio","GET");
     }
