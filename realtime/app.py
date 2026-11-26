@@ -2275,7 +2275,7 @@ register_member_access_routes(app, _binance_th_owner_auth, _sb_rest, _sb_rpc, SU
 
 @app.post("/admin/member-portfolios/control")
 async def admin_control_member_portfolios(request: Request):
-    """Super Admin can enable/disable portfolio availability; this never grants live-trading approval."""
+    """Owner controls portfolio availability. LIVE readiness never authorizes or submits live orders."""
     _binance_th_owner_auth(request)
     try:
         payload = await request.json()
@@ -2285,103 +2285,79 @@ async def admin_control_member_portfolios(request: Request):
     portfolio_id = payload.get("portfolioId")
     member_no = payload.get("memberNo")
     portfolio_type = payload.get("portfolioType")
+    requested_mode = str(payload.get("mode") or "paper").lower()
     if not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="ต้องระบุ enabled เป็น true หรือ false")
+    if requested_mode not in ("paper", "live", "all"):
+        raise HTTPException(status_code=400, detail="mode ต้องเป็น paper, live หรือ all")
 
-    # This endpoint controls PAPER only. Filter at the database query so the
-    # 20 locked LIVE rows do not make the 20-PAPER-row validation fail.
-    registry = _sb_rest("blessing_member_portfolio_registry", {
+    query = {
         "select": "id,member_no,assigned_user_id,portfolio_type,market,mode,paper_slot_id,live_trading_approved",
-        "mode": "eq.paper",
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
-    })
-    if len(registry) != 20:
-        raise HTTPException(status_code=503, detail="ทะเบียน Paper ต้องครบ 20 พอร์ตก่อนจึงควบคุมได้")
+    }
+    if requested_mode in ("paper", "live"):
+        query["mode"] = "eq." + requested_mode
+    registry = _sb_rest("blessing_member_portfolio_registry", query) or []
+    expected = 40 if requested_mode == "all" else 20
+    if len(registry) != expected:
+        raise HTTPException(status_code=503, detail=f"ทะเบียนพอร์ต {requested_mode} ต้องครบ {expected} พอร์ต")
 
     if portfolio_id:
         targets = [row for row in registry if str(row.get("id")) == str(portfolio_id)]
-        if not targets:
-            raise HTTPException(status_code=404, detail="ไม่พบพอร์ตที่เลือก")
     elif member_no is not None and portfolio_type:
         targets = [row for row in registry if int(row.get("member_no")) == int(member_no)
                    and row.get("portfolio_type") == str(portfolio_type)]
-        if not targets:
-            raise HTTPException(status_code=404, detail="ไม่พบพอร์ตสมาชิกที่เลือก")
     elif member_no is not None:
         targets = [row for row in registry if int(row.get("member_no")) == int(member_no)]
     else:
         targets = registry
-
-    # This endpoint is PAPER-only. Never let the global switch enable LIVE rows.
-    targets = [row for row in targets
-               if row.get("mode") == "paper"
-               and row.get("portfolio_type") in ("crypto_paper", "stock_paper")]
+    allowed_types = ("crypto_paper", "stock_paper") if requested_mode == "paper" else (
+        ("crypto_live", "stock_live") if requested_mode == "live" else
+        ("crypto_paper", "stock_paper", "crypto_live", "stock_live")
+    )
+    targets = [row for row in targets if row.get("portfolio_type") in allowed_types]
     if not targets:
-        raise HTTPException(status_code=404, detail="ไม่พบพอร์ต PAPER ที่ควบคุมได้")
+        raise HTTPException(status_code=404, detail="ไม่พบพอร์ตที่ต้องการควบคุม")
 
-    # Apply each category in one REST update instead of up to 40 serial PATCH calls.
     target_ids = [str(row["id"]) for row in targets]
     changed = _sb_rest("blessing_member_portfolio_registry", {
         "id": "in.(" + ",".join(target_ids) + ")",
     }, method="PATCH", body={"enabled": enabled})
     if len(changed) != len(targets):
-        raise HTTPException(status_code=502, detail="บันทึกสถานะทะเบียนพอร์ตไม่ครบ")
+        raise HTTPException(status_code=502, detail="บันทึกสถานะพอร์ตไม่ครบ")
 
-    crypto_slot_ids = [
-        str(row["paper_slot_id"]) for row in targets
-        if row.get("mode") == "paper" and row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id")
-    ]
-    stock_slot_nos = [
-        str(row["member_no"]) for row in targets
-        if row.get("mode") == "paper" and row.get("portfolio_type") == "stock_paper"
-    ]
+    # Only PAPER availability is synchronized to the actual Paper execution slots.
+    paper_targets = [row for row in targets if row.get("mode") == "paper"]
+    crypto_slot_ids = [str(row["paper_slot_id"]) for row in paper_targets
+                       if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id")]
+    stock_slot_nos = [str(row["member_no"]) for row in paper_targets
+                      if row.get("portfolio_type") == "stock_paper"]
     if crypto_slot_ids:
-        _sb_rest("blessing_paper_member_slots", {
-            "id": "in.(" + ",".join(crypto_slot_ids) + ")",
-        }, method="PATCH", body={"enabled": enabled})
+        _sb_rest("blessing_paper_member_slots", {"id": "in.(" + ",".join(crypto_slot_ids) + ")"},
+                 method="PATCH", body={"enabled": enabled})
     if stock_slot_nos:
-        _sb_rest("blessing_stock_paper_member_slots", {
-            "slot_no": "in.(" + ",".join(stock_slot_nos) + ")",
-        }, method="PATCH", body={"enabled": enabled})
-
-    # Keep actual dual-paper execution portfolios in sync with member controls.
-    crypto_users = list(dict.fromkeys(
-        str(row["assigned_user_id"]) for row in targets
-        if row.get("mode") == "paper" and row.get("portfolio_type") == "crypto_paper" and row.get("assigned_user_id")
-    ))
-    stock_users = list(dict.fromkeys(
-        str(row["assigned_user_id"]) for row in targets
-        if row.get("mode") == "paper" and row.get("portfolio_type") == "stock_paper" and row.get("assigned_user_id")
-    ))
+        _sb_rest("blessing_stock_paper_member_slots", {"slot_no": "in.(" + ",".join(stock_slot_nos) + ")"},
+                 method="PATCH", body={"enabled": enabled})
+    crypto_users = list(dict.fromkeys(str(row["assigned_user_id"]) for row in paper_targets
+                       if row.get("portfolio_type") == "crypto_paper" and row.get("assigned_user_id")))
+    stock_users = list(dict.fromkeys(str(row["assigned_user_id"]) for row in paper_targets
+                      if row.get("portfolio_type") == "stock_paper" and row.get("assigned_user_id")))
     if crypto_users:
-        _sb_rest("blessing_dual_portfolios", {
-            "user_id": "in.(" + ",".join(crypto_users) + ")",
-            "market": "eq.crypto", "mode": "eq.paper",
-        }, method="PATCH", body={"enabled": enabled, "updated_at": datetime.now(timezone.utc).isoformat()})
+        _sb_rest("blessing_dual_portfolios", {"user_id": "in.(" + ",".join(crypto_users) + ")",
+                 "market": "eq.crypto", "mode": "eq.paper"}, method="PATCH",
+                 body={"enabled": enabled, "updated_at": datetime.now(timezone.utc).isoformat()})
     if stock_users:
-        _sb_rest("blessing_dual_portfolios", {
-            "user_id": "in.(" + ",".join(stock_users) + ")",
-            "market": "eq.stocks", "mode": "eq.paper",
-        }, method="PATCH", body={"enabled": enabled, "updated_at": datetime.now(timezone.utc).isoformat()})
+        _sb_rest("blessing_dual_portfolios", {"user_id": "in.(" + ",".join(stock_users) + ")",
+                 "market": "eq.stocks", "mode": "eq.paper"}, method="PATCH",
+                 body={"enabled": enabled, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-    updated = [{
-        "memberNo": row.get("member_no"),
-        "portfolioType": row.get("portfolio_type"),
-        "enabled": enabled,
-        "liveTradingApproved": bool(row.get("live_trading_approved")),
-        "liveOrdersStillLocked": row.get("mode") == "live",
-    } for row in targets]
-    return {
-        "ok": True,
-        "updatedCount": len(updated),
-        "enabled": enabled,
-        "portfolios": updated,
-        "liveTradingEnabled": False,
-        "message": "ปรับสถานะพอร์ตแล้ว แต่การเปิดพอร์ตไม่ใช่การอนุมัติส่งคำสั่งเงินจริง",
-    }
-
-
+    updated = [{"memberNo": row.get("member_no"), "portfolioType": row.get("portfolio_type"),
+                "enabled": enabled, "liveTradingApproved": bool(row.get("live_trading_approved")),
+                "liveOrdersStillLocked": row.get("mode") == "live"} for row in targets]
+    return {"ok": True, "updatedCount": len(updated), "enabled": enabled, "portfolios": updated,
+            "liveTradingEnabled": False,
+            "message": "เปลี่ยนสถานะความพร้อมของพอร์ตแล้ว โดย LIVE ยังไม่อนุมัติและไม่ส่งคำสั่งเงินจริง"}
 
 def _member_portfolio_auth(request: Request):
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
