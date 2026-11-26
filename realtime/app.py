@@ -1512,13 +1512,16 @@ def _binance_public_tickers():
             "XLMUSDT","HBARUSDT","ICPUSDT","AAVEUSDT","INJUSDT","TONUSDT",
         )
         def fetch_symbol_24h(pair):
-            response = requests.get(
-                BINANCE_TH_API_BASE + "/api/v1/ticker/24hr",
-                params={"symbol": pair},
-                headers=_binance_th_market_headers(), timeout=(3, 8),
-            )
-            response.raise_for_status()
-            item = response.json()
+            try:
+                response = requests.get(
+                    BINANCE_TH_API_BASE + "/api/v1/ticker/24hr",
+                    params={"symbol": pair},
+                    headers=_binance_th_market_headers(), timeout=(3, 8),
+                )
+                response.raise_for_status()
+                item = response.json()
+            except Exception:
+                return None
             if isinstance(item, dict) and "data" in item:
                 if item.get("code") not in (None, 0, "0"):
                     return None
