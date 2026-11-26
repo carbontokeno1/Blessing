@@ -2,7 +2,7 @@ import requests
 from datetime import datetime, timezone
 from fastapi import HTTPException, Request
 
-SAFE_MEMBER_PAGES = {"overview", "reports", "history", "settings"}
+SAFE_MEMBER_PAGES = {"overview", "portfolio", "settings"}
 DEFAULT_MEMBER_PAGES = ["overview", "settings"]
 PORTFOLIO_TYPES = {"crypto_paper", "stock_paper", "crypto_live", "stock_live"}
 
