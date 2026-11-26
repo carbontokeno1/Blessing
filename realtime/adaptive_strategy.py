@@ -17,33 +17,35 @@ def _n(value: Any, default: float = 0.0) -> float:
 
 
 def classify_regime(market: str, metrics: dict) -> dict:
-    """Classify trend/range/volatility using closed-candle momentum and liquidity."""
+    """Classify closed-candle regimes; crypto supports confirmed Long and Short, equities Long only."""
     market = str(market or "").lower()
-    m1 = _n(metrics.get("m1"))
-    m5 = _n(metrics.get("m5"))
-    m15 = _n(metrics.get("m15"))
-    m60 = _n(metrics.get("m60"))
+    m1, m5, m15 = _n(metrics.get("m1")), _n(metrics.get("m5")), _n(metrics.get("m15"))
     rvol = _n(metrics.get("rvol"), _n(metrics.get("relativeVolume")))
     spread = _n(metrics.get("spreadPct"), 999.0)
     breakout = bool(metrics.get("breakout"))
-    # Identical entry filters for crypto and equities; only exit targets differ.
-    volatility_limit = 1.5
+    breakdown = bool(metrics.get("breakdown"))
+    pullback_long = bool(metrics.get("pullbackReclaim"))
+    pullback_short = bool(metrics.get("pullbackReject"))
     if spread <= 0 or spread > 0.5:
         return {"regime": "illiquid", "strategy": "capital_protection", "allowEntry": False,
-                "reason": "spread_out_of_range"}
-    if abs(m1) >= volatility_limit or abs(m5) >= volatility_limit * 2.5:
+                "side": None, "reason": "spread_out_of_range"}
+    if abs(m1) >= 1.5 or abs(m5) >= 3.75:
         return {"regime": "high_volatility", "strategy": "capital_protection", "allowEntry": False,
-                "reason": "volatility_filter"}
-    aligned = m1 > 0 and m5 > 0
-    down = m1 < 0 and m5 < 0
-    if down:
-        return {"regime": "downtrend", "strategy": "capital_protection", "allowEntry": False,
-                "reason": "trend_not_positive"}
-    if aligned and rvol >= 2.0 and breakout:
-        return {"regime": "uptrend_breakout", "strategy": "trend_momentum", "allowEntry": True,
-                "reason": "aligned_momentum_volume_breakout"}
+                "side": None, "reason": "volatility_filter"}
+    if m1 > 0 and m5 > 0 and m15 > 0:
+        confirmed = (breakout or pullback_long) and rvol >= 1.3
+        return {"regime": "uptrend" if confirmed else "uptrend_waiting_confirmation",
+                "strategy": "trend_momentum" if confirmed else "wait_for_confirmation",
+                "allowEntry": confirmed, "side": "long" if confirmed else None,
+                "reason": "confirmed_bullish_structure" if confirmed else "long_confirmation_missing"}
+    if market == "crypto" and m1 < 0 and m5 < 0 and m15 < 0:
+        confirmed = (breakdown or pullback_short) and rvol >= 1.3
+        return {"regime": "downtrend" if confirmed else "downtrend_waiting_confirmation",
+                "strategy": "trend_momentum_short" if confirmed else "wait_for_confirmation",
+                "allowEntry": confirmed, "side": "short" if confirmed else None,
+                "reason": "confirmed_bearish_structure" if confirmed else "short_confirmation_missing"}
     return {"regime": "range_or_unclear", "strategy": "wait_for_confirmation", "allowEntry": False,
-            "reason": "insufficient_alignment"}
+            "side": None, "reason": "insufficient_alignment"}
 
 
 
@@ -111,36 +113,39 @@ def build_binance_th_candidates(history_by_symbol: dict, now: float | None = Non
 
 def adaptive_decision(market: str, candidate: dict, fee_bps: float = 10.0,
                       slippage_bps: float = 10.0) -> dict:
-    """Return an entry/watch decision after estimated round-trip cost checks."""
+    """Return an explainable, cost-aware Long/Short Paper signal (crypto Short only)."""
     regime = classify_regime(market, candidate)
     spread = _n(candidate.get("spreadPct"), 999.0)
-    # Approximate round-trip friction: fee + slippage on both sides, plus quoted spread.
     round_trip_cost_pct = (2 * max(0.0, fee_bps) + 2 * max(0.0, slippage_bps)) / 100
     round_trip_cost_pct += spread
-    momentum = max(0.0, _n(candidate.get("m1"))) + max(0.0, _n(candidate.get("m5")))
-    # A modest hurdle: expected short-term movement proxy must exceed estimated friction.
+    side = regime.get("side")
+    raw_momentum = (_n(candidate.get("m1")) + _n(candidate.get("m5")))
+    momentum = abs(raw_momentum) if side == "short" else max(0.0, raw_momentum)
     cost_ok = momentum > round_trip_cost_pct * 1.5
     allowed = bool(regime["allowEntry"] and cost_ok)
     rvol = max(0.0, _n(candidate.get("rvol"), _n(candidate.get("relativeVolume"))))
-    # A relative cross-market ranking proxy, not a forecast or promise of returns.
     edge_ratio = momentum / max(round_trip_cost_pct, 0.01)
     trend_points = min(40.0, edge_ratio * 8.0)
     volume_points = min(25.0, rvol / 4.0 * 25.0)
-    breakout_points = 20.0 if bool(candidate.get("breakout")) else 0.0
+    confirmation_points = 20.0 if (
+        bool(candidate.get("breakout")) if side == "long" else
+        bool(candidate.get("breakdown") or candidate.get("pullbackReject"))
+    ) else 0.0
     alignment_points = 15.0 if regime["allowEntry"] else 0.0
-    opportunity_score = round(trend_points + volume_points + breakout_points + alignment_points, 2)
+    opportunity_score = round(trend_points + volume_points + confirmation_points + alignment_points, 2)
     return {
         **regime,
         "market": market,
         "symbol": str(candidate.get("symbol") or "").upper(),
-        "decision": "PAPER_WATCH" if not allowed else "PAPER_CANDIDATE",
+        "side": side if allowed else None,
+        "decision": "PAPER_CANDIDATE" if allowed else "PAPER_WATCH",
         "estimatedRoundTripCostPct": round(round_trip_cost_pct, 4),
         "momentumProxyPct": round(momentum, 4),
         "netEdgeProxyPct": round(momentum - round_trip_cost_pct, 4),
         "opportunityScore": opportunity_score if allowed else 0.0,
         "costFilterPassed": cost_ok,
         "entryAllowed": False,
-        "note": "คะแนนใช้จัดอันดับสัญญาณข้ามตลาด ไม่ใช่การคาดการณ์หรือรับประกันผลตอบแทน",
+        "note": "สัญญาณ Short เป็นการจำลองเฉพาะ Crypto Paper; ไม่มีคำสั่งเงินจริงหรือการใช้ Leverage",
     }
 
 
