@@ -330,6 +330,52 @@ const pairs=[
 ["ผู้ดูแลระบบ","Administrator"],
 ["สมาชิก","Member"],
 ["กำลังโหลดโปรไฟล์","Loading Profile"],
+['พอร์ตสมาชิกแยกรายบุคคล','Individual Member Portfolios'],
+['พอร์ตสมาชิก','Member Portfolios'],
+['ดูพอร์ตของสมาชิกแต่ละคนรวมในบัตรเดียว พร้อมสวิตช์ควบคุมรายคนและรายพอร์ต','View each member’s portfolios together with individual and per-portfolio controls'],
+['พอร์ตแยกตามสมาชิก','Portfolios by Member'],
+['ควบคุมแยกสมาชิกและแยกพอร์ต','Control by member and by portfolio'],
+['แต่ละสมาชิกมี 4 พอร์ต','Each member has 4 portfolios'],
+['เปิด–ปิด Paper ได้แยกกัน','Paper can be enabled or disabled separately'],
+['เปิด PAPER ทุกคน','Enable PAPER for all members'],
+['ปิด PAPER ทุกคน','Disable PAPER for all members'],
+['เปิด PAPER ของสมาชิก','Enable this member’s PAPER'],
+['ปิด PAPER ของสมาชิก','Disable this member’s PAPER'],
+['เปิดพอร์ตนี้','Enable this portfolio'],
+['ปิดพอร์ตนี้','Disable this portfolio'],
+['ยังไม่ผูกบัญชีสมาชิก','No member account linked'],
+['ผูกบัญชีสมาชิกแล้ว','Member account linked'],
+['ภาพรวมมูลค่าพอร์ต Paper ของสมาชิก','Member Paper Portfolio Overview'],
+['รีเฟรชข้อมูล','Refresh Data'],
+['ทุน','Capital'],
+['เงินสด','Cash'],
+['Realized P/L','Realized P/L'],
+['สถานะเปิด','Open Positions'],
+['รายการ','Items'],
+['เปิดใช้งาน','Enabled'],
+['ปิดใช้งาน','Disabled'],
+['ปิดคำสั่งเงินจริงทุกบัญชี','Live orders are locked for all accounts'],
+['หน้านี้แสดงข้อมูลพอร์ตสมาชิกเท่านั้น','This page shows member portfolios only'],
+['PAPER เปิด–ปิดได้แยกกัน','PAPER can be enabled or disabled individually'],
+['แสดงสมาชิก','Members displayed'],
+['เชื่อมต่อทะเบียนสำเร็จ','Portfolio registry connected'],
+['แยกควบคุม Paper รายคน/รายพอร์ต','Individual and per-portfolio Paper controls'],
+['โหลดทะเบียนพอร์ตไม่สำเร็จ','Failed to load portfolio registry'],
+['กำลังโหลดพอร์ตสมาชิก...','Loading member portfolios...'],
+['กำลังโหลดทะเบียนพอร์ต...','Loading portfolio registry...'],
+['อ่านทะเบียนพอร์ตไม่สำเร็จ','Could not read portfolio registry'],
+['บันทึกสถานะพอร์ต...','Saving portfolio status...'],
+['บันทึกสถานะไม่สำเร็จ','Could not save portfolio status'],
+['บันทึกแล้ว','Saved'],
+['ยืนยันเปิด','Confirm enable'],
+['ยืนยันปิด','Confirm disable'],
+['พอร์ต Paper','Paper Portfolio'],
+['คริปโต Paper','Crypto Paper'],
+['หุ้น Paper','Stock Paper'],
+['คริปโต Live','Crypto Live'],
+['หุ้น Live','Stock Live'],
+['สมาชิก 10 ราย','10 Members'],
+['รายบุคคล','Individual'],
 ];
 const map=new Map(pairs);
 const replacements=[...map.entries()].sort((a,b)=>b[0].length-a[0].length);
@@ -347,7 +393,7 @@ function setLanguage(next){lang=next==='en'?'en':'th';try{localStorage.setItem(S
 function addToggle(){const b=document.getElementById('blessingLanguageToggle');if(!b)return;b.type='button';b.classList.add('blessing-language-toggle');b.textContent=lang==='en'?'TH':'EN';b.setAttribute('aria-label',lang==='en'?'เปลี่ยนเป็นภาษาไทย':'Switch to English');b.title=b.getAttribute('aria-label')}
 // The header button calls BLESSING_I18N.toggle() directly; do not add a second click handler.
 
-function boot(){addToggle();walk(document);setLanguage(lang);const observer=new MutationObserver(records=>{for(const r of records){if(r.type==='characterData')applyText(r.target);else{for(const n of r.addedNodes)walk(n);if(r.type==='attributes')applyAttrs(r.target)}}addToggle()});observer.observe(document.documentElement,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['placeholder','title','aria-label','alt']});}
+function boot(){addToggle();walk(document);setLanguage(lang);const observer=new MutationObserver(records=>{for(const r of records){if(r.type==='characterData')applyText(r.target);else{for(const n of r.addedNodes)walk(n);if(r.type==='attributes')applyAttrs(r.target)}}addToggle()});observer.observe(document.documentElement,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['placeholder','title','aria-label','alt','value']});}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 window.BLESSING_I18N={get language(){return lang},setLanguage,toggle(){setLanguage(lang==='en'?'th':'en')}};
 })();
