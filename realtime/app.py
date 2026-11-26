@@ -4520,11 +4520,14 @@ def _dual_paper_ensure_portfolio(user_id: str, config: dict) -> dict:
         "user_id":user_id, "market":config["market"], "broker":config["broker"],
         "currency":config["currency"], "initial_capital":config["initial_capital"],
         "cash_balance":config["initial_capital"], "realized_pnl":0, "fees_paid":0,
-        "mode":"paper", "enabled":False, "reserve_cash_pct":0,
-        "risk_per_trade_pct":1, "max_daily_loss_pct":3,
-        "max_weekly_loss_pct":6, "max_drawdown_pct":10,
-        "max_open_positions":2147483647, "peak_equity":config["initial_capital"],
-        "updated_at":now
+        "mode":"paper", "enabled":False,
+        "reserve_cash_pct":20 if config["market"] == "crypto" else 0,
+        "risk_per_trade_pct":0.5 if config["market"] == "crypto" else 1,
+        "max_daily_loss_pct":2 if config["market"] == "crypto" else 3,
+        "max_weekly_loss_pct":6,
+        "max_drawdown_pct":5 if config["market"] == "crypto" else 10,
+        "max_open_positions":3 if config["market"] == "crypto" else 2147483647,
+        "peak_equity":config["initial_capital"], "updated_at":now
     }
     try:
         inserted = _sb_rest("blessing_dual_portfolios", {}, "POST", payload)
