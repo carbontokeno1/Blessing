@@ -5222,7 +5222,7 @@ async def dual_paper_order(request: Request):
         else:
             position_id = str(body.get("positionId") or "")
             positions = _sb_rest("blessing_dual_positions", {
-                "select": "id,symbol,quantity", "id": "eq." + position_id,
+                "select": "id,symbol,quantity,side", "id": "eq." + position_id,
                 "portfolio_id": "eq." + str(portfolio["id"]),
                 "user_id": "eq." + str(user["id"]), "status": "eq.open", "limit": "1"
             })
@@ -5231,10 +5231,12 @@ async def dual_paper_order(request: Request):
             if positions[0]["symbol"] != symbol:
                 raise HTTPException(status_code=422, detail="สัญลักษณ์ไม่ตรงกับสถานะที่เลือก")
             quantity = float(positions[0]["quantity"])
+            rpc_side = "cover" if positions[0].get("side") == "short" else "sell"
 
         market_price = _dual_market_price(market, symbol)
-        # Simulated slippage is applied on each side: +5 bps on BUY, -5 bps on SELL.
-        fill_price = market_price * (1.0005 if side == "buy" else 0.9995)
+        # Short covers are buys; longs are sold to close.
+        is_buy_fill = side == "buy" or (side == "sell" and rpc_side == "cover")
+        fill_price = market_price * (1.0005 if is_buy_fill else 0.9995)
         position_id = None if side == "buy" else position_id
         stop_price = fill_price * (1 - stop_pct / 100) if side == "buy" else None
         target_price = fill_price * (1 + target_pct / 100) if side == "buy" else None
@@ -5243,7 +5245,7 @@ async def dual_paper_order(request: Request):
 
         result = _dual_rpc_order({
             "p_user_id": str(user["id"]), "p_market": market, "p_symbol": symbol,
-            "p_side": side, "p_quantity": quantity, "p_price": fill_price,
+            "p_side": side if side == "buy" else rpc_side, "p_quantity": quantity, "p_price": fill_price,
             "p_stop_loss_price": stop_price, "p_take_profit_price": target_price,
             "p_position_id": position_id, "p_idempotency_key": str(body.get("idempotencyKey") or uuid.uuid4())
         })
