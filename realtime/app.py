@@ -54,7 +54,7 @@ MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.com")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://blessing.carbontokeno1.workers.dev").split(",")
 
 app = FastAPI(title="Blessing Market Data Bridge", version="0.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in ALLOWED_ORIGINS if x.strip()], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "OPTIONS"], allow_headers=["*"], max_age=600)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "OPTIONS"], allow_headers=["*"], max_age=600)
 
 state = {
     "provider": "webull",
