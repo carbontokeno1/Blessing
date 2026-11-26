@@ -3066,7 +3066,7 @@ def admin_member_portfolios_report(request: Request):
             gross_pnl = ((entry - current) if pos.get("side") == "short" else (current - entry)) * quantity if current > 0 and entry > 0 else None
             net_pnl = (gross_pnl - num(pos.get("entry_fee"))) if gross_pnl is not None else num(pos.get("unrealized_pnl"))
             pnl_pct = (net_pnl / cost * 100) if cost > 0 and net_pnl is not None else None
-            value = ((entry * quantity + (net_pnl or 0.0)) if pos.get("side") == "short" else current * quantity) if current > 0 else 0.0
+            value = ((entry * quantity + (net_pnl or 0.0) + float(pos.get("entry_fee") or 0)) if pos.get("side") == "short" else current * quantity) if current > 0 else 0.0
             market_value += value
             unrealized_total += net_pnl or 0.0
             position_reports.append({
@@ -4611,7 +4611,7 @@ def dual_paper_status(request: Request):
             continue
         row = rows[0]
         positions = _sb_rest("blessing_dual_positions", {
-            "select":"id,symbol,side,quantity,entry_price,current_price,stop_loss_price,take_profit_price,unrealized_pnl,status,opened_at",
+            "select":"id,symbol,side,quantity,entry_price,current_price,stop_loss_price,take_profit_price,entry_fee,unrealized_pnl,status,opened_at",
             "user_id":"eq." + uid, "portfolio_id":"eq." + row["id"], "status":"eq.open",
             "order":"opened_at.desc","limit":"100"
         }) or []
@@ -4620,7 +4620,7 @@ def dual_paper_status(request: Request):
             "user_id":"eq." + uid, "portfolio_id":"eq." + row["id"],
             "order":"created_at.desc","limit":"100"
         }) or []
-        market_value = sum((float(p.get("entry_price") or 0) * float(p.get("quantity") or 0) + float(p.get("unrealized_pnl") or 0)) if p.get("side") == "short" else float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
+        market_value = sum((float(p.get("entry_price") or 0) * float(p.get("quantity") or 0) + float(p.get("unrealized_pnl") or 0) + float(p.get("entry_fee") or 0)) if p.get("side") == "short" else float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in positions)
         cash = float(row["cash_balance"])
         realized = float(row["realized_pnl"])
         unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
@@ -4747,7 +4747,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         return None
 
     positions = _sb_rest("blessing_dual_positions", {
-        "select":"id,symbol,side,quantity,entry_price,current_price,stop_loss_price,unrealized_pnl",
+        "select":"id,symbol,side,quantity,entry_price,current_price,stop_loss_price,entry_fee,unrealized_pnl",
         "portfolio_id":"eq."+str(portfolio["id"]), "user_id":"eq."+user_id,
         "status":"eq.open", "limit":"1000"
     }) or []
@@ -4780,7 +4780,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     }) or []
     portfolio_ids = [str(row["id"]) for row in all_portfolios]
     all_positions = _sb_rest("blessing_dual_positions", {
-        "select":"portfolio_id,side,quantity,current_price,entry_price,unrealized_pnl",
+        "select":"portfolio_id,side,quantity,current_price,entry_price,entry_fee,unrealized_pnl",
         "user_id":"eq."+user_id,"status":"eq.open","limit":"1000"
     }) or []
     cash_balance = float(portfolio.get("cash_balance") or 0)
