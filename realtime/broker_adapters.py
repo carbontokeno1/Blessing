@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import threading
 import time
 from urllib.parse import urlencode
 from typing import Any
@@ -134,20 +135,37 @@ def _binance_account_snapshot() -> dict:
         }
 
 
+_WEBULL_API_CLIENT = None
+_WEBULL_API_CLIENT_LOCK = threading.Lock()
+
+
+def set_webull_api_client(api_client: Any) -> None:
+    """Receive the single authenticated client owned by the primary market stream."""
+    global _WEBULL_API_CLIENT
+    with _WEBULL_API_CLIENT_LOCK:
+        _WEBULL_API_CLIENT = api_client
+
+
 def _webull_readonly() -> dict:
     app_key = os.getenv("WEBULL_APP_KEY", "").strip()
     app_secret = os.getenv("WEBULL_APP_SECRET", "").strip()
     if not app_key or not app_secret:
         return {"status": "not_configured", "credentialsConfigured": False}
 
+    with _WEBULL_API_CLIENT_LOCK:
+        api_client = _WEBULL_API_CLIENT
+    if api_client is None:
+        return {
+            "status": "waiting_for_primary_client",
+            "credentialsConfigured": True,
+            "permissionMode": "read_only_required",
+            "message": "รอการเชื่อมต่อ Webull หลักเพื่อป้องกันการสร้าง Token และคำขอ 2FA ซ้ำ",
+        }
+
     region = os.getenv("WEBULL_REGION", "us").strip().lower()
-    endpoint = os.getenv("WEBULL_HTTP_HOST", "api.webull.com").strip()
     try:
-        from webull.core.client import ApiClient
         from webull.trade.trade_client import TradeClient
 
-        api_client = ApiClient(app_key, app_secret, region)
-        api_client.add_endpoint(region, endpoint)
         trade_client = TradeClient(api_client)
         account_response = trade_client.account_v2.get_account_list()
         ok, account_payload, status = _response_payload(account_response)
