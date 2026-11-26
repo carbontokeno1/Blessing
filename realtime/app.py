@@ -2292,7 +2292,7 @@ async def admin_control_member_portfolios(request: Request):
         raise HTTPException(status_code=400, detail="mode ต้องเป็น paper, live หรือ all")
 
     query = {
-        "select": "id,member_no,assigned_user_id,portfolio_type,market,mode,paper_slot_id,live_trading_approved",
+        "select": "id,member_no,assigned_user_id,portfolio_type,market,mode,paper_slot_id,live_trading_approved,live_ready",
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     }
@@ -2320,15 +2320,25 @@ async def admin_control_member_portfolios(request: Request):
     if not targets:
         raise HTTPException(status_code=404, detail="ไม่พบพอร์ตที่ต้องการควบคุม")
 
-    target_ids = [str(row["id"]) for row in targets]
-    changed = _sb_rest("blessing_member_portfolio_registry", {
-        "id": "in.(" + ",".join(target_ids) + ")",
-    }, method="PATCH", body={"enabled": enabled})
-    if len(changed) != len(targets):
-        raise HTTPException(status_code=502, detail="บันทึกสถานะพอร์ตไม่ครบ")
+    # LIVE uses a separate readiness flag; never set its execution-enabled flag.
+    paper_targets = [row for row in targets if row.get("mode") == "paper"]
+    live_targets = [row for row in targets if row.get("mode") == "live"]
+    if paper_targets:
+        paper_ids = [str(row["id"]) for row in paper_targets]
+        changed = _sb_rest("blessing_member_portfolio_registry", {
+            "id": "in.(" + ",".join(paper_ids) + ")",
+        }, method="PATCH", body={"enabled": enabled})
+        if len(changed) != len(paper_targets):
+            raise HTTPException(status_code=502, detail="บันทึกสถานะ PAPER ไม่ครบ")
+    if live_targets:
+        live_ids = [str(row["id"]) for row in live_targets]
+        changed_live = _sb_rest("blessing_member_portfolio_registry", {
+            "id": "in.(" + ",".join(live_ids) + ")",
+        }, method="PATCH", body={"live_ready": enabled})
+        if len(changed_live) != len(live_targets):
+            raise HTTPException(status_code=502, detail="บันทึกสถานะ LIVE READY ไม่ครบ")
 
     # Only PAPER availability is synchronized to the actual Paper execution slots.
-    paper_targets = [row for row in targets if row.get("mode") == "paper"]
     crypto_slot_ids = [str(row["paper_slot_id"]) for row in paper_targets
                        if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id")]
     stock_slot_nos = [str(row["member_no"]) for row in paper_targets
@@ -2353,7 +2363,9 @@ async def admin_control_member_portfolios(request: Request):
                  body={"enabled": enabled, "updated_at": datetime.now(timezone.utc).isoformat()})
 
     updated = [{"memberNo": row.get("member_no"), "portfolioType": row.get("portfolio_type"),
-                "enabled": enabled, "liveTradingApproved": bool(row.get("live_trading_approved")),
+                "enabled": (enabled if row.get("mode") == "paper" else bool(row.get("enabled"))),
+                "liveReady": (enabled if row.get("mode") == "live" else False),
+                "liveTradingApproved": bool(row.get("live_trading_approved")),
                 "liveOrdersStillLocked": row.get("mode") == "live"} for row in targets]
     return {"ok": True, "updatedCount": len(updated), "enabled": enabled, "portfolios": updated,
             "liveTradingEnabled": False,
@@ -2650,7 +2662,7 @@ def admin_member_portfolios(request: Request):
     """Owner-only portfolio inventory. Bulk reads keep the 40-portfolio screen fast."""
     _binance_th_owner_auth(request)
     rows = _sb_rest("blessing_member_portfolio_registry", {
-        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,assigned_user_id,paper_slot_id,allocated_capital,status,enabled,live_trading_approved,created_at,updated_at",
+        "select": "id,member_no,member_label,portfolio_type,market,mode,base_currency,assigned_user_id,paper_slot_id,allocated_capital,status,enabled,live_trading_approved,live_ready,created_at,updated_at",
         "order": "member_no.asc,portfolio_type.asc",
         "limit": "100",
     })
