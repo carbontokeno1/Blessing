@@ -85,6 +85,8 @@ clients: set[WebSocket] = set()
 loop: asyncio.AbstractEventLoop | None = None
 stream_thread: threading.Thread | None = None
 webull_stream_thread: threading.Thread | None = None
+_WEBULL_SHARED_API_CLIENT = None
+_WEBULL_SHARED_API_CLIENT_LOCK = threading.Lock()
 
 
 def plain(value: Any, depth: int = 0) -> Any:
@@ -195,7 +197,13 @@ def on_subscribe(client, api_client, session_id):
 
 
 def on_connect(client, api_client, session_id):
-    log.info("Webull market stream connected")
+    global _WEBULL_SHARED_API_CLIENT
+    # Reuse the authenticated API client created by the MQTT stream.
+    # Creating a second ApiClient triggers a separate Webull verification flow
+    # and can exhaust the account's verification-attempt limit.
+    with _WEBULL_SHARED_API_CLIENT_LOCK:
+        _WEBULL_SHARED_API_CLIENT = api_client
+    log.info("Webull market stream connected; shared authenticated REST client ready")
     state["connection"] = "connected"
     state["webullConnection"] = "connected"
     state["webullLastError"] = None
@@ -5829,10 +5837,11 @@ def _webull_data_client():
     global _WEBULL_DATA_CLIENT
     with _WEBULL_DATA_CLIENT_LOCK:
         if _WEBULL_DATA_CLIENT is None:
-            from webull.core.client import ApiClient
+            with _WEBULL_SHARED_API_CLIENT_LOCK:
+                api = _WEBULL_SHARED_API_CLIENT
+            if api is None:
+                raise RuntimeError("WEBULL_SHARED_AUTH_CLIENT_NOT_READY")
             from webull.data.data_client import DataClient
-            api = ApiClient(APP_KEY, APP_SECRET, REGION)
-            api.add_endpoint(REGION, HTTP_HOST)
             _WEBULL_DATA_CLIENT = DataClient(api)
         return _WEBULL_DATA_CLIENT
 
