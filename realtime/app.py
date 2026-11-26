@@ -3063,21 +3063,61 @@ def binance_th_account_read(request: Request):
     }
 
 
+_BINANCE_TH_TIME_OFFSET_MS = 0
+_BINANCE_TH_TIME_SYNCED_MONOTONIC = 0.0
+_BINANCE_TH_TIME_SYNC_LOCK = threading.Lock()
+
+
+def _binance_th_sync_server_time(force: bool = False) -> int:
+    """Keep signed requests aligned with Binance TH server time."""
+    global _BINANCE_TH_TIME_OFFSET_MS, _BINANCE_TH_TIME_SYNCED_MONOTONIC
+    now_mono = time.monotonic()
+    if not force and now_mono - _BINANCE_TH_TIME_SYNCED_MONOTONIC < 60:
+        return _BINANCE_TH_TIME_OFFSET_MS
+    with _BINANCE_TH_TIME_SYNC_LOCK:
+        now_mono = time.monotonic()
+        if not force and now_mono - _BINANCE_TH_TIME_SYNCED_MONOTONIC < 60:
+            return _BINANCE_TH_TIME_OFFSET_MS
+        before_ms = int(time.time() * 1000)
+        response = requests.get(
+            BINANCE_TH_API_BASE + "/api/v1/time",
+            headers={"Accept": "application/json"},
+            timeout=(3, 5),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        server_ms = int(payload["serverTime"])
+        after_ms = int(time.time() * 1000)
+        midpoint_ms = (before_ms + after_ms) // 2
+        _BINANCE_TH_TIME_OFFSET_MS = server_ms - midpoint_ms
+        _BINANCE_TH_TIME_SYNCED_MONOTONIC = time.monotonic()
+        log.info("Binance TH server clock synchronized; offset_ms=%s", _BINANCE_TH_TIME_OFFSET_MS)
+        return _BINANCE_TH_TIME_OFFSET_MS
+
+
 def _binance_th_signed_request(method: str, path: str, params: dict, api_key: str, api_secret: str):
-    signed = dict(params)
-    signed["recvWindow"] = "5000"
-    signed["timestamp"] = str(int(time.time() * 1000))
-    query = urllib.parse.urlencode(signed)
-    signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
-    url = BINANCE_TH_API_BASE + path + "?" + query + "&signature=" + signature
-    response = requests.request(
-        method, url, headers={"Accept": "application/json", "X-MBX-APIKEY": api_key},
-        timeout=(5, 15),
-    )
-    try:
-        payload = response.json() if response.content else {}
-    except ValueError:
-        payload = {"msg": "Binance TH returned a non-JSON response"}
+    def send_signed():
+        signed = dict(params)
+        signed["recvWindow"] = "5000"
+        signed["timestamp"] = str(int(time.time() * 1000) + _BINANCE_TH_TIME_OFFSET_MS)
+        query = urllib.parse.urlencode(signed)
+        signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+        url = BINANCE_TH_API_BASE + path + "?" + query + "&signature=" + signature
+        response = requests.request(
+            method, url, headers={"Accept": "application/json", "X-MBX-APIKEY": api_key},
+            timeout=(5, 15),
+        )
+        try:
+            payload = response.json() if response.content else {}
+        except ValueError:
+            payload = {"msg": "Binance TH returned a non-JSON response"}
+        return response, payload
+
+    _binance_th_sync_server_time()
+    response, payload = send_signed()
+    if isinstance(payload, dict) and payload.get("code") == -1021:
+        _binance_th_sync_server_time(force=True)
+        response, payload = send_signed()
     if not response.ok:
         status = response.status_code
         message = "Binance TH WAF blocked this server (HTTP 403)" if status == 403 else str(payload.get("msg") or "Binance TH rejected the request")
