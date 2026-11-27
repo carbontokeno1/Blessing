@@ -34,8 +34,14 @@ main{max-width:1100px;margin:auto;padding:22px 14px 60px}.top{display:flex;justi
   <div class="metric"><small>Open Positions</small><strong>—</strong><em>เฉพาะ Paper</em></div>
   <div class="metric"><small>Open Orders</small><strong>—</strong><em>เฉพาะ Paper</em></div>
  </div>
+ <div class="centerPanel" style="margin:12px 0">
+  <div class="centerTitle"><div><h3>กราฟผลการดำเนินงานรวม · สมาชิก + บัญชีส่วนกลาง</h3><div class="muted">เปรียบเทียบผลตอบแทนแบบฐาน 100 เพื่อไม่รวม USD, USDT และ THB เข้าด้วยกัน</div></div><span class="tag">PAPER ONLY</span></div>
+  <svg id="centerPerformanceChart" viewBox="0 0 800 250" role="img" aria-label="กราฟผลตอบแทนรวมสมาชิกและบัญชีส่วนกลาง" style="width:100%;height:auto;min-height:180px;display:block"></svg>
+  <div id="centerPerformanceLegend" class="syncLine">กำลังโหลดกราฟ...</div>
+  <div id="centerPerformanceNote" class="syncLine">ข้อมูลจากพอร์ต Paper สมาชิกและพอร์ต Paper ส่วนกลางแยกตามบัญชี</div>
+ </div>
  <div class="centerSplit">
-  <div class="centerPanel"><h3>รายละเอียดแยก Paper / Live</h3><div id="centerBreakdown" class="muted">กำลังโหลด...</div></div>
+  <div class="centerPanel"><h3>รายละเอียดแยก Paper / Live และบัญชีส่วนกลาง</h3><div id="centerBreakdown" class="muted">กำลังโหลด...</div></div>
   <div class="centerPanel"><h3>กิจกรรม / Log ล่าสุด</h3><div id="centerActivity" class="activityList"><div class="muted">กำลังโหลด...</div></div><div id="centerUpdated" class="syncLine">เวลาอัปเดต: —</div></div>
  </div>
  <div class="syncLine">หมายเหตุ: LIVE เป็น Standby เท่านั้น ไม่มี Equity / P&L จริงให้แสดงจนกว่าจะเชื่อมบัญชีและเปิดใช้ระบบ Live อย่างเป็นทางการ</div>
@@ -101,6 +107,49 @@ async function adminApi(path,method='GET',body){
 }
 function money(v,c='THB'){return Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c}
 function stamp(v){if(!v)return '—';try{return new Date(v).toLocaleString('th-TH',{dateStyle:'short',timeStyle:'medium'})}catch{return String(v)}}
+function drawCenterPerformance(report){
+ const svg=$('centerPerformanceChart'),legend=$('centerPerformanceLegend'),note=$('centerPerformanceNote');
+ if(!svg)return;
+ const all=[];
+ const memberReports=(report.portfolios||[]).filter(p=>p.mode==='paper'&&p.dataAvailable&&Array.isArray(p.performanceSeries)&&p.performanceSeries.length);
+ const memberDates=new Set(memberReports.flatMap(p=>p.performanceSeries.map(x=>x.date)));
+ const memberSeries=[...memberDates].sort().map(date=>{
+  let equity=0,capital=0;
+  for(const p of memberReports){
+   capital+=Number(p.capital||0);
+   const rows=p.performanceSeries.filter(x=>String(x.date)<=date);
+   if(rows.length)equity+=Number(rows[rows.length-1].equity||0);
+  }
+  return {date,value:capital?equity/capital*100:100};
+ });
+ if(memberSeries.length)all.push({label:'สมาชิกทั้งหมด · รวมพอร์ต Paper',points:memberSeries});
+ for(const p of (report.dualPaperPortfolios||[])){
+  const capital=Number(p.capital||0),series=p.performanceSeries||[];
+  if(!capital||!series.length)continue;
+  all.push({label:'ส่วนกลาง · '+(p.market==='stocks'?'หุ้น':'คริปโต')+' ('+p.currency+')',points:series.map(x=>({date:x.date,value:Number(x.equity||0)/capital*100}))});
+ }
+ if(!all.length){svg.innerHTML='<text x="24" y="120" fill="#94a3b8" font-size="14">ยังไม่มีข้อมูลประวัติสำหรับสร้างกราฟ</text>';legend.textContent='';note.textContent='เมื่อมีรายการ Paper ระบบจะแสดงเส้นแนวโน้มจากประวัติที่บันทึกไว้';return}
+ const dates=[...new Set(all.flatMap(s=>s.points.map(p=>p.date)))].sort();
+ const W=800,H=250,L=54,R=18,T=18,B=38,plotW=W-L-R,plotH=H-T-B;
+ const values=all.flatMap(s=>s.points.map(p=>p.value)).filter(Number.isFinite);
+ let min=Math.min(98,...values),max=Math.max(102,...values);if(max-min<2){min-=1;max+=1}
+ const x=i=>L+(dates.length<=1?plotW/2:i*plotW/(dates.length-1));
+ const y=v=>T+(max-v)*plotH/(max-min);
+ let parts=[];
+ for(let k=0;k<5;k++){const v=min+(max-min)*k/4,yy=y(v);parts.push('<line x1="'+L+'" y1="'+yy+'" x2="'+(W-R)+'" y2="'+yy+'" stroke="#29364c" stroke-width="1"/><text x="'+(L-8)+'" y="'+(yy+4)+'" fill="#94a3b8" font-size="11" text-anchor="end">'+v.toFixed(1)+'</text>')}
+ const palette=['#f4b942','#43c59e','#60a5fa','#c084fc','#fb7185','#22d3ee'];
+ all.forEach((s,si)=>{
+  const map=new Map(s.points.map(p=>[p.date,p.value]));let last=100;
+  const pts=dates.map((d,i)=>{if(map.has(d))last=map.get(d);return [x(i),y(last)]});
+  parts.push('<polyline fill="none" stroke="'+palette[si%palette.length]+'" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="'+pts.map(p=>p.join(',')).join(' ')+'"/>');
+  if(pts.length)parts.push('<circle cx="'+pts[pts.length-1][0]+'" cy="'+pts[pts.length-1][1]+'" r="4" fill="'+palette[si%palette.length]+'"/>');
+ });
+ const labelDates=[dates[0],dates[Math.floor((dates.length-1)/2)],dates[dates.length-1]].filter((d,i,a)=>d&&a.indexOf(d)===i);
+ labelDates.forEach(d=>{const i=dates.indexOf(d);parts.push('<text x="'+x(i)+'" y="'+(H-10)+'" fill="#94a3b8" font-size="11" text-anchor="middle">'+d.slice(5)+'</text>')});
+ svg.innerHTML=parts.join('');
+ legend.innerHTML=all.map((s,i)=>'<span style="display:inline-flex;align-items:center;gap:6px;margin:4px 14px 4px 0"><i style="width:16px;height:3px;background:'+palette[i%palette.length]+';display:inline-block"></i>'+s.label+'</span>').join('');
+ note.textContent='ดัชนีฐาน 100 · '+dates.length+' วัน/จุดข้อมูล · รวมสมาชิกจากพอร์ต Paper ที่มีข้อมูล และบัญชีส่วนกลางแสดงแยกตามตลาด/สกุลเงิน';
+}
 function renderCenter(report,rows){
  const paper=rows.filter(x=>x.mode==='paper'),live=rows.filter(x=>x.mode==='live');
  const paperOn=paper.filter(x=>x.enabled).length,liveReady=live.filter(x=>x.live_ready).length,liveOff=live.length-liveReady;
@@ -121,7 +170,12 @@ function renderCenter(report,rows){
  $('centerBreakdown').innerHTML='';
  const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 20 พอร์ต</b><small>'+paperOn+' Active · '+(20-paperOn)+' Off · Equity '+money(t.paperEquity)+'</small></div><b>'+(pnl>=0?'+':'')+money(pnl)+' ('+pct.toFixed(2)+'%)</b>';
  const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 20 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · ยังไม่ส่งคำสั่งเงินจริง</small></div><b>LOCKED</b>';
- $('centerBreakdown').append(paperLine,liveLine);
+ $('centerBreakdown').append(paperLine);
+ const central=(report.dualPaperPortfolios||[]),byCurrency=new Map();
+ for(const p of central){const key=String(p.currency||'—');if(!byCurrency.has(key))byCurrency.set(key,{equity:0,pnl:0,count:0});const x=byCurrency.get(key);x.equity+=Number(p.equity||0);x.pnl+=Number(p.netPnl||0);x.count++}
+ for(const [currency,x] of byCurrency){const line=document.createElement('div');line.className='activityItem';line.innerHTML='<div><b>บัญชีส่วนกลาง · '+currency+' · '+x.count+' พอร์ต</b><small>แยกจากยอดสมาชิก · ไม่แปลงสกุลเงินอัตโนมัติ</small></div><b>'+money(x.equity,currency)+' · '+(x.pnl>=0?'+':'')+money(x.pnl,currency)+'</b>';$('centerBreakdown').append(line)}
+ $('centerBreakdown').append(liveLine);
+ drawCenterPerformance(report);
  const activity=allOrders.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,8);
  $('centerActivity').replaceChildren();
  if(!activity.length){const empty=document.createElement('div');empty.className='muted';empty.textContent='ยังไม่มี Order Log ในพอร์ตสมาชิก';$('centerActivity').append(empty)}
