@@ -48,9 +48,9 @@ BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINAN
 # REST batch scanning avoids Alpaca Basic websocket symbol limits.
 ALPACA_DISABLED = not bool(ALPACA_KEY and ALPACA_SECRET)
 ALPACA_STREAM_ENABLED = False
-REGION = os.getenv("WEBULL_REGION", "us")
-HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.com")
-MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.com")
+REGION = os.getenv("WEBULL_REGION", "th")
+HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.co.th")
+MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.co.th")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://blessing.carbontokeno1.workers.dev").split(",")
 
 app = FastAPI(title="Blessing Market Data Bridge", version="0.2.0")
@@ -222,7 +222,7 @@ def on_connect(client, api_client, session_id):
         requested = []
         for data_type in (SubscribeType.SNAPSHOT, SubscribeType.QUOTE, SubscribeType.TICK):
             try:
-                client.subscribe(SYMBOLS, Category.US_STOCK.name, [data_type.name])
+                client.subscribe(SYMBOLS, Category.US_STOCK.name, [data_type.name], overnight_required=True)
                 requested.append(data_type.name)
                 log.info("Requested Webull %s subscription for %d symbols", data_type.name, len(SYMBOLS))
             except Exception as sub_exc:
