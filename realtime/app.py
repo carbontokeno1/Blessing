@@ -1772,8 +1772,24 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     # Bound the 1m ATR stop distance to avoid microscopic stops or outsized position risk.
     atr_stop_pct = min(2.0, max(0.8, atr_pct * 1.5)) if atr_pct is not None else None
 
-    spread = None
-    bid, ask = float(row.get("bidPrice") or row.get("bid") or 0), float(row.get("askPrice") or row.get("ask") or 0)
+    # RSI and recent range context support low-trend sideways markets.
+    rsi14 = 50.0
+    if len(closes) >= 15:
+        changes = [closes[i] - closes[i - 1] for i in range(len(closes) - 14, len(closes))]
+        gains = sum(max(0.0, value) for value in changes) / 14
+        losses = sum(max(0.0, -value) for value in changes) / 14
+        rsi14 = 100.0 if losses == 0 and gains > 0 else (50.0 if losses == 0 else 100.0 - 100.0 / (1.0 + gains / losses))
+    range_bars = bars[-21:-1] if len(bars) >= 21 else []
+    range_high = max((float(b.get("high") or 0) for b in range_bars), default=0)
+    range_low = min((float(b.get("low") or 0) for b in range_bars if float(b.get("low") or 0) > 0), default=0)
+    range_width_pct = ((range_high - range_low) / price * 100) if price > 0 and range_high > range_low > 0 else 0
+    latest_open = float(latest.get("open") or 0) if latest else 0
+    latest_close = float(latest.get("close") or 0) if latest else 0
+    previous_close = closes[-2] if len(closes) >= 2 else 0
+    range_long_reversal = bool(range_low > 0 and latest_close > latest_open and latest_close > previous_close and latest_close <= range_low * 1.01)
+    range_short_reversal = bool(range_high > 0 and latest_close < latest_open and latest_close < previous_close and latest_close >= range_high * 0.99)
+
+    spread = None    bid, ask = float(row.get("bidPrice") or row.get("bid") or 0), float(row.get("askPrice") or row.get("ask") or 0)
     if price > 0 and bid > 0 and ask >= bid:
         spread = ((ask - bid) / price) * 100
 
@@ -1838,6 +1854,9 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
         "spreadPct": spread, "score": score, "fastEntry": fast_entry,
         "ema20": ema20, "ema50": ema50, "trendAligned": trend_aligned,
         "trendDownAligned": trend_down_aligned,
+        "rsi14": rsi14, "rangeHigh": range_high, "rangeLow": range_low,
+        "rangeWidthPct": range_width_pct,
+        "rangeLongReversal": range_long_reversal, "rangeShortReversal": range_short_reversal,
         "pullbackReclaim": pullback_reclaim, "pullbackReject": pullback_reject,
         "breakdown": breakdown, "atr14": atr14,
         "atrPct": atr_pct, "atrStopPct": atr_stop_pct,
@@ -4092,13 +4111,23 @@ def _paper_worker_cycle():
         if total_pnl <= -(start_balance * 0.05):
             continue
         held = {p.get("symbol") for p in positions}
+        btc = candidates.get("BTCUSDT") or {}
+        btc_m15 = _num(btc.get("m15"), 0) or 0
+        btc_m60 = _num(btc.get("m60"), 0) or 0
+        if btc.get("trendDownAligned") is True and btc_m15 < -0.08 and btc_m60 < 0:
+            btc_market_bias = "bearish"
+        elif btc.get("trendAligned") is True and btc_m15 > 0.08 and btc_m60 > 0:
+            btc_market_bias = "bullish"
+        else:
+            btc_market_bias = "neutral"
         ranked = []
         for candidate in candidates.values():
             if candidate.get("symbol") in held or candidate.get("exchangeSymbol") != candidate.get("symbol"):
                 continue
             if not _num(candidate.get("price"),0):
                 continue
-            decision = _crypto_three_strategy_decision(candidate)
+            candidate_context = {**candidate, "btcMarketBias": btc_market_bias}
+            decision = _crypto_three_strategy_decision(candidate_context)
             if decision:
                 ranked.append((candidate,decision))
         ranked.sort(key=lambda pair:pair[1].get("opportunityScore",0),reverse=True)
