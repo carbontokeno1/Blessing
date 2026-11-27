@@ -1,0 +1,40 @@
+name: BLESSING Free Keep-Alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blessing-free-keepalive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Wake and verify BLESSING backend
+        env:
+          HEALTH_URL: https://blessing-webull-realtime-djfm.onrender.com/health
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "BLESSING health check attempt ${attempt}"
+            if curl --fail --silent --show-error --max-time 25 \
+              --retry 1 --retry-delay 3 \
+              -H "Cache-Control: no-cache" \
+              "${HEALTH_URL}?source=github-actions&t=$(date +%s)" \
+              -o /tmp/blessing-health.json; then
+              cat /tmp/blessing-health.json
+              grep -q '"ok"[[:space:]]*:[[:space:]]*true' /tmp/blessing-health.json
+              echo "BLESSING backend responded successfully."
+              exit 0
+            fi
+            sleep 8
+          done
+          echo "::error::BLESSING backend health check failed after 3 attempts"
+          exit 1
