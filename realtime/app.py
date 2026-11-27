@@ -2565,6 +2565,99 @@ def member_member_portfolios(request: Request):
     return {"ok": True, "portfolioCount": len(rows), "portfolios": rows, "liveTradingEnabled": False}
 
 
+@app.get("/member/member-portfolios/performance")
+def member_member_portfolios_performance(request: Request, period: str = "30d"):
+    """Private performance series for the authenticated member's own Paper slots only."""
+    user = _member_portfolio_auth(request)
+    if period not in ("7d", "30d", "90d", "all"):
+        raise HTTPException(status_code=400, detail="INVALID_PERIOD")
+    now = datetime.now(timezone.utc)
+    span_days = {"7d": 7, "30d": 30, "90d": 90}.get(period)
+    cutoff = now - timedelta(days=span_days) if span_days else datetime(2000, 1, 1, tzinfo=timezone.utc)
+    assigned = _sb_rest("blessing_member_portfolio_registry", {
+        "select": "member_no,portfolio_type,mode,paper_slot_id",
+        "assigned_user_id": "eq." + str(user["id"]), "limit": "4",
+    }) or []
+    paper = [x for x in assigned if x.get("mode") == "paper" and x.get("portfolio_type") in ("crypto_paper", "stock_paper")]
+    crypto_ids = list(dict.fromkeys(str(x["paper_slot_id"]) for x in paper if x.get("portfolio_type") == "crypto_paper" and x.get("paper_slot_id")))
+    stock_nos = list(dict.fromkeys(str(x["member_no"]) for x in paper if x.get("portfolio_type") == "stock_paper" and x.get("member_no") is not None))
+    crypto_slots = _sb_rest("blessing_paper_member_slots", {
+        "select": "id,initial_capital,cash_balance,realized_pnl,fees_paid,assigned_user_id",
+        "id": "in.(" + ",".join(crypto_ids) + ")", "assigned_user_id": "eq." + str(user["id"]), "limit": "10",
+    }) if crypto_ids else []
+    stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
+        "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,assigned_user_id",
+        "slot_no": "in.(" + ",".join(stock_nos) + ")", "assigned_user_id": "eq." + str(user["id"]), "limit": "10",
+    }) if stock_nos else []
+    crypto_positions = _sb_rest("blessing_paper_slot_positions", {
+        "select": "slot_id,quantity,current_price_thb,unrealized_pnl_thb,status",
+        "slot_id": "in.(" + ",".join(str(x["id"]) for x in crypto_slots) + ")", "status": "eq.open", "limit": "500",
+    }) if crypto_slots else []
+    stock_positions = _sb_rest("blessing_stock_paper_slot_positions", {
+        "select": "slot_id,quantity,current_price_usd,current_fx_thb_per_usd,unrealized_pnl_thb,status",
+        "slot_id": "in.(" + ",".join(str(x["id"]) for x in stock_slots) + ")", "status": "eq.open", "limit": "500",
+    }) if stock_slots else []
+    reports = []
+    for row in paper:
+        ptype = row["portfolio_type"]
+        is_stock = ptype == "stock_paper"
+        slot = next((x for x in (stock_slots if is_stock else crypto_slots)
+                     if str(x.get("slot_no") if is_stock else x.get("id")) == str(row.get("member_no") if is_stock else row.get("paper_slot_id"))), None)
+        if not slot:
+            continue
+        sid = str(slot["id"])
+        table = "blessing_stock_paper_slot_orders" if is_stock else "blessing_paper_slot_orders"
+        order_rows = _sb_rest(table, {
+            "select": "side,status,realized_pnl_thb,created_at",
+            "slot_id": "eq." + sid, "created_at": "gte." + cutoff.isoformat(),
+            "order": "created_at.asc", "limit": "5000",
+        }) or []
+        daily = {}
+        for order in order_rows:
+            if str(order.get("status") or "").lower() not in ("filled", "executed"):
+                continue
+            stamp = order.get("created_at")
+            try:
+                day = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Bangkok")).date().isoformat()
+            except Exception:
+                continue
+            daily[day] = daily.get(day, 0.0) + float(order.get("realized_pnl_thb") or 0)
+        capital = float(slot.get("initial_capital") or 0)
+        realized = float(slot.get("realized_pnl") or 0)
+        positions = [x for x in (stock_positions if is_stock else crypto_positions) if str(x.get("slot_id")) == sid]
+        unrealized = sum(float(x.get("unrealized_pnl_thb") or 0) for x in positions)
+        market_value = sum(
+            float(x.get("quantity") or 0) * float(x.get("current_price_usd") or 0) * float(x.get("current_fx_thb_per_usd") or 0)
+            if is_stock else
+            float(x.get("quantity") or 0) * float(x.get("current_price_thb") or 0)
+            for x in positions
+        )
+        cash = float(slot.get("cash_balance") or 0)
+        equity = cash + market_value
+        running = capital
+        series = [{"date": cutoff.date().isoformat(), "equity": round(capital, 2), "realizedPnl": 0.0}]
+        for day, pnl in sorted(daily.items()):
+            running += pnl
+            series.append({"date": day, "equity": round(running, 2), "realizedPnl": round(pnl, 2)})
+        # Final point is the current live valuation; historical points are based on realized fills only.
+        today = now.astimezone(ZoneInfo("Asia/Bangkok")).date().isoformat()
+        if not series or series[-1]["date"] != today:
+            series.append({"date": today, "equity": round(equity, 2), "realizedPnl": round(realized, 2), "current": True})
+        else:
+            series[-1]["equity"] = round(equity, 2)
+            series[-1]["current"] = True
+        reports.append({
+            "portfolioType": ptype, "capital": capital, "cash": cash, "marketValue": round(market_value, 2),
+            "equity": round(equity, 2), "realizedPnl": round(realized, 2),
+            "unrealizedPnl": round(unrealized, 2), "netPnl": round(realized + unrealized, 2),
+            "returnPct": ((equity - capital) / capital * 100) if capital else 0,
+            "fees": float(slot.get("fees_paid") or 0), "openPositions": len(positions), "series": series,
+        })
+    return {"ok": True, "period": period, "timezone": "Asia/Bangkok", "generatedAt": now.isoformat(),
+            "method": "Historical points use realized Paper fills; latest point uses current cash plus current marked positions.",
+            "portfolios": reports}
+
+
 @app.get("/member/member-portfolios/daily-trades")
 def member_member_portfolios_daily_trades(request: Request, day: str = ""):
     """Return the authenticated member's own Paper order log for one Bangkok calendar day."""
