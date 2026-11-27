@@ -4510,25 +4510,42 @@ def stock_paper_engine_status(request: Request):
                         "candidateCount":0, "feed":"disabled", "disabledProvider":"Alpaca"}}
 
 
-def _stock_snapshot_price(symbol: str):
-    # Stock Paper quotes are unavailable until a non-Alpaca provider is wired in.
-    return None, None
-    snapshots = _alpaca_snapshots([symbol])
-    snap = snapshots.get(symbol) or {}
+def _stock_snapshot_from_payload(snap: dict):
+    """Return only a positive price backed by a recent Alpaca IEX trade or minute bar."""
+    if not isinstance(snap, dict):
+        return None, None
     trade = snap.get("latestTrade") or {}
     minute = snap.get("minuteBar") or {}
     price = _num(trade.get("p"), _num(minute.get("c"), 0)) or 0
     stamp = trade.get("t") or minute.get("t")
-    return (price if price > 0 else None), stamp
+    if price <= 0 or not stamp:
+        return None, stamp
+    try:
+        parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+        if age < -30 or age > 180:
+            return None, stamp
+    except Exception:
+        return None, stamp
+    return price, stamp
+
+
+def _stock_snapshot_price(symbol: str):
+    try:
+        snapshots = _alpaca_snapshots([str(symbol).upper()])
+        return _stock_snapshot_from_payload(snapshots.get(str(symbol).upper()) or {})
+    except Exception as exc:
+        log.warning("Stock Paper quote lookup failed for %s (%s)", symbol, type(exc).__name__)
+        return None, None
 
 
 def _stock_paper_worker_cycle():
-    # Stock Paper entry/management is gated by the Webull scanner and verified Webull prices.
-    if not (APP_KEY and APP_SECRET):
-        STOCK_PAPER_WORKER_STATE.update({"status":"waiting_credentials","lastError":"WEBULL_CREDENTIALS_MISSING"})
+    # Paper-only stock engine uses the same Alpaca IEX feed as the US-equity scanner.
+    if not (ALPACA_KEY and ALPACA_SECRET):
+        STOCK_PAPER_WORKER_STATE.update({"status":"waiting_credentials","lastError":"ALPACA_CREDENTIALS_MISSING"})
         return
-    STOCK_PAPER_WORKER_STATE.update({"status":"waiting_webull_scanner","lastError":"WEBULL_SNAPSHOT_PIPELINE_REQUIRED"})
-    return
     settings_rows = _sb_rest("stock_paper_settings", {
         "select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,fee_pct,slippage_bps",
         "mode":"eq.paper", "limit":"100"
@@ -4562,10 +4579,8 @@ def _stock_paper_worker_cycle():
                     log.warning("Stock Paper price refresh failed: %s", type(quote_error).__name__)
                     snaps = {}
                 for symbol, snap in snaps.items():
-                    trade = snap.get("latestTrade") or {}
-                    minute = snap.get("minuteBar") or {}
-                    px = _num(trade.get("p"), _num(minute.get("c"), 0)) or 0
-                    if px > 0:
+                    px, quote_stamp = _stock_snapshot_from_payload(snap)
+                    if px is not None:
                         prices[symbol] = px
         for pos in positions:
             price = prices.get(pos["symbol"])
@@ -4587,8 +4602,6 @@ def _stock_paper_worker_cycle():
                     "symbol":pos["symbol"],"reason":reason,"result":result
                 })
                 STOCK_PAPER_WORKER_STATE["actions"] = STOCK_PAPER_WORKER_STATE["actions"][-20:]
-        # Stock Paper is manual-BUY only. This legacy worker remains close/mark-only.
-        continue
         if not setting.get("enabled") or not fresh:
             continue
         positions = _sb_rest("stock_paper_positions", {
