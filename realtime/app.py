@@ -948,7 +948,7 @@ def forecast_10m_from_bars(bars, price):
 # Basic websocket trade/quote subscription is limited to 30 symbols.
 UNIVERSE_SCAN_INTERVAL = max(60, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "90")))
 UNIVERSE_LIQUIDITY_LIMIT = max(200, min(2000, int(os.getenv("UNIVERSE_LIQUIDITY_LIMIT", "800"))))
-UNIVERSE_BATCH_SIZE = 100
+UNIVERSE_BATCH_SIZE = 500
 UNIVERSE_CANDIDATE_LIMIT = 150
 UNIVERSE_CACHE_SECONDS = 6 * 60 * 60
 UNIVERSE_STATE: dict[str, Any] = {
@@ -1653,6 +1653,8 @@ def _binance_th_market_headers():
 
 BINANCE_TH_UNIVERSE_CACHE = {"at": 0.0, "symbols": []}
 BINANCE_TH_UNIVERSE_LOCK = threading.Lock()
+BINANCE_TH_REST_TICKER_CACHE = {"at": 0.0, "rows": []}
+BINANCE_TH_REST_TICKER_LOCK = threading.Lock()
 
 
 def _binance_th_all_usdt_symbols():
@@ -1749,75 +1751,94 @@ def _binance_public_tickers():
     # endpoint, then enrich with 24h volume and book data. REST enrichment is
     # cached in memory for 15 minutes; candles and entry prices are refreshed.
     if len(rows) < 250:
-        try:
-            discovered_symbols = _binance_th_all_usdt_symbols()
-        except Exception as exc:
-            discovered_symbols = []
-            log.warning("Binance TH dynamic universe discovery failed: %s", type(exc).__name__)
+        with BINANCE_TH_REST_TICKER_LOCK:
+            cached_rest_rows = list(BINANCE_TH_REST_TICKER_CACHE.get("rows") or [])
+            rest_cache_age = now - float(BINANCE_TH_REST_TICKER_CACHE.get("at") or 0)
         existing_symbols = {str(x.get("symbol") or "").upper() for x in rows}
-        candidate_symbols = [x for x in discovered_symbols if x not in existing_symbols][:300]
-
-        def fetch_symbol_24h(pair):
-            try:
-                response = requests.get(
-                    BINANCE_TH_API_BASE + "/api/v1/ticker/24hr",
-                    params={"symbol": pair},
-                    headers=_binance_th_market_headers(), timeout=(3, 8),
-                )
-                response.raise_for_status()
-                item = response.json()
-            except Exception:
-                return None
-            if isinstance(item, dict) and "data" in item:
-                if item.get("code") not in (None, 0, "0"):
-                    return None
-                item = item.get("data")
-            if isinstance(item, list):
-                item = item[0] if item else None
-            if not isinstance(item, dict):
-                return None
-            symbol = str(item.get("symbol") or pair).upper()
-            price = _num(item.get("lastPrice") or item.get("price"), 0) or 0
-            open_price = _num(item.get("openPrice"), 0) or 0
-            quote_volume = _num(item.get("quoteVolume"), 0) or 0
-            bid = _num(item.get("bidPrice"), 0) or 0
-            ask = _num(item.get("askPrice"), 0) or 0
-            if (symbol != pair or price <= 0 or open_price <= 0
-                    or quote_volume < 250000 or bid <= 0 or ask < bid):
-                return None
-            received_at = datetime.now(timezone.utc).isoformat()
-            return {
-                "symbol": symbol, "lastPrice": price, "quoteVolume": quote_volume,
-                "openPrice": open_price, "bidPrice": bid, "askPrice": ask,
-                "closeTime": int(_num(item.get("closeTime"), 0) or 0),
-                "receivedAt": received_at,
-            }
-
-        recovered = 0
-        checked = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
-            for item in pool.map(fetch_symbol_24h, candidate_symbols):
-                checked += 1
-                if not item:
-                    continue
-                symbol = str(item["symbol"]).upper()
-                if symbol not in existing_symbols:
+        if cached_rest_rows and rest_cache_age <= 60:
+            for item in cached_rest_rows:
+                symbol = str(item.get("symbol") or "").upper()
+                if symbol and symbol not in existing_symbols:
                     rows.append(item)
                     existing_symbols.add(symbol)
-                    recovered += 1
-                received_at = item["receivedAt"]
-                state.setdefault("crypto_quotes", {})[symbol] = {
-                    "symbol": symbol, "price": item["lastPrice"],
-                    "change24hPct": ((item["lastPrice"] / item["openPrice"]) - 1) * 100,
-                    "openPrice": item["openPrice"], "quoteVolume24h": item["quoteVolume"],
-                    "bid": item["bidPrice"], "ask": item["askPrice"],
-                    "receivedAt": received_at, "bookReceivedAt": received_at,
-                    "source": "Binance TH official REST ticker",
-                }
-        log.info(
-            "Binance TH universe enrichment discovered=%s checked=%s added=%s cached=%s",
-            len(discovered_symbols), checked, recovered, len(rows)
-        )
+        else:
+            try:
+                discovered_symbols = _binance_th_all_usdt_symbols()
+            except Exception as exc:
+                discovered_symbols = []
+                log.warning("Binance TH dynamic universe discovery failed: %s", type(exc).__name__)
+            candidate_symbols = [x for x in discovered_symbols if x not in existing_symbols][:120]
+            diagnostics = {"http_403": 0, "http_429": 0, "http_other": 0,
+                           "bad_payload": 0, "low_volume": 0, "bad_book_or_price": 0}
+            def fetch_symbol_24h(pair):
+                try:
+                    response = requests.get(
+                        BINANCE_TH_API_BASE + "/api/v1/ticker/24hr",
+                        params={"symbol": pair},
+                        headers=_binance_th_market_headers(), timeout=(3, 8),
+                    )
+                    if response.status_code in (403, 429):
+                        return ("http_" + str(response.status_code), None)
+                    response.raise_for_status()
+                    item = response.json()
+                except requests.HTTPError as exc:
+                    status = getattr(getattr(exc, "response", None), "status_code", 0)
+                    return ("http_" + str(status) if status in (403, 429) else "http_other", None)
+                except Exception:
+                    return ("http_other", None)
+                if isinstance(item, dict) and "data" in item:
+                    if item.get("code") not in (None, 0, "0"):
+                        return ("bad_payload", None)
+                    item = item.get("data")
+                if isinstance(item, list):
+                    item = item[0] if item else None
+                if not isinstance(item, dict):
+                    return ("bad_payload", None)
+                symbol = str(item.get("symbol") or pair).upper()
+                price = _num(item.get("lastPrice") or item.get("price"), 0) or 0
+                open_price = _num(item.get("openPrice"), 0) or 0
+                quote_volume = _num(item.get("quoteVolume"), 0) or 0
+                bid = _num(item.get("bidPrice"), 0) or 0
+                ask = _num(item.get("askPrice"), 0) or 0
+                if quote_volume < 250000:
+                    return ("low_volume", None)
+                if symbol != pair or price <= 0 or open_price <= 0 or bid <= 0 or ask < bid:
+                    return ("bad_book_or_price", None)
+                received_at = datetime.now(timezone.utc).isoformat()
+                return ("ok", {
+                    "symbol": symbol, "lastPrice": price, "quoteVolume": quote_volume,
+                    "openPrice": open_price, "bidPrice": bid, "askPrice": ask,
+                    "closeTime": int(_num(item.get("closeTime"), 0) or 0),
+                    "receivedAt": received_at,
+                })
+            recovered_rows = []
+            checked = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                for reason, item in pool.map(fetch_symbol_24h, candidate_symbols):
+                    checked += 1
+                    if reason != "ok" or not item:
+                        diagnostics[reason] = diagnostics.get(reason, 0) + 1
+                        continue
+                    symbol = str(item["symbol"]).upper()
+                    if symbol not in existing_symbols:
+                        rows.append(item)
+                        existing_symbols.add(symbol)
+                        recovered_rows.append(item)
+                    received_at = item["receivedAt"]
+                    state.setdefault("crypto_quotes", {})[symbol] = {
+                        "symbol": symbol, "price": item["lastPrice"],
+                        "change24hPct": ((item["lastPrice"] / item["openPrice"]) - 1) * 100,
+                        "openPrice": item["openPrice"], "quoteVolume24h": item["quoteVolume"],
+                        "bid": item["bidPrice"], "ask": item["askPrice"],
+                        "receivedAt": received_at, "bookReceivedAt": received_at,
+                        "source": "Binance TH official REST ticker",
+                    }
+            with BINANCE_TH_REST_TICKER_LOCK:
+                BINANCE_TH_REST_TICKER_CACHE.update({"at": time.time(), "rows": recovered_rows})
+            log.info(
+                "Binance TH universe enrichment discovered=%s checked=%s added=%s cached=%s reject=%s",
+                len(discovered_symbols), checked, len(recovered_rows), len(rows), diagnostics
+            )
     if not rows:
         quote_cache = state.get("crypto_quotes") or {}
         sample_symbols = list(quote_cache.keys())[:8]
@@ -6361,11 +6382,11 @@ def _member_slot_engine_cycle():
                  method="PATCH", body={"updated_at":heartbeat})
         fx = _member_slot_usd_thb()
         crypto_slots = _sb_rest("blessing_paper_member_slots", {
-            "select":"id,slot_no,initial_capital,cash_balance,realized_pnl,max_open_positions,enabled,status",
+            "select":"id,slot_no,assigned_user_id,initial_capital,cash_balance,realized_pnl,max_open_positions,enabled,status",
             "enabled":"eq.true", "mode":"eq.paper", "limit":"20"
         }) or []
         stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
-            "select":"id,slot_no,initial_capital,cash_balance,max_open_positions,enabled,status",
+            "select":"id,slot_no,assigned_user_id,initial_capital,cash_balance,max_open_positions,enabled,status",
             "enabled":"eq.true", "limit":"20"
         }) or []
 
@@ -6389,7 +6410,8 @@ def _member_slot_engine_cycle():
                 if not symbol or not price or not symbol.endswith("USDT"):
                     continue
                 decision = _crypto_three_strategy_decision(row)
-                if decision:
+                # Member-slot automation is long-only. Never create new short exposure.
+                if decision and str(decision.get("side") or "long").lower() in {"long", "buy"}:
                     crypto_candidates[symbol] = (price, decision)
 
         # Stock entries use the current Alpaca IEX universe scan and current USD/THB FX.
@@ -6400,15 +6422,20 @@ def _member_slot_engine_cycle():
             stock_age = (now-datetime.fromisoformat(str(stock_stamp).replace("Z","+00:00"))).total_seconds() if stock_stamp else 999999
         except Exception:
             stock_age = 999999
-        stock_fresh = stock_scan.get("status") == "ok" and stock_age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
+        stock_fresh = (
+            stock_scan.get("status") == "ok" and stock_scan.get("marketOpen") is True
+            and 0 <= stock_age <= 120
+        )
         stock_candidates = {}
         if stock_fresh:
             for raw in (stock_scan.get("candidates") or []):
                 symbol = str(raw.get("symbol") or "").upper().strip()
                 price = _num(raw.get("price"), 0)
-                # Keep leveraged and inverse ETFs out of member-slot stock Paper.
-                # These products amplify daily moves and can create outsized losses.
-                if not symbol or not price or symbol in STOCK_PAPER_BLOCKED_LEVERAGED_ETFS:
+                if (not symbol or not price or symbol in STOCK_PAPER_BLOCKED_LEVERAGED_ETFS
+                        or raw.get("marketDataFresh") is not True
+                        or _num(raw.get("tradeAgeSeconds"),999) + stock_age > 120
+                        or _num(raw.get("quoteAgeSeconds"),999) + stock_age > 120
+                        or _num(raw.get("latestBarAgeSeconds"),999) + stock_age > 120):
                     continue
                 normalized = dict(raw)
                 normalized["rvol"] = normalized.get("relativeVolume")
@@ -6463,7 +6490,7 @@ def _member_slot_engine_cycle():
                 except Exception as exc:
                     log.warning("Member crypto slot %s position monitor skipped (%s)",slot["slot_no"],type(exc).__name__)
 
-            if not crypto_fresh:
+            if not crypto_fresh or not slot.get("assigned_user_id"):
                 continue
             open_now = _sb_rest("blessing_paper_slot_positions", {
                 "select":"symbol,unrealized_pnl_thb","slot_id":"eq."+str(slot["id"]),"status":"eq.open","limit":"100"
@@ -6494,8 +6521,8 @@ def _member_slot_engine_cycle():
                 if time.time()-MEMBER_SLOT_ENGINE_COOLDOWNS.get(key,0) < 300:
                     continue
                 try:
-                    entry_action = "short" if decision.get("side") == "short" else "buy"
-                    position_side = "short" if entry_action == "short" else "long"
+                    entry_action = "buy"
+                    position_side = "long"
                     result = _sb_rpc("blessing_member_slot_paper_trade", {
                         "p_market":"crypto","p_slot_id":str(slot["id"]),"p_action":entry_action,
                         "p_symbol":symbol,"p_price":price,"p_fx":fx,"p_position_side":position_side,
@@ -6567,7 +6594,7 @@ def _member_slot_engine_cycle():
                 except Exception as exc:
                     log.warning("Member stock slot %s position monitor skipped (%s)",slot["slot_no"],type(exc).__name__)
 
-            if not stock_fresh:
+            if not stock_fresh or not slot.get("assigned_user_id"):
                 continue
             open_now = _sb_rest("blessing_stock_paper_slot_positions", {
                 "select":"symbol","slot_id":"eq."+str(slot["id"]),"status":"eq.open","limit":"100"
