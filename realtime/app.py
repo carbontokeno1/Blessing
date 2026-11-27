@@ -1624,7 +1624,7 @@ def _binance_1m_klines(symbol: str):
 
 
 def _moderate_crypto_entry_metrics(row: dict):
-    """Symmetric adaptive Long/Short Paper gate using Binance TH closed-candle metrics."""
+    """Regime-adaptive Crypto Paper selector; does not authorize LIVE orders."""
     try:
         price = Decimal(str(row.get("price") or row.get("lastPrice") or "0"))
         stop = Decimal(str(row.get("atrStopPct") or "0"))
@@ -1634,43 +1634,54 @@ def _moderate_crypto_entry_metrics(row: dict):
         m15 = Decimal(str(row.get("m15") if row.get("m15") is not None else "-999"))
         rvol = Decimal(str(row.get("rvol") or "0"))
         ema20 = Decimal(str(row.get("ema20") or "0"))
+        ema50 = Decimal(str(row.get("ema50") or "0"))
+        rsi = Decimal(str(row.get("rsi14") if row.get("rsi14") is not None else "50"))
+        range_width = Decimal(str(row.get("rangeWidthPct") or "0"))
     except Exception:
         return None
+    symbol = str(row.get("symbol") or "").upper()
+    if price <= 0 or not symbol.endswith("USDT") or str(row.get("exchangeSymbol") or "").upper() != symbol:
+        return None
+    if not (Decimal("0") < spread <= Decimal("0.35")) or not (Decimal("0.8") <= stop <= Decimal("2.0")):
+        return None
+    btc_bias = str(row.get("btcMarketBias") or "neutral").lower()
     long_trend = row.get("trendAligned") is True
     short_trend = row.get("trendDownAligned") is True
-    long_momentum = m5 > 0 and m15 > 0 and m1 > Decimal("-0.20")
-    short_momentum = m5 < 0 and m15 < 0 and m1 < Decimal("0.20")
-    long_confirmation = (
-        row.get("pullbackReclaim") is True or row.get("breakout") is True
-        or (ema20 > 0 and price > ema20 and m1 > 0)
-    )
-    short_confirmation = (
-        row.get("pullbackReject") is True or row.get("breakdown") is True
-        or (ema20 > 0 and price < ema20 and m1 < 0)
-    )
-    direction = "long" if long_trend and long_momentum and long_confirmation else (
-        "short" if short_trend and short_momentum and short_confirmation else None
-    )
-    valid = bool(
-        direction and rvol >= Decimal("0.8")
-        and Decimal("0") < spread <= Decimal("0.5")
-        and Decimal("0.8") <= stop <= Decimal("2.0")
-        and price > 0
-        and str(row.get("symbol") or "").upper().endswith("USDT")
-        and str(row.get("exchangeSymbol") or "").upper() == str(row.get("symbol") or "").upper()
-    )
-    if not valid:
-        return None
-    setup = ("PULLBACK" if row.get("pullbackReclaim") else "BREAKOUT" if row.get("breakout") else "TREND")
-    if direction == "short":
-        setup = ("PULLBACK_REJECT" if row.get("pullbackReject") else "BREAKDOWN" if row.get("breakdown") else "DOWNTREND")
-    return {
-        "decision": "PAPER_CANDIDATE", "side": direction,
-        "opportunityScore": 90, "liveEntryScore": 90,
-        "liveEntryModel": "ADAPTIVE_LONG_SHORT_EMA_MOMENTUM",
-        "strategy": setup, "netEdgeProxyPct": None,
-    }
-
+    long_momentum = m5 > Decimal("0.03") and m15 > Decimal("0.08") and m1 > Decimal("-0.25")
+    short_momentum = m5 < Decimal("-0.03") and m15 < Decimal("-0.08") and m1 < Decimal("0.25")
+    long_confirm = row.get("pullbackReclaim") is True or row.get("breakout") is True or (ema20 > 0 and price > ema20 and m1 > 0)
+    short_confirm = row.get("pullbackReject") is True or row.get("breakdown") is True or (ema20 > 0 and price < ema20 and m1 < 0)
+    direction = None
+    setup = None
+    if long_trend and long_momentum and long_confirm and rvol >= Decimal("1.0"):
+        direction, setup = "long", "PULLBACK" if row.get("pullbackReclaim") else "BREAKOUT" if row.get("breakout") else "TREND"
+    elif short_trend and short_momentum and short_confirm and rvol >= Decimal("1.0"):
+        direction, setup = "short", "PULLBACK_REJECT" if row.get("pullbackReject") else "BREAKDOWN" if row.get("breakdown") else "DOWNTREND"
+    ema_gap = abs(ema20 - ema50) / price * Decimal("100") if price > 0 else Decimal("999")
+    range_regime = ema20 > 0 and ema50 > 0 and ema_gap <= Decimal("0.25") and abs(m5) <= Decimal("0.35") and abs(m15) <= Decimal("0.60") and Decimal("0.5") <= range_width <= Decimal("3.5")
+    if direction is None and range_regime and rvol >= Decimal("1.1"):
+        if row.get("rangeLongReversal") is True and rsi <= Decimal("32"):
+            direction, setup = "long", "RANGE_SUPPORT_REVERSAL"
+        elif row.get("rangeShortReversal") is True and rsi >= Decimal("68"):
+            direction, setup = "short", "RANGE_RESISTANCE_REVERSAL"
+    if direction == "long" and btc_bias == "bearish": return None
+    if direction == "short" and btc_bias == "bullish": return None
+    if direction and btc_bias == "neutral" and rvol < Decimal("1.2"): return None
+    if not direction: return None
+    expected_move = abs(m5) + abs(m15)
+    estimated_cost = Decimal("0.30") + spread
+    if expected_move < estimated_cost * Decimal("1.5"): return None
+    trend_points = 25 if (long_trend if direction == "long" else short_trend) else 15
+    momentum_points = 20 if (long_momentum if direction == "long" else short_momentum) else 10
+    volume_points = min(15, int(rvol * Decimal("6")))
+    spread_points = 10 if spread <= Decimal("0.20") else 6
+    risk_points = 10 if stop <= Decimal("1.5") else 6
+    score = min(100, trend_points + momentum_points + 20 + volume_points + spread_points + risk_points)
+    if score < 75: return None
+    return {"decision":"PAPER_CANDIDATE", "side":direction, "opportunityScore":score,
+            "liveEntryScore":0, "liveEntryModel":"PAPER_ONLY_REGIME_ADAPTIVE", "strategy":setup,
+            "netEdgeProxyPct":float(expected_move-estimated_cost), "btcMarketBias":btc_bias,
+            "estimatedRoundTripCostPct":float(estimated_cost)}
 
 def _crypto_three_strategy_decision(row: dict):
     """Adaptive member Crypto Paper selector: Long in confirmed uptrends, Short in confirmed downtrends."""
