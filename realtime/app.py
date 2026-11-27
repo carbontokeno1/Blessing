@@ -192,7 +192,11 @@ def on_message(client, topic, quotes):
 
 def on_subscribe(client, api_client, session_id):
     log.info("Webull market-data subscription accepted for %d symbols", len(SYMBOLS))
-    state["marketDataEntitlement"] = "subscription_accepted"
+    if state.get("overnightMarketDataAvailable") is False:
+        state["marketDataEntitlement"] = "regular_session_fallback"
+    else:
+        state["marketDataEntitlement"] = "subscription_accepted"
+        state["overnightMarketDataAvailable"] = True
     state["webullLastError"] = None
     state["lastError"] = None
 
@@ -220,12 +224,26 @@ def on_connect(client, api_client, session_id):
         # Request each separately so one entitlement rejection does not block
         # the other authorized data types.
         requested = []
+        state["overnightMarketDataAvailable"] = None
         for data_type in (SubscribeType.SNAPSHOT, SubscribeType.QUOTE, SubscribeType.TICK):
             try:
                 client.subscribe(SYMBOLS, Category.US_STOCK.name, [data_type.name], overnight_required=True)
-                requested.append(data_type.name)
-                log.info("Requested Webull %s subscription for %d symbols", data_type.name, len(SYMBOLS))
+                requested.append(data_type.name + ":OVERNIGHT")
+                log.info("Requested Webull %s subscription with overnight data for %d symbols", data_type.name, len(SYMBOLS))
             except Exception as sub_exc:
+                error_text = str(sub_exc).upper()
+                overnight_denied = ("MARKET_DATA_NOT_SUBSCRIBED" in error_text and
+                                    ("US_STOCK OVERNIGHT" in error_text or "NIGHT TRADING STOCK QUOTES" in error_text))
+                if overnight_denied:
+                    state["overnightMarketDataAvailable"] = False
+                    state["marketDataEntitlement"] = "regular_session_fallback"
+                    try:
+                        client.subscribe(SYMBOLS, Category.US_STOCK.name, [data_type.name], overnight_required=False)
+                        requested.append(data_type.name + ":REGULAR")
+                        log.warning("Webull %s overnight data not entitled; regular-session subscription accepted", data_type.name)
+                        continue
+                    except Exception:
+                        log.exception("Webull %s regular-session fallback subscription failed", data_type.name)
                 log.exception("Webull %s subscription request failed", data_type.name)
         state["webullRequestedSubscriptions"] = requested
         if not requested:
@@ -496,6 +514,8 @@ def public_status() -> dict:
         "webullLastError": state.get("webullLastError"),
         "webullLastMessageAt": state.get("webullLastMessageAt"),
         "webullQuoteCount": sum(1 for q in state["quotes"].values() if isinstance(q, dict) and q.get("source") == "Webull OpenAPI real-time stream"),
+        "overnightMarketDataAvailable": state.get("overnightMarketDataAvailable"),
+        "marketDataMode": "regular_session_fallback" if state.get("overnightMarketDataAvailable") is False else "overnight_and_regular" if state.get("overnightMarketDataAvailable") is True else "not_verified",
         "universeScanner": {
             "status": UNIVERSE_STATE.get("status"),
             "universeCount": UNIVERSE_STATE.get("universeCount"),
@@ -6782,6 +6802,13 @@ def _webull_json(response):
         return response.json()
     return response
 
+
+def _webull_overnight_permission_denied(exc):
+    message = str(exc).upper()
+    return ("MARKET_DATA_NOT_SUBSCRIBED" in message and
+            ("US_STOCK OVERNIGHT" in message or "NIGHT TRADING STOCK QUOTES" in message))
+
+
 def _webull_list_active_universe(force=False):
     global UNIVERSE_ASSETS, UNIVERSE_ASSETS_AT
     if UNIVERSE_ASSETS and not force and time.time() - UNIVERSE_ASSETS_AT < UNIVERSE_CACHE_SECONDS:
@@ -6824,11 +6851,23 @@ def _webull_snapshot_batch(assets):
         if not batch:
             return
         try:
-            response = client.market_data.get_snapshot(
-                batch, category,
-                extend_hour_required=True,
-                overnight_required=True,
-            )
+            try:
+                response = client.market_data.get_snapshot(
+                    batch, category,
+                    extend_hour_required=True,
+                    overnight_required=True,
+                )
+            except Exception as overnight_exc:
+                if not _webull_overnight_permission_denied(overnight_exc):
+                    raise
+                state["overnightMarketDataAvailable"] = False
+                state["marketDataEntitlement"] = "regular_session_fallback"
+                log.warning("Webull %s snapshot overnight entitlement unavailable; retrying without overnight data", category)
+                response = client.market_data.get_snapshot(
+                    batch, category,
+                    extend_hour_required=True,
+                    overnight_required=False,
+                )
             payload = _webull_json(response)
             rows = payload if isinstance(payload, list) else payload.get("data", payload.get("snapshots", [])) if isinstance(payload, dict) else []
             for row in rows if isinstance(rows, list) else []:
@@ -6879,10 +6918,21 @@ def _webull_bar_batches(symbols):
             if not batch:
                 continue
             try:
-                response = client.market_data.get_batch_history_bar(
-                    batch, category, "M1", count="15",
-                    real_time_required=True, trading_sessions="ALL"
-                )
+                try:
+                    response = client.market_data.get_batch_history_bar(
+                        batch, category, "M1", count="15",
+                        real_time_required=True, trading_sessions="ALL"
+                    )
+                except Exception as overnight_exc:
+                    if not _webull_overnight_permission_denied(overnight_exc):
+                        raise
+                    state["overnightMarketDataAvailable"] = False
+                    state["marketDataEntitlement"] = "regular_session_fallback"
+                    log.warning("Webull %s ALL-session bars not entitled; retrying CORE session only", category)
+                    response = client.market_data.get_batch_history_bar(
+                        batch, category, "M1", count="15",
+                        real_time_required=True, trading_sessions="CORE"
+                    )
                 payload = _webull_json(response)
                 data = payload.get("data",payload.get("bars",payload)) if isinstance(payload,dict) else payload
                 if isinstance(data,dict):
