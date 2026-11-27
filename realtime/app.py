@@ -4547,6 +4547,12 @@ def stock_paper_engine_status(request: Request):
                 "candidateCount": scanner_state.get("candidateCount", len(scanner_state.get("candidates") or [])),
                 "fastEntryCount": scanner_state.get("fastEntryCount", 0),
                 "premarketFeedReady": scanner_state.get("extendedHoursAvailable") is True,
+                "extendedHoursFeedReady": scanner_state.get("extendedHoursAvailable") is True,
+                "momentumSessions": {
+                    "premarket": {"enabled": True, "feedReady": scanner_state.get("extendedHoursAvailable") is True},
+                    "regular": {"enabled": True, "feedReady": scanner_fresh},
+                    "afterHours": {"enabled": True, "feedReady": scanner_state.get("extendedHoursAvailable") is True}
+                },
                 "feed": scanner_state.get("feed") or scanner_state.get("provider") or "waiting",
                 "coverage": scanner_state.get("coverage"),
                 "lastError": scanner_state.get("lastError"),
@@ -4629,10 +4635,20 @@ def _stock_paper_worker_cycle():
     except Exception:
         age = 999999
     fresh = scanner.get("status") == "ok" and age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
-    premarket_feed_ready = scanner.get("extendedHoursAvailable") is True
+    # One independent 30% Momentum sleeve trades across all US equity sessions.
+    # CORE entries use the verified regular-session scanner feed. Premarket and
+    # After-hours entries require an explicitly verified extended-hours entitlement.
+    extended_hours_ready = scanner.get("extendedHoursAvailable") is True
+    allowed_sessions = {"CORE"}
+    if extended_hours_ready:
+        allowed_sessions.update({"PRE_MARKET", "AFTER_HOURS"})
     candidates = {x.get("symbol"):x for x in (scanner.get("candidates") or [])
-                  if x.get("symbol") and x.get("session") == "PRE_MARKET"
+                  if x.get("symbol") and x.get("session") in allowed_sessions
                   and x.get("fastEntry") is True and _num(x.get("price"),0)}
+    session_candidate_counts = {
+        session: sum(1 for x in candidates.values() if x.get("session") == session)
+        for session in ("PRE_MARKET", "CORE", "AFTER_HOURS")
+    }
     enabled_users = sum(1 for row in settings_rows if row.get("enabled"))
     buy_entries = 0
     sell_exits = 0
@@ -4728,7 +4744,7 @@ def _stock_paper_worker_cycle():
                 result = _sb_rpc("stock_paper_worker_trade", {
                     "p_user_id":uid,"p_action":"buy","p_symbol":candidate["symbol"],
                     "p_price":float(candidate["price"]),"p_position_id":None,
-                    "p_reason":"ALPACA_IEX_FAST_ENTRY","p_signal_score":min(100,int(
+                    "p_reason":"MOMENTUM_" + str(candidate.get("session") or "UNKNOWN") + "_FAST_ENTRY","p_signal_score":min(100,int(
                         40 + float(candidate.get("relativeVolume") or 0)*8
                         + max(0,float(candidate.get("m1") or 0))*3
                         + max(0,float(candidate.get("m5") or 0))*2
@@ -4748,6 +4764,10 @@ def _stock_paper_worker_cycle():
         "status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
         "lastError":None,"cycles":STOCK_PAPER_WORKER_STATE.get("cycles",0)+1,
         "scannerAgeSeconds":int(age),"scannerFresh":fresh,"candidateCount":len(candidates),
+        "strategy":"PREMARKET_REGULAR_AFTER_HOURS_MOMENTUM",
+        "allocationPct":30,"reservePct":70,
+        "extendedHoursReady":extended_hours_ready,
+        "sessionCandidateCounts":session_candidate_counts,
         "enabledUsers":enabled_users,"buyEntries":buy_entries,"sellExits":sell_exits
     })
     log.info(
