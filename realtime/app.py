@@ -4497,10 +4497,13 @@ def _paper_worker_cycle():
                 PAPER_WORKER_STATE["actions"] = PAPER_WORKER_STATE["actions"][-20:]
         # Crypto markets trade continuously; stock extended-hours entitlements do not apply.
         if not setting.get("enabled") or not fresh:
+            if not setting.get("enabled"):
+                skip_counts["disabled"] += 1
             continue
         # Refresh open positions after exits and enforce the persisted position cap.
         positions = _sb_rest("paper_bot_positions", {"select":"id,symbol,status,position_side,entry_price,quantity", "user_id":"eq." + uid, "status":"eq.open", "limit":"20"})
         if len(positions) >= int(setting.get("max_open_positions") or 5):
+            skip_counts["at_max_positions"] += 1
             continue
         account_rows = _sb_rest("paper_bot_accounts", {"select":"cash_balance,starting_balance,realized_pnl", "user_id":"eq." + uid, "limit":"1"})
         if not account_rows:
@@ -4909,6 +4912,7 @@ def _stock_paper_worker_cycle_locked():
     enabled_users = sum(1 for row in settings_rows if row.get("enabled"))
     buy_entries = 0
     sell_exits = 0
+    skip_counts = {"at_max_positions":0,"daily_loss_limit":0,"disabled":0}
     for setting in settings_rows:
         uid = str(setting["user_id"])
         positions = _sb_rest("stock_paper_positions", {
@@ -4981,6 +4985,7 @@ def _stock_paper_worker_cycle_locked():
         daily_loss = daily_realized + open_pnl
         loss_limit = float(account.get("starting_balance") or setting.get("starting_balance") or 3000) * float(setting.get("daily_loss_limit_pct") or 3)/100
         if daily_loss <= -loss_limit:
+            skip_counts["daily_loss_limit"] += 1
             continue
         held = {p["symbol"] for p in positions}
         ranked = [x for x in candidates.values() if x["symbol"] not in held
@@ -5033,11 +5038,12 @@ def _stock_paper_worker_cycle_locked():
             setup:sum(1 for x in candidates.values() if setup in (x.get("momentumSetups") or []))
             for setup in ("GAP_AND_GO","VOLUME_EXPLOSION","HIGH_OF_DAY_BREAKOUT","PULLBACK_REVERSAL","NEWS_CATALYST")
         },
-        "enabledUsers":enabled_users,"buyEntries":buy_entries,"sellExits":sell_exits
+        "enabledUsers":enabled_users,"buyEntries":buy_entries,"sellExits":sell_exits,
+        "skipCounts":skip_counts
     })
     log.info(
-        "Stock Paper worker cycle complete scanner_fresh=%s scanner_age=%ss fast_entry_candidates=%d enabled_users=%d buys=%d sells=%d",
-        fresh, int(age), len(candidates), enabled_users, buy_entries, sell_exits
+        "Stock Paper worker cycle complete scanner_fresh=%s scanner_age=%ss fast_entry_candidates=%d enabled_users=%d buys=%d sells=%d skip_counts=%s",
+        fresh, int(age), len(candidates), enabled_users, buy_entries, sell_exits, skip_counts
     )
 
 
@@ -5080,7 +5086,7 @@ def _stock_paper_member_snapshot(user_id: str):
         "user_id":"eq." + user_id, "limit":"1"
     }) or []
     positions = _sb_rest("stock_paper_positions", {
-        "select":"id,symbol,quantity,entry_price,current_price,unrealized_pnl,realized_pnl,opened_at,status,take_profit_price,stop_loss_price",
+        "select":"id,symbol,quantity,entry_price,current_price,unrealized_pnl,realized_pnl,opened_at,closed_at,exit_price,close_reason,status,take_profit_price,stop_loss_price",
         "user_id":"eq." + user_id, "order":"opened_at.desc", "limit":"1000"
     }) or []
     # Refresh open-position mark-to-market at report time so both member and
@@ -5109,14 +5115,19 @@ def _stock_paper_member_snapshot(user_id: str):
                                 "p_reason":"REPORT_MARK_TO_MARKET","p_signal_score":None
                             })
             positions = _sb_rest("stock_paper_positions", {
-                "select":"id,symbol,quantity,entry_price,current_price,unrealized_pnl,realized_pnl,opened_at,status,take_profit_price,stop_loss_price",
+                "select":"id,symbol,quantity,entry_price,current_price,unrealized_pnl,realized_pnl,opened_at,closed_at,exit_price,close_reason,status,take_profit_price,stop_loss_price",
                 "user_id":"eq." + user_id, "order":"opened_at.desc", "limit":"1000"
             }) or []
         except Exception as exc:
             log.warning("Stock Paper report mark-to-market refresh failed for %s (%s)", user_id[:8], type(exc).__name__)
+    orders = _sb_rest("stock_paper_orders", {
+        "select":"id,position_id,symbol,side,quantity,price,notional,fee,status,reason,realized_pnl,created_at",
+        "user_id":"eq." + user_id, "order":"created_at.desc", "limit":"50"
+    }) or []
     account = accounts[0] if accounts else {}
     setting = settings[0] if settings else {}
     opened = [p for p in positions if p.get("status") == "open"]
+    closed = [p for p in positions if p.get("status") == "closed"]
     closed = [p for p in positions if p.get("status") == "closed"]
     start = float(account.get("starting_balance") or setting.get("starting_balance") or 0)
     cash = float(account.get("cash_balance") or 0)
@@ -5144,6 +5155,22 @@ def _stock_paper_member_snapshot(user_id: str):
         "allocationReturnPct":round((pnl/cap*100) if cap else 0,2),
         "openPositionCount":len(opened),
         "closedTradeCount":len(closed),
+        "maxOpenPositions":int(setting.get("max_open_positions") or 0),
+        "orderBudget":round(float(setting.get("order_budget") or 0),2),
+        "recentOrderCount":len(orders),
+        "recentOrders":[{
+            "id":o.get("id"),"symbol":o.get("symbol"),"side":o.get("side"),
+            "quantity":float(o.get("quantity") or 0),"price":float(o.get("price") or 0),
+            "notional":round(float(o.get("notional") or 0),2),"fee":round(float(o.get("fee") or 0),4),
+            "status":o.get("status"),"reason":o.get("reason"),
+            "realizedPnl":round(float(o.get("realized_pnl") or 0),2),"createdAt":o.get("created_at")
+        } for o in orders],
+        "recentClosedTrades":[{
+            "symbol":p.get("symbol"),"quantity":float(p.get("quantity") or 0),
+            "entryPrice":float(p.get("entry_price") or 0),"exitPrice":float(p.get("exit_price") or 0),
+            "realizedPnl":round(float(p.get("realized_pnl") or 0),2),
+            "closeReason":p.get("close_reason"),"openedAt":p.get("opened_at"),"closedAt":p.get("closed_at")
+        } for p in sorted(closed,key=lambda x:str(x.get("closed_at") or ""),reverse=True)[:20]],
         "feesPaid":round(float(account.get("fees_paid") or 0),2),
         "openPositions":[{
             "symbol":p.get("symbol"),"quantity":float(p.get("quantity") or 0),
