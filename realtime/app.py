@@ -4434,6 +4434,7 @@ def _binance_public_price(symbol: str):
     return None
 
 def _paper_worker_cycle():
+    skip_counts = {"at_max_positions": 0, "disabled": 0}
     settings_rows = _sb_rest("paper_bot_settings", {"select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,allowed_exchanges",
                                                      "mode":"eq.paper", "limit":"100"})
     setting_user_ids = list(dict.fromkeys(str(row.get("user_id")) for row in settings_rows if row.get("user_id")))
@@ -4881,8 +4882,18 @@ def _stock_paper_worker_cycle_locked():
     # After-hours entries require an explicitly verified extended-hours entitlement.
     extended_hours_ready = scanner.get("extendedHoursAvailable") is True
     allowed_sessions = {"CORE"} if market_open else set()
-    candidates = {x.get("symbol"):x for x in (scanner.get("candidates") or [])
-                  if x.get("symbol") and x.get("session") in allowed_sessions
+    raw_candidates = [x for x in (scanner.get("candidates") or []) if x.get("symbol")]
+    filter_counts = {
+        "raw": len(raw_candidates),
+        "core_session": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions),
+        "fast_entry": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True),
+        "market_data_fresh": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True and x.get("marketDataFresh") is True),
+        "trade_age_ok": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True and x.get("marketDataFresh") is True and _num(x.get("tradeAgeSeconds"),999) + age <= 120),
+        "quote_age_ok": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True and x.get("marketDataFresh") is True and _num(x.get("tradeAgeSeconds"),999) + age <= 120 and _num(x.get("quoteAgeSeconds"),999) + age <= 120),
+        "bar_age_ok": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True and x.get("marketDataFresh") is True and _num(x.get("tradeAgeSeconds"),999) + age <= 120 and _num(x.get("quoteAgeSeconds"),999) + age <= 120 and _num(x.get("latestBarAgeSeconds"),999) + age <= 120),
+    }
+    candidates = {x.get("symbol"):x for x in raw_candidates
+                  if x.get("session") in allowed_sessions
                   and x.get("fastEntry") is True and x.get("marketDataFresh") is True
                   and _num(x.get("tradeAgeSeconds"),999) + age <= 120
                   and _num(x.get("quoteAgeSeconds"),999) + age <= 120
@@ -5050,6 +5061,7 @@ def _stock_paper_worker_cycle_locked():
         "status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
         "lastError":None,"cycles":STOCK_PAPER_WORKER_STATE.get("cycles",0)+1,
         "scannerAgeSeconds":int(age),"scannerFresh":fresh,"candidateCount":len(candidates),
+        "candidateFilterCounts":filter_counts,
         "strategy":"PREMARKET_REGULAR_AFTER_HOURS_MOMENTUM",
         "allocationPct":30,"reservePct":70,
         "extendedHoursReady":extended_hours_ready,
@@ -5062,8 +5074,8 @@ def _stock_paper_worker_cycle_locked():
         "skipCounts":skip_counts
     })
     log.info(
-        "Stock Paper worker cycle complete scanner_fresh=%s scanner_age=%ss fast_entry_candidates=%d enabled_users=%d buys=%d sells=%d skip_counts=%s",
-        fresh, int(age), len(candidates), enabled_users, buy_entries, sell_exits, skip_counts
+        "Stock Paper worker cycle complete scanner_fresh=%s scanner_age=%ss candidates=%d filters=%s enabled_users=%d buys=%d sells=%d skip_counts=%s",
+        fresh, int(age), len(candidates), filter_counts, enabled_users, buy_entries, sell_exits, skip_counts
     )
 
 
