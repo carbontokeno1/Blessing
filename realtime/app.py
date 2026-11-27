@@ -1108,7 +1108,8 @@ def _alpaca_recent_bars(symbols: list[str]) -> dict:
         return {}
     _alpaca_data_request_slot()
     end = datetime.now(timezone.utc)
-    start = end.timestamp() - 15 * 60
+    # Pullback strategy needs enough 1-minute bars for EMA20, RSI14 and rolling VWAP.
+    start = end.timestamp() - 90 * 60
     response = requests.get(
         "https://data.alpaca.markets/v2/stocks/bars",
         params={
@@ -1168,7 +1169,7 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str, 
                 "low": _num(b.get("l")), "close": close,
                 "volume": _num(b.get("v"), 0) or 0, "time": b.get("t"),
             })
-    bars = bars[-15:]
+    bars = bars[-60:]
     closes = [x["close"] for x in bars]
     m1 = ((closes[-1] / closes[-2]) - 1) * 100 if len(closes) >= 2 and closes[-2] else None
     m3 = ((closes[-1] / closes[-4]) - 1) * 100 if len(closes) >= 4 and closes[-4] else None
@@ -1265,56 +1266,87 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str, 
     # Include EARLY setups from score 3/11 upward so the daily scanner can surface developing moves; FAST_ENTRY remains independently strict.
     if spread is not None and spread > 1.25:
         return None
-    # Five parallel momentum playbooks. Each setup has its own trigger;
-    # a single shared breakout rule is deliberately NOT required.
-    continuation = bool(m3 is not None and m3 >= 0.30)
-    prior_closes = closes[-5:-1]
-    prior_lows = [x["low"] for x in bars[-5:-1] if x.get("low") and x["low"] > 0]
-    pullback_reclaim = bool(
-        len(prior_closes) >= 3 and len(prior_lows) >= 3
-        and min(prior_closes) < max(prior_closes)
-        and price > max(prior_closes[-2:])
-        and m1 is not None and m1 > 0
+    # New paper strategy: EMA trend + rolling VWAP pullback/reclaim.
+    # It deliberately avoids gap-chasing, high-of-day breakouts and volume spikes.
+    def _ema(values, period):
+        if len(values) < period:
+            return None
+        alpha = 2.0 / (period + 1.0)
+        value = sum(values[:period]) / period
+        for item in values[period:]:
+            value = alpha * item + (1.0 - alpha) * value
+        return value
+
+    ema9 = _ema(closes, 9)
+    ema20 = _ema(closes, 20)
+    prev_ema9 = _ema(closes[:-1], 9) if len(closes) > 9 else None
+    gains, losses = [], []
+    for idx in range(max(1, len(closes) - 14), len(closes)):
+        delta = closes[idx] - closes[idx - 1]
+        gains.append(max(delta, 0.0))
+        losses.append(max(-delta, 0.0))
+    avg_gain = sum(gains) / len(gains) if gains else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    rsi14 = (100.0 if avg_loss == 0 and avg_gain > 0 else
+             (50.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))))
+    vwap_bars = bars[-30:]
+    vwap_volume = sum(x["volume"] for x in vwap_bars if x["volume"] > 0)
+    rolling_vwap = (
+        sum(((x["high"] + x["low"] + x["close"]) / 3.0) * x["volume"]
+            for x in vwap_bars if x["volume"] > 0) / vwap_volume
+        if vwap_volume > 0 else None
     )
-    gap_go = bool(change is not None and 3 <= change <= 30
-                  and m1 is not None and m1 > 0
-                  and m5 is not None and m5 >= 0.15
-                  and rvol is not None and rvol >= 1.3)
-    volume_explosion = bool(rvol is not None and rvol >= 2
-                            and m1 is not None and m1 > 0
-                            and m5 is not None and m5 > 0)
-    hod_breakout = bool(breakout and m1 is not None and m1 > 0
-                        and rvol is not None and rvol >= 1.3)
-    pullback_reversal = bool(pullback_reclaim and rvol is not None and rvol >= 1.0)
-    # Catalyst entries are only recognized when a verified news provider supplies
-    # a timestamped, sourced catalyst object; price movement alone is not "news".
-    catalyst = snap.get("newsCatalyst") if isinstance(snap.get("newsCatalyst"), dict) else {}
-    catalyst_time = catalyst.get("publishedAt")
-    catalyst_source = catalyst.get("source")
-    news_catalyst = bool(catalyst.get("verified") is True and catalyst_time and catalyst_source)
-    momentum_setups = []
-    if gap_go: momentum_setups.append("GAP_AND_GO")
-    if volume_explosion: momentum_setups.append("VOLUME_EXPLOSION")
-    if hod_breakout: momentum_setups.append("HIGH_OF_DAY_BREAKOUT")
-    if pullback_reversal: momentum_setups.append("PULLBACK_REVERSAL")
-    if news_catalyst: momentum_setups.append("NEWS_CATALYST")
-    momentum_score = min(100, (28 if gap_go else 0) + (25 if volume_explosion else 0)
-                         + (25 if hod_breakout else 0) + (22 if pullback_reversal else 0)
-                         + (25 if news_catalyst else 0))
-    # Shared execution safety: positive short-term tape, fresh bid/ask, tight spread.
-    fast_entry = bool(market_data_fresh and momentum_setups and momentum_score >= 50
-                      and m1 is not None and m1 > 0
-                      and m5 is not None and m5 >= -0.10
-                      and spread is not None and 0 < spread <= 0.50
-                      and change is not None and -5 <= change <= 100)
+    trend_up = bool(ema9 and ema20 and ema9 > ema20 and price > ema20)
+    vwap_confirmed = bool(rolling_vwap and price >= rolling_vwap
+                          and price <= rolling_vwap * 1.008)
+    recent_pullback = bool(ema9 and any(
+        x["low"] > 0 and x["low"] <= ema9 * 1.003 for x in bars[-5:]
+    ))
+    reclaim = bool(
+        ema9 and prev_ema9 and len(closes) >= 2
+        and closes[-1] > ema9 and closes[-1] > closes[-2]
+        and closes[-2] <= prev_ema9 * 1.002
+    )
+    volume_baseline = [x["volume"] for x in bars[-21:-1] if x["volume"] > 0]
+    volume_avg20 = sum(volume_baseline) / len(volume_baseline) if volume_baseline else 0
+    pullback_rvol = bars[-1]["volume"] / volume_avg20 if volume_avg20 > 0 and bars else None
+    rsi_confirmed = 48 <= rsi14 <= 68
+    daily_move_ok = change is not None and -3.0 <= change <= 8.0
+    short_move_ok = m1 is not None and 0 <= m1 <= 0.40 and m5 is not None and m5 > 0
+    spread_ok = spread is not None and 0 < spread <= 0.35
+    volume_ok = pullback_rvol is not None and 0.70 <= pullback_rvol <= 2.50
+    vwap_trend_pullback = bool(
+        market_data_fresh and len(bars) >= 30 and trend_up and vwap_confirmed
+        and recent_pullback and reclaim and rsi_confirmed and daily_move_ok
+        and short_move_ok and spread_ok and volume_ok
+    )
+    strategy_score = (
+        (25 if trend_up else 0) + (20 if vwap_confirmed else 0)
+        + (20 if recent_pullback else 0) + (20 if reclaim else 0)
+        + (10 if rsi_confirmed else 0) + (5 if spread_ok else 0)
+    )
+    momentum_setups = ["VWAP_TREND_PULLBACK"] if vwap_trend_pullback else []
+    momentum_score = strategy_score if vwap_trend_pullback else 0
+    gap_go = False
+    volume_explosion = False
+    hod_breakout = False
+    pullback_reversal = vwap_trend_pullback
+    catalyst = {}
+    catalyst_source = None
+    news_catalyst = False
+    fast_entry = vwap_trend_pullback
     fast_entry_reasons = []
     if not market_data_fresh: fast_entry_reasons.append("MARKET_DATA_NOT_FRESH_OR_MARKET_CLOSED")
-    if not momentum_setups: fast_entry_reasons.append("NO_MOMENTUM_SETUP")
-    if momentum_score < 50: fast_entry_reasons.append("MOMENTUM_SCORE_BELOW_50")
-    if m1 is None or m1 <= 0: fast_entry_reasons.append("M1_NOT_POSITIVE")
-    if m5 is None or m5 < -0.10: fast_entry_reasons.append("M5_TREND_WEAK")
-    if spread is None or spread <= 0 or spread > 0.50: fast_entry_reasons.append("SPREAD_NOT_TRADABLE")
-    if change is None or change < -5 or change > 100: fast_entry_reasons.append("DAILY_MOVE_OUT_OF_RANGE")
+    if len(bars) < 30: fast_entry_reasons.append("INSUFFICIENT_1M_BARS_FOR_TREND")
+    if not trend_up: fast_entry_reasons.append("EMA9_NOT_ABOVE_EMA20")
+    if not vwap_confirmed: fast_entry_reasons.append("PRICE_NOT_IN_VWAP_PULLBACK_ZONE")
+    if not recent_pullback: fast_entry_reasons.append("NO_RECENT_EMA9_PULLBACK")
+    if not reclaim: fast_entry_reasons.append("NO_EMA9_RECLAIM_CONFIRMATION")
+    if not rsi_confirmed: fast_entry_reasons.append("RSI14_OUTSIDE_48_68")
+    if not daily_move_ok: fast_entry_reasons.append("DAILY_MOVE_OUTSIDE_MINUS3_TO_PLUS8")
+    if not short_move_ok: fast_entry_reasons.append("SHORT_TERM_MOVE_NOT_CONTROLLED")
+    if not spread_ok: fast_entry_reasons.append("SPREAD_ABOVE_0_35_OR_INVALID")
+    if not volume_ok: fast_entry_reasons.append("PULLBACK_VOLUME_NOT_HEALTHY")
     forecast = forecast_10m_from_bars(bars, price)
     setup = "STRONG" if score >= 7 else ("WATCH" if score >= 5 else "EARLY")
     return {
@@ -5256,7 +5288,7 @@ def _stock_paper_worker_cycle_locked():
                 result = _sb_rpc("stock_paper_worker_trade", {
                     "p_user_id":uid,"p_action":"buy","p_symbol":candidate["symbol"],
                     "p_price":float(candidate["price"]),"p_position_id":None,
-                    "p_reason":"MOMENTUM_" + str(candidate.get("session") or "UNKNOWN") + "_" + "_".join(candidate.get("momentumSetups") or ["SETUP"])[:90],
+                    "p_reason":"VWAP_TREND_PULLBACK_" + str(candidate.get("session") or "UNKNOWN"),
                     "p_signal_score":min(100,int(candidate.get("momentumScore") or 0))
                 })
                 STOCK_PAPER_ENTRY_COOLDOWNS[cooldown_key] = time.time()
@@ -5274,13 +5306,13 @@ def _stock_paper_worker_cycle_locked():
         "lastError":None,"cycles":STOCK_PAPER_WORKER_STATE.get("cycles",0)+1,
         "scannerAgeSeconds":int(age),"scannerFresh":fresh,"candidateCount":len(candidates),
         "candidateFilterCounts":filter_counts,"pretradeRefreshCounts":pretrade_counts,
-        "strategy":"PREMARKET_REGULAR_AFTER_HOURS_MOMENTUM",
+        "strategy":"EMA9_EMA20_VWAP_PULLBACK_RECLAIM",
         "allocationPct":30,"reservePct":70,
         "extendedHoursReady":extended_hours_ready,
         "sessionCandidateCounts":session_candidate_counts,
-        "momentumSetupCounts":{
+        "strategySetupCounts":{
             setup:sum(1 for x in candidates.values() if setup in (x.get("momentumSetups") or []))
-            for setup in ("GAP_AND_GO","VOLUME_EXPLOSION","HIGH_OF_DAY_BREAKOUT","PULLBACK_REVERSAL","NEWS_CATALYST")
+            for setup in ("VWAP_TREND_PULLBACK",)
         },
         "enabledUsers":enabled_users,"buyEntries":buy_entries,"sellExits":sell_exits,
         "skipCounts":skip_counts,
