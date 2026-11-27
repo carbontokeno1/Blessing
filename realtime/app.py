@@ -960,6 +960,33 @@ def _alpaca_headers():
     return {"APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET}
 
 
+_MARKET_CLOCK_CACHE = {"at":0.0,"is_open":False}
+_MARKET_CLOCK_LOCK = threading.Lock()
+
+
+def _alpaca_market_clock_cached():
+    """Fail closed unless Alpaca confirms the US regular session is open."""
+    now = time.time()
+    with _MARKET_CLOCK_LOCK:
+        if now - _MARKET_CLOCK_CACHE["at"] < 15:
+            return bool(_MARKET_CLOCK_CACHE["is_open"])
+    if not (ALPACA_KEY and ALPACA_SECRET):
+        return False
+    try:
+        response = requests.get("https://paper-api.alpaca.markets/v2/clock",
+                                headers=_alpaca_headers(),timeout=(3,6))
+        response.raise_for_status()
+        is_open = bool((response.json() or {}).get("is_open"))
+        with _MARKET_CLOCK_LOCK:
+            _MARKET_CLOCK_CACHE.update({"at":now,"is_open":is_open})
+        return is_open
+    except Exception as exc:
+        log.warning("Alpaca market clock unavailable; stock entries fail closed (%s)",type(exc).__name__)
+        with _MARKET_CLOCK_LOCK:
+            _MARKET_CLOCK_CACHE.update({"at":now,"is_open":False})
+        return False
+
+
 def _alpaca_news_catalysts(symbols: list[str]) -> dict[str, dict]:
     """Return only recent, explicitly positive, symbol-matched news catalysts."""
     if not ALPACA_KEY or not ALPACA_SECRET or not symbols:
@@ -1080,7 +1107,7 @@ def _num(value, default=None):
         return default
 
 
-def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) -> dict | None:
+def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str, market_open: bool = False) -> dict | None:
     """Score liquid US equities for speculative momentum; return watchlist and strong setups."""
     trade = snap.get("latestTrade") or {}
     quote = snap.get("latestQuote") or {}
@@ -1119,21 +1146,25 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     m3 = ((closes[-1] / closes[-4]) - 1) * 100 if len(closes) >= 4 and closes[-4] else None
     m5 = ((closes[-1] / closes[-6]) - 1) * 100 if len(closes) >= 6 and closes[-6] else None
     trade_time = trade.get("t") or minute.get("t")
-    session = "UNKNOWN"
-    if trade_time:
+    session = "CORE" if market_open else "CLOSED"
+    def _stamp_age(value):
+        if not value:
+            return None
         try:
-            et = datetime.fromisoformat(str(trade_time).replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
-            minute_of_day = et.hour * 60 + et.minute
-            if et.weekday() < 5 and 240 <= minute_of_day < 570:
-                session = "PRE_MARKET"
-            elif et.weekday() < 5 and 570 <= minute_of_day < 960:
-                session = "CORE"
-            elif et.weekday() < 5 and 960 <= minute_of_day < 1200:
-                session = "AFTER_HOURS"
-            else:
-                session = "CLOSED"
+            parsed = datetime.fromisoformat(str(value).replace("Z","+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc)-parsed.astimezone(timezone.utc)).total_seconds()
         except Exception:
-            session = "UNKNOWN"
+            return None
+    trade_age = _stamp_age(trade.get("t") or minute.get("t"))
+    quote_age = _stamp_age(quote.get("t"))
+    newest_bar_age = _stamp_age((bars_raw[-1] or {}).get("t")) if bars_raw else None
+    market_data_fresh = bool(
+        market_open and trade_age is not None and -30 <= trade_age <= 120
+        and quote_age is not None and -30 <= quote_age <= 120
+        and newest_bar_age is not None and -30 <= newest_bar_age <= 120
+    )
     previous_volumes = [x["volume"] for x in bars[-6:-1]]
     average_volume = sum(previous_volumes) / len(previous_volumes) if previous_volumes else 0
     rvol = bars[-1]["volume"] / average_volume if average_volume > 0 else None
@@ -1243,12 +1274,13 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
                          + (25 if hod_breakout else 0) + (22 if pullback_reversal else 0)
                          + (25 if news_catalyst else 0))
     # Shared execution safety: positive short-term tape, fresh bid/ask, tight spread.
-    fast_entry = bool(momentum_setups and momentum_score >= 50
+    fast_entry = bool(market_data_fresh and momentum_setups and momentum_score >= 50
                       and m1 is not None and m1 > 0
                       and m5 is not None and m5 >= -0.10
                       and spread is not None and 0 < spread <= 0.50
                       and change is not None and -5 <= change <= 100)
     fast_entry_reasons = []
+    if not market_data_fresh: fast_entry_reasons.append("MARKET_DATA_NOT_FRESH_OR_MARKET_CLOSED")
     if not momentum_setups: fast_entry_reasons.append("NO_MOMENTUM_SETUP")
     if momentum_score < 50: fast_entry_reasons.append("MOMENTUM_SCORE_BELOW_50")
     if m1 is None or m1 <= 0: fast_entry_reasons.append("M1_NOT_POSITIVE")
@@ -1263,6 +1295,10 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
         "session": session, "volume": int(daily_volume),
         "relativeVolume": rvol, "spreadPct": spread,
         "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
+        "marketDataFresh": market_data_fresh,
+        "tradeAgeSeconds": round(trade_age,1) if trade_age is not None else None,
+        "quoteAgeSeconds": round(quote_age,1) if quote_age is not None else None,
+        "latestBarAgeSeconds": round(newest_bar_age,1) if newest_bar_age is not None else None,
         "momentumSetups": momentum_setups, "momentumScore": momentum_score,
         "gapAndGo": gap_go, "volumeExplosion": volume_explosion,
         "highOfDayBreakout": hod_breakout, "pullbackReversal": pullback_reversal,
@@ -1289,6 +1325,7 @@ def _universe_scan_cycle():
     started = time.time()
     source = "Alpaca IEX"
     if ALPACA_KEY and ALPACA_SECRET:
+        market_open = _alpaca_market_clock_cached()
         assets = _load_active_universe(force=False)
         exchange_by_symbol = {x["symbol"]: x.get("exchange", "") for x in assets}
         asset_by_symbol = {x["symbol"]: x for x in assets}
@@ -1331,7 +1368,8 @@ def _universe_scan_cycle():
             if symbol in news_catalysts:
                 candidate_snapshot["newsCatalyst"] = news_catalysts[symbol]
             row = _universe_candidate(symbol, candidate_snapshot,
-                                      bars_by_symbol.get(symbol) or [], exchange_by_symbol.get(symbol, ""))
+                                      bars_by_symbol.get(symbol) or [], exchange_by_symbol.get(symbol, ""),
+                                      market_open=market_open)
             if row:
                 row["exchange"] = exchange_by_symbol.get(symbol, "")
                 row["companyName"] = (asset_by_symbol.get(symbol) or {}).get("name")
@@ -1406,6 +1444,7 @@ def _universe_scan_cycle():
                 if _num((x.get("latestQuote") or {}).get("bp")) and _num((x.get("latestQuote") or {}).get("ap"))),
             "feed": provider, "coverage": coverage,
             "extendedHoursAvailable": False if provider == "Alpaca IEX" else "depends_on_Webull_entitlement",
+            "marketOpen": bool(market_open) if provider == "Alpaca IEX" else None,
         })
     log.info("%s universe scan complete: instruments=%d snapshots=%d evaluated=%d candidates=%d snapshot_errors=%d bar_errors=%d duration=%.1fs",
              provider, len(assets), len(snapshots), len(selected), len(candidates), snapshot_errors, bar_errors, elapsed)
