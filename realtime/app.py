@@ -1755,7 +1755,7 @@ def _binance_public_tickers():
             cached_rest_rows = list(BINANCE_TH_REST_TICKER_CACHE.get("rows") or [])
             rest_cache_age = now - float(BINANCE_TH_REST_TICKER_CACHE.get("at") or 0)
         existing_symbols = {str(x.get("symbol") or "").upper() for x in rows}
-        if cached_rest_rows and rest_cache_age <= 60:
+        if float(BINANCE_TH_REST_TICKER_CACHE.get("at") or 0) > 0 and rest_cache_age <= 60:
             for item in cached_rest_rows:
                 symbol = str(item.get("symbol") or "").upper()
                 if symbol and symbol not in existing_symbols:
