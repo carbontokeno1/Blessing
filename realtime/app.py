@@ -1525,7 +1525,7 @@ def _universe_scanner_loop():
     while True:
         cycle_started = time.time()
         try:
-            with _distributed_worker_lease("us-equity-universe-scanner", 240) as leader:
+            with _distributed_worker_lease("us-equity-universe-scanner", 120) as leader:
                 if leader:
                     if ALPACA_KEY and ALPACA_SECRET:
                         _universe_scan_cycle()
@@ -2547,7 +2547,7 @@ WORKER_INSTANCE_ID = str(uuid.uuid4())
 
 
 @contextmanager
-def _distributed_worker_lease(worker_key: str, lease_seconds: int = 240):
+def _distributed_worker_lease(worker_key: str, lease_seconds: int = 120):
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         log.error("Worker lease unavailable: Supabase credentials are missing (%s)", worker_key)
         yield False
@@ -4762,7 +4762,7 @@ def _paper_worker_loop():
                 STOCK_PAPER_WORKER_STATE.update({"status":"waiting_config","lastError":"SUPABASE_WORKER_CONFIG_MISSING"})
                 time.sleep(30)
                 continue
-            with _distributed_worker_lease("crypto-stock-paper-worker", 240) as leader:
+            with _distributed_worker_lease("crypto-stock-paper-worker", 120) as leader:
                 if not leader:
                     PAPER_WORKER_STATE.update({"status":"standby","lastError":"WORKER_LEASE_HELD_BY_ANOTHER_INSTANCE"})
                     STOCK_PAPER_WORKER_STATE.update({"status":"standby","lastError":"WORKER_LEASE_HELD_BY_ANOTHER_INSTANCE"})
@@ -6068,7 +6068,7 @@ def _dual_paper_worker_cycle():
 def _dual_paper_worker_loop():
     while True:
         try:
-            with _distributed_worker_lease("dual-paper-monitor", 240) as leader:
+            with _distributed_worker_lease("dual-paper-monitor", 120) as leader:
                 if leader:
                     _dual_paper_worker_cycle()
                 else:
@@ -6899,7 +6899,7 @@ def _member_slot_engine_cycle():
 def _member_slot_engine_loop():
     while True:
         try:
-            with _distributed_worker_lease("member-slot-paper-engine", 240) as leader:
+            with _distributed_worker_lease("member-slot-paper-engine", 120) as leader:
                 if leader:
                     _member_slot_engine_cycle()
                 else:
