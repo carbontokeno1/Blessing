@@ -5317,50 +5317,58 @@ def _dual_market_price(market: str, symbol: str) -> float:
             log.info("Paper crypto price unavailable for %s (%s)", symbol, type(exc).__name__)
         raise HTTPException(status_code=503, detail="ไม่มีราคา Binance TH สดสำหรับส่งคำสั่ง Paper")
     if market == "stocks":
-        # Prefer Webull streaming when it is fresh. The Paper stock scanner itself
-        # uses Alpaca IEX snapshots, so use that same server-side feed as a safe
-        # fallback instead of rejecting every candidate when Webull has no tick.
-        quote = state.get("quotes", {}).get(symbol)
-        if isinstance(quote, dict):
+        now = datetime.now(timezone.utc)
+        # Independent provider caches: prefer fresh Webull, then fresh Alpaca.
+        for provider, cache in (("Webull", state.get("quotes", {})), ("Alpaca", state.get("alpaca_quotes", {}))):
+            quote = cache.get(symbol) if isinstance(cache, dict) else None
+            if not isinstance(quote, dict):
+                continue
             try:
-                stamp = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
-                age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                received = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
+                age = (now - received).total_seconds()
             except Exception:
                 age = 999999
-            price = _dual_price_number(quote.get("raw") or quote)
-            if 0 <= age <= 5 and price and price > 0:
-                return price
-        # Reuse the server-side Alpaca snapshot already accepted by the stock scanner.
-        # This keeps execution and scanner prices consistent and avoids a second
-        # per-symbol API request returning an empty/stale response.
+            raw = quote.get("raw") or quote
+            price = _dual_price_number(raw)
+            if 0 <= age <= 8 and price and price > 0:
+                return float(price)
+        # Reuse a recently scanned candidate only when its scan timestamp is valid.
         try:
             with UNIVERSE_LOCK:
                 universe = dict(UNIVERSE_STATE)
-            scan_stamp = datetime.fromisoformat(str(universe.get("updatedAt")).replace("Z", "+00:00"))
-            scan_age = (datetime.now(timezone.utc) - scan_stamp).total_seconds()
-            scan_limit = max(180, UNIVERSE_SCAN_INTERVAL * 3)
-            if 0 <= scan_age <= scan_limit:
-                match = next((row for row in (universe.get("candidates") or [])
-                              if str(row.get("symbol") or "").upper() == symbol), None)
-                if match:
-                    scanned_price = _num(match.get("price"), 0)
-                    if scanned_price > 0:
-                        return float(scanned_price)
+            updated = universe.get("updatedAt")
+            if updated:
+                scan_stamp = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+                scan_age = (now - scan_stamp).total_seconds()
+                scan_limit = max(180, UNIVERSE_SCAN_INTERVAL * 3)
+                if 0 <= scan_age <= scan_limit:
+                    match = next((row for row in (universe.get("candidates") or [])
+                                  if str(row.get("symbol") or "").upper() == symbol), None)
+                    if match:
+                        scanned_price = _num(match.get("price"), 0)
+                        if scanned_price > 0:
+                            return float(scanned_price)
         except Exception as exc:
-            log.info("Paper stock scanner quote fallback unavailable for %s (%s)", symbol, type(exc).__name__)
+            log.info("Paper stock scanner cache ignored for %s (%s)", symbol, type(exc).__name__)
         if not (ALPACA_KEY and ALPACA_SECRET):
-            raise HTTPException(status_code=503, detail="ไม่มีราคา Webull สด และยังไม่ได้ตั้งค่า Alpaca IEX สำหรับ Paper Trading")
+            raise HTTPException(status_code=503, detail="ยังไม่มีราคาหุ้นสดจาก Webull/Alpaca สำหรับ Paper Trading")
         try:
             snapshot = _alpaca_snapshots([symbol]).get(symbol) or {}
             trade = snapshot.get("latestTrade") or {}
             latest_quote = snapshot.get("latestQuote") or {}
             minute = snapshot.get("minuteBar") or {}
-            timestamp = trade.get("t") or latest_quote.get("t") or minute.get("t")
-            if timestamp:
-                stamp = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
-                age = (datetime.now(timezone.utc) - stamp).total_seconds()
-            else:
-                age = 999999
+            # Choose the newest available market timestamp; don't let an old last
+            # trade hide a fresh bid/ask update during premarket or after-hours.
+            stamps = []
+            for item in (trade, latest_quote, minute):
+                value = item.get("t")
+                if value:
+                    try:
+                        stamps.append(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+                    except Exception:
+                        pass
+            stamp = max(stamps) if stamps else None
+            age = (now - stamp).total_seconds() if stamp else 999999
             price = _num(trade.get("p"), 0)
             if price <= 0:
                 bid, ask = _num(latest_quote.get("bp"), 0), _num(latest_quote.get("ap"), 0)
@@ -5370,11 +5378,9 @@ def _dual_market_price(market: str, symbol: str) -> float:
                 price = _num(minute.get("c"), 0)
             if 0 <= age <= 90 and price > 0:
                 return float(price)
-        except HTTPException:
-            raise
         except Exception as exc:
-            log.info("Paper stock Alpaca quote unavailable for %s (%s)", symbol, type(exc).__name__)
-        raise HTTPException(status_code=503, detail="ไม่มีราคาหุ้น Webull/Alpaca ที่สดพอสำหรับส่งคำสั่ง Paper")
+            log.info("Paper stock Alpaca snapshot unavailable for %s (%s)", symbol, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="ราคาหุ้นยังไม่สดพอ ระบบจึงงดส่งคำสั่ง Paper อย่างปลอดภัย")
     raise HTTPException(status_code=422, detail="เลือกตลาด crypto หรือ stocks เท่านั้น")
 
 
