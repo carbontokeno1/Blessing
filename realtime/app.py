@@ -1481,6 +1481,7 @@ def _universe_scan_cycle():
 
 def _universe_scanner_loop():
     while True:
+        cycle_started = time.time()
         try:
             if ALPACA_KEY and ALPACA_SECRET:
                 _universe_scan_cycle()
@@ -1501,7 +1502,7 @@ def _universe_scanner_loop():
                     "provider": "Alpaca IEX / Webull fallback",
                     "lastError": type(exc).__name__,
                     "updatedAt": datetime.now(timezone.utc).isoformat()})
-        cycle_elapsed = max(0.0, time.time() - locals().get("started", time.time()))
+        cycle_elapsed = max(0.0, time.time() - cycle_started)
         time.sleep(max(15, UNIVERSE_SCAN_INTERVAL - cycle_elapsed))
 
 
