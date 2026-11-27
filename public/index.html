@@ -474,31 +474,34 @@ async function loadMemberPerformanceChart(){
   const r=await fetch('/api/member/member-portfolios/performance?period='+encodeURIComponent(period),{headers:{authorization:'Bearer '+data.session.access_token},cache:'no-store',signal:AbortSignal.timeout(20000)});
   const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.detail||'โหลดกราฟไม่สำเร็จ');
   const portfolios=j.portfolios||[];
-  const fmt=n=>'฿'+Number(n||0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const money=(n,c)=>((c==='USD'?'$':'฿')+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
   function drawMarket(type,prefix,label){
    const svg=document.getElementById(prefix+'Chart'),summary=document.getElementById(prefix+'Summary'),legend=document.getElementById(prefix+'Legend');
    if(!svg||!summary||!legend)return;
-   const valid=portfolios.filter(p=>p.portfolioType===type&&Array.isArray(p.series)&&p.series.length);
-   const cap=valid.reduce((s,p)=>s+Number(p.capital||0),0),equity=valid.reduce((s,p)=>s+Number(p.equity||0),0),pnl=valid.reduce((s,p)=>s+Number(p.netPnl||0),0);
-   summary.innerHTML='<div class="card metric"><label>ทุนเริ่มต้น</label><strong>'+fmt(cap)+'</strong></div><div class="card metric"><label>Equity ปัจจุบัน</label><strong>'+fmt(equity)+'</strong></div><div class="card metric"><label>กำไร/ขาดทุนสุทธิ</label><strong class="'+(pnl>=0?'positive':'negative')+'">'+(pnl>=0?'+':'')+fmt(pnl)+' · '+(cap?(pnl/cap*100).toFixed(2):'0.00')+'%</strong></div>';
-   if(!valid.length){svg.innerHTML='<text x="24" y="125" fill="#94a3b8" font-size="15">ยังไม่มีข้อมูล '+label+' Paper ของบัญชีนี้</text>';legend.textContent='กราฟนี้แสดงเฉพาะ '+label+' Paper ไม่รวมอีกตลาด';return}
+   const valid=portfolios.filter(p=>(type==='stock_paper'?['stock_paper','stock_momentum'].includes(p.portfolioType):p.portfolioType===type)&&Array.isArray(p.series)&&p.series.length);
+   summary.innerHTML=valid.map(p=>{
+    const currency=p.currency||(p.portfolioType==='stock_momentum'?'USD':'THB'),name=p.label||(p.portfolioType==='stock_momentum'?'Momentum Stock Paper':type==='stock_paper'?'Stock Member Slot Paper':'Crypto Paper');
+    const pnl=Number(p.netPnl||0),pct=Number(p.returnPct||0);
+    return '<div class="card metric"><label>'+esc(name)+' · ทุน '+money(p.capital,currency)+'</label><strong>'+money(p.equity,currency)+'</strong><small class="'+(pnl>=0?'positive':'negative')+'">'+(pnl>=0?'+':'')+money(pnl,currency)+' ('+(pct>=0?'+':'')+pct.toFixed(2)+'%)</small></div>';
+   }).join('');
+   if(!valid.length){svg.innerHTML='<text x="24" y="125" fill="#94a3b8" font-size="15">ยังไม่มีข้อมูล '+label+' Paper ของบัญชีนี้</text>';legend.textContent='กราฟนี้แสดงเฉพาะ '+label+' Paper ของสมาชิกที่เข้าสู่ระบบ';return}
    const dates=[...new Set(valid.flatMap(p=>p.series.map(x=>x.date)))].sort();
-   const points=dates.map(date=>{let value=0;for(const p of valid){const rows=p.series.filter(x=>x.date<=date);if(rows.length)value+=Number(rows[rows.length-1].equity||0)}return {date,value}});
-   const W=800,H=260,L=68,R=20,T=20,B=42,vals=points.map(x=>x.value),min=Math.min(...vals),max=Math.max(...vals),pad=Math.max((max-min)*.12,cap*.002,1),lo=min-pad,hi=max+pad;
-   const xx=i=>L+(dates.length<2?(W-L-R)/2:i*(W-L-R)/(dates.length-1)),yy=v=>T+(hi-v)*(H-T-B)/(hi-lo);
-   let draw=[];for(let k=0;k<5;k++){const v=lo+(hi-lo)*k/4,y=yy(v);draw.push('<line x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'" stroke="#344155" stroke-width="1"/><text x="'+(L-9)+'" y="'+(y+4)+'" fill="#94a3b8" font-size="11" text-anchor="end">'+Math.round(v).toLocaleString('en-US')+'</text>')}
-   draw.push('<polyline fill="none" stroke="'+(type==='stock_paper'?'#f4b942':'#38bdf8')+'" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="'+points.map((p,i)=>xx(i)+','+yy(p.value)).join(' ')+'"/>');
-   draw.push('<circle cx="'+xx(points.length-1)+'" cy="'+yy(points[points.length-1].value)+'" r="5" fill="'+(type==='stock_paper'?'#f4b942':'#38bdf8')+'"/>');
+   const colors=type==='stock_paper'?['#f4b942','#43c59e','#60a5fa']:['#38bdf8','#a78bfa','#34d399'];
+   const lines=valid.map((p,i)=>{const capital=Number(p.capital||0);const map=new Map(p.series.map(x=>[x.date,capital?Number(x.equity||0)/capital*100:100]));let last=100;return {label:p.label||(p.portfolioType==='stock_momentum'?'Momentum Stock Paper':type==='stock_paper'?'Stock Member Slot Paper':'Crypto Paper'),color:colors[i%colors.length],points:dates.map(date=>{if(map.has(date))last=map.get(date);return last})}});
+   const vals=lines.flatMap(x=>x.points).filter(Number.isFinite),min=Math.min(98,...vals),max=Math.max(102,...vals),lo=min-(max-min)*.08,hi=max+(max-min)*.08;
+   const W=800,H=260,L=68,R=20,T=20,B=42,xx=i=>L+(dates.length<2?(W-L-R)/2:i*(W-L-R)/(dates.length-1)),yy=v=>T+(hi-v)*(H-T-B)/(hi-lo||1);
+   let draw=[];for(let k=0;k<5;k++){const v=lo+(hi-lo)*k/4,y=yy(v);draw.push('<line x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'" stroke="#344155" stroke-width="1"/><text x="'+(L-9)+'" y="'+(y+4)+'" fill="#94a3b8" font-size="11" text-anchor="end">'+v.toFixed(1)+'</text>')}
+   lines.forEach(line=>{const pts=line.points.map((v,i)=>xx(i)+','+yy(v));draw.push('<polyline fill="none" stroke="'+line.color+'" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="'+pts.join(' ')+'"/>');if(pts.length)draw.push('<circle cx="'+xx(pts.length-1)+'" cy="'+yy(line.points[line.points.length-1])+'" r="5" fill="'+line.color+'"/>')});
    [dates[0],dates[Math.floor((dates.length-1)/2)],dates[dates.length-1]].filter((x,i,a)=>x&&a.indexOf(x)===i).forEach(d=>{const i=dates.indexOf(d);draw.push('<text x="'+xx(i)+'" y="'+(H-12)+'" fill="#94a3b8" font-size="11" text-anchor="middle">'+d.slice(5)+'</text>')});
-   svg.innerHTML=draw.join('');legend.textContent=label+' Paper · '+valid.length+' พอร์ต · '+dates.length+' จุดข้อมูล · Realized + มูลค่าปัจจุบัน';
+   svg.innerHTML=draw.join('');legend.innerHTML='<span>ดัชนีฐาน 100 · เปรียบเทียบเป็นเปอร์เซ็นต์ ไม่บวก USD กับ THB</span><br>'+lines.map(x=>'<span style="display:inline-flex;align-items:center;gap:6px;margin:4px 14px 4px 0"><i style="width:16px;height:3px;background:'+x.color+';display:inline-block"></i>'+esc(x.label)+'</span>').join('');
   }
   drawMarket('stock_paper','memberStockPerformance','หุ้น');
   drawMarket('crypto_paper','memberCryptoPerformance','คริปโต');
-  if(updated)updated.textContent='อัปเดต '+new Date(j.generatedAt||Date.now()).toLocaleString('th-TH')+' · ข้อมูลส่วนตัวของบัญชีนี้เท่านั้น';
+  if(updated)updated.textContent='อัปเดต '+new Date(j.generatedAt||Date.now()).toLocaleString('th-TH')+' · แสดงเฉพาะบัญชีของสมาชิกที่เข้าสู่ระบบ';
  }catch(e){
-  for(const prefix of ['memberStockPerformance','memberCryptoPerformance']){const svg=document.getElementById(prefix+'Chart');if(svg&&!svg.dataset.loaded)svg.innerHTML='<text x="24" y="125" fill="#fca5a5" font-size="14">โหลดกราฟไม่สำเร็จ: '+esc(e.message)+'</text>'}
+  for(const prefix of ['memberStockPerformance','memberCryptoPerformance']){const svg=document.getElementById(prefix+'Chart');if(svg)svg.innerHTML='<text x="24" y="125" fill="#fca5a5" font-size="14">โหลดกราฟไม่สำเร็จ: '+esc(e.message)+'</text>'}
   console.warn('Member performance refresh failed:',e);
- }finally{for(const id of ['memberStockPerformanceChart','memberCryptoPerformanceChart']){const el=document.getElementById(id);if(el)el.dataset.loaded='1'}memberPerformanceBusy=false}
+ }finally{memberPerformanceBusy=false}
  }
  let memberDailyReportBusy=false;
 async function loadMemberDailyTradeReport(){
