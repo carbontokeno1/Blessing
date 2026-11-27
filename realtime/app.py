@@ -1639,7 +1639,7 @@ def _binance_public_tickers():
             age = now - datetime.fromisoformat(str(item.get("receivedAt")).replace("Z", "+00:00")).timestamp()
         except Exception:
             age = 999999
-        if age < 0 or age > 60:
+        if age < 0 or age > 900:
             continue
         pair = str(item.get("symbol") or "").upper()
         # Normalize standard BASE_USDT symbols, but keep Alpha identifiers such
@@ -1663,8 +1663,8 @@ def _binance_public_tickers():
             ).timestamp()
         except Exception:
             book_age = 999999
-        bid = _num(item.get("bid"), 0) or 0 if 0 <= book_age <= 30 else 0
-        ask = _num(item.get("ask"), 0) or 0 if 0 <= book_age <= 30 else 0
+        bid = _num(item.get("bid"), 0) or 0 if 0 <= book_age <= 120 else 0
+        ask = _num(item.get("ask"), 0) or 0 if 0 <= book_age <= 120 else 0
         if price <= 0 or open_price <= 0:
             continue
         rows.append({
@@ -1673,6 +1673,8 @@ def _binance_public_tickers():
             "openPrice": open_price, "bidPrice": bid,
             "askPrice": ask,
             "closeTime": int(_num(item.get("eventTime"), 0) or 0),
+            "tickerAgeSeconds": round(age, 1),
+            "bookAgeSeconds": round(book_age, 1),
         })
 
     if len(rows) < 20:
@@ -1819,10 +1821,14 @@ def _moderate_crypto_entry_metrics(row: dict):
         ema50 = Decimal(str(row.get("ema50") or "0"))
         rsi = Decimal(str(row.get("rsi14") if row.get("rsi14") is not None else "50"))
         range_width = Decimal(str(row.get("rangeWidthPct") or "0"))
+        candle_age = Decimal(str(row.get("candleAgeSeconds") if row.get("candleAgeSeconds") is not None else "999999"))
     except Exception:
         return None
     symbol = str(row.get("symbol") or "").upper()
     if price <= 0 or not symbol.endswith("USDT") or str(row.get("exchangeSymbol") or "").upper() != symbol:
+        return None
+    # A cached 24h ticker may remain in the universe, but entry requires a recent closed candle.
+    if candle_age > Decimal("120"):
         return None
     if not (Decimal("0") < spread <= Decimal("0.35")) or not (Decimal("0.8") <= stop <= Decimal("2.0")):
         return None
@@ -1852,7 +1858,7 @@ def _moderate_crypto_entry_metrics(row: dict):
     if not direction: return None
     expected_move = abs(m5) + abs(m15)
     estimated_cost = Decimal("0.30") + spread
-    if expected_move < estimated_cost * Decimal("1.5"): return None
+    if expected_move < estimated_cost * Decimal("1.15"): return None
     trend_points = 25 if (long_trend if direction == "long" else short_trend) else 15
     momentum_points = 20 if (long_momentum if direction == "long" else short_momentum) else 10
     volume_points = min(15, int(rvol * Decimal("6")))
@@ -1894,8 +1900,11 @@ def _crypto_three_strategy_decision(row: dict):
 
 def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     """Calculate legacy momentum and Balanced EMA-pullback metrics from closed 1m candles."""
-    price = float(row.get("price") or row.get("lastPrice") or 0)
     closes = [float(b["close"]) for b in bars]
+    # Use the latest closed Binance TH candle as the decision/fill reference,
+    # not a quiet-market ticker snapshot that may be several minutes old.
+    price = closes[-1] if closes else float(row.get("price") or row.get("lastPrice") or 0)
+    latest_candle_age = max(0.0, (time.time() * 1000 - float(bars[-1].get("closeTime") or 0)) / 1000) if bars else 999999
     latest = bars[-1] if bars else None
     m1 = ((closes[-1] / closes[-2]) - 1) * 100 if len(closes) >= 2 and closes[-2] else None
     m5 = ((closes[-1] / closes[-6]) - 1) * 100 if len(closes) >= 6 and closes[-6] else None
@@ -2057,6 +2066,7 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
         "opportunityAtrOk": opportunity_atr_ok,
         "bid": bid or None, "ask": ask or None,
         "candleCount": len(bars),
+        "candleAgeSeconds": round(latest_candle_age, 1),
         "candleTime": latest.get("closeTime") if latest else None,
     }
 
@@ -4467,7 +4477,7 @@ def _paper_worker_cycle():
                 PAPER_WORKER_STATE["actions"] = PAPER_WORKER_STATE["actions"][-20:]
                 positions.append({"symbol":candidate["symbol"]})
             except Exception as exc:
-                log.warning("Paper worker buy skipped for %s: %s", candidate["symbol"], type(exc).__name__)
+                log.warning("Paper worker entry skipped for %s: %s detail=%s", candidate["symbol"], type(exc).__name__, str(getattr(exc, "detail", None) or exc)[:180])
                 continue
 
 
@@ -5587,7 +5597,7 @@ def _dual_paper_worker_cycle():
                                 "netEdgeProxyPct":decision.get("netEdgeProxyPct")})
                             DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key] = time.time()
                     except Exception as exc:
-                        log.info("Automatic crypto entry skipped %s (%s)", symbol, type(exc).__name__)
+                        log.info("Automatic crypto entry skipped %s (%s) detail=%s", symbol, type(exc).__name__, str(getattr(exc, "detail", None) or exc)[:180])
 
         # Stock Paper automation is controlled only by the user's portfolio START/STOP button.
         # The worker keeps scanning while enabled, enters only qualifying candidates, and
