@@ -316,6 +316,12 @@ export default {
       if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
       return memberBackendProxy(request, "/member/member-portfolios");
     }
+    if (pathname === "/api/member/member-portfolios/performance") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      const period = url.searchParams.get("period") || "30d";
+      if (!["7d","30d","90d","all"].includes(period)) return json({ok:false,message:"INVALID_PERIOD"},400);
+      return memberBackendProxy(request, "/member/member-portfolios/performance?period=" + encodeURIComponent(period));
+    }
     if (pathname === "/api/member/member-portfolios/daily-trades") {
       if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
       const day = url.searchParams.get("day") || "";
