@@ -19,9 +19,9 @@ services:
       - key: WEBULL_REGION
         value: th
       - key: WEBULL_HTTP_HOST
-        value: api.webull.com
+        value: api.webull.co.th
       - key: WEBULL_MQTT_HOST
-        value: data-api.webull.com
+        value: data-api.webull.co.th
       - key: WEBULL_SYMBOLS
         value: AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD
       - key: ALLOWED_ORIGINS
