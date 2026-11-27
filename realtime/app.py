@@ -2421,6 +2421,45 @@ async def health():
     return {"ok": True, "service": "blessing-webull-bridge"}
 
 
+@app.get("/admin/system-health")
+def admin_system_health(request: Request):
+    _binance_th_owner_auth(request)
+    leases = _sb_rest("blessing_worker_leases", {
+        "select":"worker_key,expires_at,updated_at",
+        "order":"worker_key.asc","limit":"20"
+    }) or []
+    with UNIVERSE_LOCK:
+        scanner = dict(UNIVERSE_STATE)
+    return {
+        "ok":True,
+        "service":"BLESSING",
+        "instanceId":WORKER_INSTANCE_ID,
+        "checkedAt":datetime.now(timezone.utc).isoformat(),
+        "scanner":{
+            "status":scanner.get("status"),
+            "updatedAt":scanner.get("updatedAt"),
+            "candidateCount":scanner.get("candidateCount"),
+            "fastEntryCount":scanner.get("fastEntryCount"),
+            "lastError":scanner.get("lastError")
+        },
+        "workers":{
+            "cryptoPaper":dict(PAPER_WORKER_STATE),
+            "stockPaper":dict(STOCK_PAPER_WORKER_STATE),
+            "dualPaper":dict(DUAL_PAPER_WORKER_STATE),
+            "memberSlots":dict(MEMBER_SLOT_ENGINE_STATE),
+            "ownerLive":{"status":OWNER_LIVE_ENGINE_STATE.get("status"),"liveOrdersEnabled":False}
+        },
+        "leases":leases,
+        "safety":{
+            "paperOnly":True,
+            "liveTradingEnabled":False,
+            "marginEnabled":False,
+            "shortSellingEnabled":False,
+            "optionsEnabled":False
+        }
+    }
+
+
 @app.get("/status")
 async def status():
     return public_status()
