@@ -4892,8 +4892,8 @@ def _stock_paper_report_user(request: Request, admin_only: bool = False):
         raise HTTPException(status_code=403, detail="บัญชีไม่ได้รับอนุญาตให้ดูรายงาน")
     role = profiles[0].get("role")
     allowed = ("super_admin", "admin") if admin_only else ("super_admin", "admin", "member", "user")
-    if role not in allowed:
-        raise HTTPException(status_code=403, detail="สิทธิ์ไม่เพียงพอสำหรับดูรายงาน")
+    if (admin_only and role != "super_admin") or role not in allowed:
+        raise HTTPException(status_code=403, detail="รายงานพอร์ตกลางอนุญาตเฉพาะ Super Admin")
     return user
 
 
@@ -4976,7 +4976,16 @@ def stock_paper_momentum_central_report(request: Request):
         "select":"user_id","limit":"1000"
     }) or []
     member_ids = list(dict.fromkeys(str(x.get("user_id")) for x in accounts if x.get("user_id")))
-    members = [_stock_paper_member_snapshot(uid) for uid in member_ids]
+    members = []
+    for uid in member_ids:
+        profile = _sb_rest("profiles", {
+            "select":"user_id,display_name,role,status", "user_id":"eq." + uid, "limit":"1"
+        }) or []
+        if not profile or profile[0].get("role") != "member" or profile[0].get("status") != "active":
+            continue
+        snapshot = _stock_paper_member_snapshot(uid)
+        snapshot["memberLabel"] = profile[0].get("display_name") or ("สมาชิก " + uid[:8])
+        members.append(snapshot)
     totals = {}
     for key in ("startingBalance","cashBalance","marketValue","equity","realizedPnl","unrealizedPnl",
                 "totalPnl","momentumAllocationCap","allocationUsed","feesPaid"):
