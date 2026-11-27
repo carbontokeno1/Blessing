@@ -1500,10 +1500,11 @@ def _binance_public_tickers():
             "closeTime": int(_num(item.get("eventTime"), 0) or 0),
         })
 
-    if not rows:
-        # REST recovery: Binance TH requires a symbol on /ticker/24hr.
-        # Query a bounded high-liquidity USDT watchlist; candles are still
-        # fetched from Binance TH itself before any Paper entry is authorized.
+    if len(rows) < 20:
+        # REST supplementation: a partially populated all-market stream must not
+        # shrink the scanner to only a handful of pairs. Merge a bounded,
+        # high-liquidity USDT watchlist while retaining fresh stream quotes.
+        # Candles are still fetched from Binance TH before any Paper entry.
         fallback_symbols = (
             "BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","SOLUSDT","DOGEUSDT",
             "ADAUSDT","TRXUSDT","LINKUSDT","LTCUSDT","BCHUSDT","DOTUSDT",
@@ -1546,21 +1547,27 @@ def _binance_public_tickers():
                 "closeTime":int(_num(item.get("closeTime"), 0) or 0),
                 "receivedAt":received_at,
             }
+        existing_symbols = {str(x.get("symbol") or "").upper() for x in rows}
+        recovered = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             for item in pool.map(fetch_symbol_24h, fallback_symbols):
                 if item:
-                    rows.append(item)
+                    symbol = str(item["symbol"]).upper()
+                    if symbol not in existing_symbols:
+                        rows.append(item)
+                        existing_symbols.add(symbol)
+                        recovered += 1
                     # Reuse this fresh official ticker snapshot for the server-side
                     # Paper fill quote; do not issue a second price request.
-                    state.setdefault("crypto_quotes", {})[item["symbol"]] = {
-                        "symbol":item["symbol"],"price":item["lastPrice"],
+                    state.setdefault("crypto_quotes", {})[symbol] = {
+                        "symbol":symbol,"price":item["lastPrice"],
                         "quoteVolume24h":item["quoteVolume"],"bid":item["bidPrice"],
                         "ask":item["askPrice"],"receivedAt":item["receivedAt"],
                         "bookReceivedAt":item["receivedAt"],
                         "source":"Binance TH official REST ticker",
                     }
-        if rows:
-            log.warning("Binance TH ticker WebSocket unavailable; recovered %d liquid symbols via per-symbol official REST",len(rows))
+        if recovered:
+            log.warning("Binance TH ticker stream partial; supplemented %d additional liquid symbols via official REST (total=%d)",recovered,len(rows))
     if not rows:
         quote_cache = state.get("crypto_quotes") or {}
         sample_symbols = list(quote_cache.keys())[:8]
