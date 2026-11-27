@@ -461,7 +461,7 @@ def binance_th_stream_main():
                             }
                             state["crypto_quotes"][symbol] = quote_row
                             base_asset = symbol[:-4] if symbol.endswith("USDT") else ""
-                            if (quote_volume and quote_volume >= 250000 and base_asset
+                            if (quote_volume and quote_volume >= 50000 and base_asset
                                     and base_asset not in {"USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD","BFUSD"}
                                     and not base_asset.endswith(("UP","DOWN","BULL","BEAR","3L","3S","5L","5S"))):
                                 with CRYPTO_TICKER_HISTORY_LOCK:
@@ -947,7 +947,7 @@ def forecast_10m_from_bars(bars, price):
 # Alpaca Basic IEX all-universe scanner. REST batches are used because the
 # Basic websocket trade/quote subscription is limited to 30 symbols.
 UNIVERSE_SCAN_INTERVAL = max(60, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "90")))
-UNIVERSE_LIQUIDITY_LIMIT = max(200, min(2000, int(os.getenv("UNIVERSE_LIQUIDITY_LIMIT", "800"))))
+UNIVERSE_LIQUIDITY_LIMIT = max(200, min(1000, int(os.getenv("UNIVERSE_LIQUIDITY_LIMIT", "500"))))
 UNIVERSE_BATCH_SIZE = 500
 UNIVERSE_CANDIDATE_LIMIT = 150
 UNIVERSE_CACHE_SECONDS = 6 * 60 * 60
@@ -1800,7 +1800,7 @@ def _binance_public_tickers():
                 quote_volume = _num(item.get("quoteVolume"), 0) or 0
                 bid = _num(item.get("bidPrice"), 0) or 0
                 ask = _num(item.get("askPrice"), 0) or 0
-                if quote_volume < 250000:
+                if quote_volume < 50000:
                     return ("low_volume", None)
                 if symbol != pair or price <= 0 or open_price <= 0 or bid <= 0 or ask < bid:
                     return ("bad_book_or_price", None)
@@ -2225,7 +2225,7 @@ def _altcoin_scanner_run(refresh: int = 0):
         if price <= 0 or open_24h <= 0:
             reject["invalid_price"] += 1
             continue
-        if quote_volume < 250000:
+        if quote_volume < 50000:
             reject["low_volume"] += 1
             continue
         change = (price / open_24h - 1) * 100
