@@ -1628,8 +1628,57 @@ def _binance_th_market_headers():
     return headers
 
 
+BINANCE_TH_UNIVERSE_CACHE = {"at": 0.0, "symbols": []}
+BINANCE_TH_UNIVERSE_LOCK = threading.Lock()
+
+
+def _binance_th_all_usdt_symbols():
+    """Discover current Binance TH symbols from the documented all-symbol price endpoint."""
+    now = time.time()
+    with BINANCE_TH_UNIVERSE_LOCK:
+        cached = list(BINANCE_TH_UNIVERSE_CACHE.get("symbols") or [])
+        if cached and now - float(BINANCE_TH_UNIVERSE_CACHE.get("at") or 0) < 900:
+            return cached
+    response = requests.get(
+        BINANCE_TH_API_BASE + "/api/v1/ticker/price",
+        headers=_binance_th_market_headers(), timeout=(4, 12),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if isinstance(payload, dict) and "data" in payload:
+        if payload.get("code") not in (None, 0, "0"):
+            raise RuntimeError("BINANCE_TH_ALL_PRICES_API_ERROR:" + str(payload.get("code")))
+        payload = payload.get("data")
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list):
+        raise RuntimeError("BINANCE_TH_INVALID_ALL_PRICES_RESPONSE")
+    symbols = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").upper()
+        if symbol.endswith("USDT"):
+            base = symbol[:-4]
+            if base and base.isascii() and base.isalnum():
+                symbols.add(symbol)
+    preferred = [
+        "BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","SOLUSDT","DOGEUSDT",
+        "ADAUSDT","TRXUSDT","LINKUSDT","LTCUSDT","BCHUSDT","DOTUSDT",
+        "AVAXUSDT","SHIBUSDT","UNIUSDT","NEARUSDT","SUIUSDT","APTUSDT",
+        "ATOMUSDT","ETCUSDT","FILUSDT","ARBUSDT","OPUSDT","PEPEUSDT",
+        "XLMUSDT","HBARUSDT","ICPUSDT","AAVEUSDT","INJUSDT","TONUSDT",
+    ]
+    ordered = [symbol for symbol in preferred if symbol in symbols]
+    ordered.extend(sorted(symbols.difference(ordered)))
+    with BINANCE_TH_UNIVERSE_LOCK:
+        BINANCE_TH_UNIVERSE_CACHE.update({"at": now, "symbols": ordered})
+    log.info("Binance TH dynamic Spot universe discovered %d USDT symbols", len(ordered))
+    return ordered
+
+
 def _binance_public_tickers():
-    """Build the scanner universe from Binance TH's official all-market ticker stream."""
+    """Build a broad, execution-venue-only universe from Binance TH market data."""
     now = time.time()
     rows = []
     for item in list((state.get("crypto_quotes") or {}).values()):
@@ -1642,13 +1691,8 @@ def _binance_public_tickers():
         if age < 0 or age > 900:
             continue
         pair = str(item.get("symbol") or "").upper()
-        # Normalize standard BASE_USDT symbols, but keep Alpha identifiers such
-        # as ALPHA_772USDT excluded because they are not Spot /api/v1/klines pairs.
         if pair.endswith("_USDT"):
             pair = pair[:-5] + "USDT"
-        # Binance TH Alpha tickers may use identifiers such as ALPHA_772USDT.
-        # These are not standard Spot symbol names for /api/v1/klines.
-        # Only send conventional ASCII alphanumeric BASEUSDT pairs to the Spot scanner.
         if not pair.endswith("USDT"):
             continue
         base_asset = pair[:-4]
@@ -1656,7 +1700,9 @@ def _binance_public_tickers():
             continue
         price = _num(item.get("price"), 0) or 0
         change_pct = _num(item.get("change24hPct"), 0) or 0
-        open_price = price / (1 + change_pct / 100) if price > 0 and change_pct > -99.9 else 0
+        open_price = _num(item.get("openPrice"), 0) or (
+            price / (1 + change_pct / 100) if price > 0 and change_pct > -99.9 else 0
+        )
         try:
             book_age = now - datetime.fromisoformat(
                 str(item.get("bookReceivedAt")).replace("Z", "+00:00")
@@ -1670,25 +1716,24 @@ def _binance_public_tickers():
         rows.append({
             "symbol": pair, "lastPrice": price,
             "quoteVolume": _num(item.get("quoteVolume24h"), 0) or 0,
-            "openPrice": open_price, "bidPrice": bid,
-            "askPrice": ask,
+            "openPrice": open_price, "bidPrice": bid, "askPrice": ask,
             "closeTime": int(_num(item.get("eventTime"), 0) or 0),
-            "tickerAgeSeconds": round(age, 1),
-            "bookAgeSeconds": round(book_age, 1),
+            "tickerAgeSeconds": round(age, 1), "bookAgeSeconds": round(book_age, 1),
         })
 
-    if len(rows) < 20:
-        # REST supplementation: a partially populated all-market stream must not
-        # shrink the scanner to only a handful of pairs. Merge a bounded,
-        # high-liquidity USDT watchlist while retaining fresh stream quotes.
-        # Candles are still fetched from Binance TH before any Paper entry.
-        fallback_symbols = (
-            "BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","SOLUSDT","DOGEUSDT",
-            "ADAUSDT","TRXUSDT","LINKUSDT","LTCUSDT","BCHUSDT","DOTUSDT",
-            "AVAXUSDT","SHIBUSDT","UNIUSDT","NEARUSDT","SUIUSDT","APTUSDT",
-            "ATOMUSDT","ETCUSDT","FILUSDT","ARBUSDT","OPUSDT","PEPEUSDT",
-            "XLMUSDT","HBARUSDT","ICPUSDT","AAVEUSDT","INJUSDT","TONUSDT",
-        )
+    # The all-market WebSocket is changed-only, not a complete market snapshot.
+    # Discover all current USDT pairs via Binance TH's public all-symbol price
+    # endpoint, then enrich with 24h volume and book data. REST enrichment is
+    # cached in memory for 15 minutes; candles and entry prices are refreshed.
+    if len(rows) < 250:
+        try:
+            discovered_symbols = _binance_th_all_usdt_symbols()
+        except Exception as exc:
+            discovered_symbols = []
+            log.warning("Binance TH dynamic universe discovery failed: %s", type(exc).__name__)
+        existing_symbols = {str(x.get("symbol") or "").upper() for x in rows}
+        candidate_symbols = [x for x in discovered_symbols if x not in existing_symbols][:300]
+
         def fetch_symbol_24h(pair):
             try:
                 response = requests.get(
@@ -1719,32 +1764,37 @@ def _binance_public_tickers():
                 return None
             received_at = datetime.now(timezone.utc).isoformat()
             return {
-                "symbol":symbol,"lastPrice":price,"quoteVolume":quote_volume,
-                "openPrice":open_price,"bidPrice":bid,"askPrice":ask,
-                "closeTime":int(_num(item.get("closeTime"), 0) or 0),
-                "receivedAt":received_at,
+                "symbol": symbol, "lastPrice": price, "quoteVolume": quote_volume,
+                "openPrice": open_price, "bidPrice": bid, "askPrice": ask,
+                "closeTime": int(_num(item.get("closeTime"), 0) or 0),
+                "receivedAt": received_at,
             }
-        existing_symbols = {str(x.get("symbol") or "").upper() for x in rows}
+
         recovered = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            for item in pool.map(fetch_symbol_24h, fallback_symbols):
-                if item:
-                    symbol = str(item["symbol"]).upper()
-                    if symbol not in existing_symbols:
-                        rows.append(item)
-                        existing_symbols.add(symbol)
-                        recovered += 1
-                    # Reuse this fresh official ticker snapshot for the server-side
-                    # Paper fill quote; do not issue a second price request.
-                    state.setdefault("crypto_quotes", {})[symbol] = {
-                        "symbol":symbol,"price":item["lastPrice"],
-                        "quoteVolume24h":item["quoteVolume"],"bid":item["bidPrice"],
-                        "ask":item["askPrice"],"receivedAt":item["receivedAt"],
-                        "bookReceivedAt":item["receivedAt"],
-                        "source":"Binance TH official REST ticker",
-                    }
-        if recovered:
-            log.warning("Binance TH ticker stream partial; supplemented %d additional liquid symbols via official REST (total=%d)",recovered,len(rows))
+        checked = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+            for item in pool.map(fetch_symbol_24h, candidate_symbols):
+                checked += 1
+                if not item:
+                    continue
+                symbol = str(item["symbol"]).upper()
+                if symbol not in existing_symbols:
+                    rows.append(item)
+                    existing_symbols.add(symbol)
+                    recovered += 1
+                received_at = item["receivedAt"]
+                state.setdefault("crypto_quotes", {})[symbol] = {
+                    "symbol": symbol, "price": item["lastPrice"],
+                    "change24hPct": ((item["lastPrice"] / item["openPrice"]) - 1) * 100,
+                    "openPrice": item["openPrice"], "quoteVolume24h": item["quoteVolume"],
+                    "bid": item["bidPrice"], "ask": item["askPrice"],
+                    "receivedAt": received_at, "bookReceivedAt": received_at,
+                    "source": "Binance TH official REST ticker",
+                }
+        log.info(
+            "Binance TH universe enrichment discovered=%s checked=%s added=%s cached=%s",
+            len(discovered_symbols), checked, recovered, len(rows)
+        )
     if not rows:
         quote_cache = state.get("crypto_quotes") or {}
         sample_symbols = list(quote_cache.keys())[:8]
@@ -1834,33 +1884,25 @@ def _moderate_crypto_entry_metrics(row: dict):
         return None
     btc_bias = str(row.get("btcMarketBias") or "neutral").lower()
     long_trend = row.get("trendAligned") is True
-    short_trend = row.get("trendDownAligned") is True
     long_momentum = m5 > Decimal("0.03") and m15 > Decimal("0.08") and m1 > Decimal("-0.25")
-    short_momentum = m5 < Decimal("-0.03") and m15 < Decimal("-0.08") and m1 < Decimal("0.25")
     long_confirm = row.get("pullbackReclaim") is True or row.get("breakout") is True or (ema20 > 0 and price > ema20 and m1 > 0)
-    short_confirm = row.get("pullbackReject") is True or row.get("breakdown") is True or (ema20 > 0 and price < ema20 and m1 < 0)
     direction = None
     setup = None
     if long_trend and long_momentum and long_confirm and rvol >= Decimal("1.0"):
         direction, setup = "long", "PULLBACK" if row.get("pullbackReclaim") else "BREAKOUT" if row.get("breakout") else "TREND"
-    elif short_trend and short_momentum and short_confirm and rvol >= Decimal("1.0"):
-        direction, setup = "short", "PULLBACK_REJECT" if row.get("pullbackReject") else "BREAKDOWN" if row.get("breakdown") else "DOWNTREND"
     ema_gap = abs(ema20 - ema50) / price * Decimal("100") if price > 0 else Decimal("999")
     range_regime = ema20 > 0 and ema50 > 0 and ema_gap <= Decimal("0.25") and abs(m5) <= Decimal("0.35") and abs(m15) <= Decimal("0.60") and Decimal("0.5") <= range_width <= Decimal("3.5")
     if direction is None and range_regime and rvol >= Decimal("1.1"):
         if row.get("rangeLongReversal") is True and rsi <= Decimal("32"):
             direction, setup = "long", "RANGE_SUPPORT_REVERSAL"
-        elif row.get("rangeShortReversal") is True and rsi >= Decimal("68"):
-            direction, setup = "short", "RANGE_RESISTANCE_REVERSAL"
     if direction == "long" and btc_bias == "bearish": return None
-    if direction == "short" and btc_bias == "bullish": return None
     if direction and btc_bias == "neutral" and rvol < Decimal("1.2"): return None
     if not direction: return None
     expected_move = abs(m5) + abs(m15)
     estimated_cost = Decimal("0.30") + spread
     if expected_move < estimated_cost * Decimal("1.15"): return None
-    trend_points = 25 if (long_trend if direction == "long" else short_trend) else 15
-    momentum_points = 20 if (long_momentum if direction == "long" else short_momentum) else 10
+    trend_points = 25 if long_trend else 15
+    momentum_points = 20 if long_momentum else 10
     volume_points = min(15, int(rvol * Decimal("6")))
     spread_points = 10 if spread <= Decimal("0.20") else 6
     risk_points = 10 if stop <= Decimal("1.5") else 6
@@ -1873,7 +1915,7 @@ def _moderate_crypto_entry_metrics(row: dict):
             "estimatedRoundTripCostPct":float(estimated_cost)}
 
 def _crypto_three_strategy_decision(row: dict):
-    """Adaptive member Crypto Paper selector: Long in confirmed uptrends, Short in confirmed downtrends."""
+    """Long-only member Crypto Paper selector; short selling is intentionally disabled."""
     decision = _moderate_crypto_entry_metrics(row)
     if not decision:
         return None
@@ -1881,11 +1923,7 @@ def _crypto_three_strategy_decision(row: dict):
         "PULLBACK": "Trend Pullback",
         "BREAKOUT": "Momentum Breakout",
         "TREND": "Trend Momentum",
-        "PULLBACK_REJECT": "Bearish Pullback Rejection",
-        "BREAKDOWN": "Support Breakdown",
-        "DOWNTREND": "Downtrend Momentum",
         "RANGE_SUPPORT_REVERSAL": "Range Support Reversal",
-        "RANGE_RESISTANCE_REVERSAL": "Range Resistance Reversal",
     }.get(decision.get("strategy"), "Adaptive Momentum")
     return {
         **decision,
@@ -1894,7 +1932,7 @@ def _crypto_three_strategy_decision(row: dict):
         "paperOnly": True,
         "liveEntryAllowed": False,
         "atrStopPct": row.get("atrStopPct"),
-        "note": "Adaptive Long/Short Paper signal; confirmed candle trend, volume, spread and ATR filters required.",
+        "note": "Long-only Paper signal; confirmed candle trend, volume, spread and ATR filters required.",
     }
 
 
@@ -5347,9 +5385,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     if not symbol:
         return None
     direction = str(candidate.get("side") or "long").lower() if market == "crypto" else "long"
-    if direction not in {"long", "short"}:
-        return None
-    if market == "stocks" and direction != "long":
+    if direction != "long":
         return None
     try:
         market_price = _dual_market_price(market, symbol)
@@ -5404,7 +5440,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     else:
         stop_pct = float(candidate.get("atrStopPct") or strategy_config.get("crypto_stop_loss_pct", 1.5))
         stop_pct = min(2.0, max(0.8, stop_pct))
-        # Target at least +3% or 2R, capped at +5%; Short mirrors Long.
+        # Long-only target: at least +3% or 2R, capped at +5%.
         target_pct = min(5.0, max(3.0, stop_pct * 2.0))
 
     all_portfolios = _sb_rest("blessing_dual_portfolios", {
@@ -5446,19 +5482,14 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     if notional < 1.0:
         return None
 
-    is_short = market == "crypto" and direction == "short"
-    fill_price = market_price * (0.9995 if is_short else 1.0005)
+    is_short = False
+    fill_price = market_price * 1.0005
     quantity = round(notional / fill_price, 10 if market == "crypto" else 6)
     if quantity <= 0:
         return None
-    if is_short:
-        stop_price = fill_price * (1 + stop_pct / 100)
-        target_price = fill_price * (1 - target_pct / 100)
-        order_side = "short"
-    else:
-        stop_price = fill_price * (1 - stop_pct / 100)
-        target_price = fill_price * (1 + target_pct / 100)
-        order_side = "buy"
+    stop_price = fill_price * (1 - stop_pct / 100)
+    target_price = fill_price * (1 + target_pct / 100)
+    order_side = "buy"
 
     result = _dual_rpc_order({
         "p_user_id":user_id,"p_market":market,"p_symbol":symbol,"p_side":order_side,
