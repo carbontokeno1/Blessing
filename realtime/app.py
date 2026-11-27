@@ -2938,6 +2938,58 @@ def member_member_portfolios_performance(request: Request, period: str = "30d"):
             "returnPct": ((equity - capital) / capital * 100) if capital else 0,
             "fees": float(slot.get("fees_paid") or 0), "openPositions": len(positions), "series": series,
         })
+    # The Momentum stock engine is a separate USD Paper account from the member-slot
+    # stock engine. Include it in the member's stock chart without mixing currencies.
+    momentum_accounts = _sb_rest("stock_paper_accounts", {
+        "select":"user_id,starting_balance,cash_balance,realized_pnl,fees_paid,status",
+        "user_id":"eq." + str(user["id"]), "limit":"1",
+    }) or []
+    if momentum_accounts:
+        account = momentum_accounts[0]
+        momentum_positions = _sb_rest("stock_paper_positions", {
+            "select":"symbol,quantity,current_price,unrealized_pnl,status",
+            "user_id":"eq." + str(user["id"]), "status":"eq.open", "limit":"500",
+        }) or []
+        momentum_orders = _sb_rest("stock_paper_orders", {
+            "select":"status,realized_pnl,created_at",
+            "user_id":"eq." + str(user["id"]), "created_at":"gte." + cutoff.isoformat(),
+            "order":"created_at.asc", "limit":"5000",
+        }) or []
+        momentum_daily = {}
+        for order in momentum_orders:
+            if str(order.get("status") or "").lower() not in ("filled", "executed"):
+                continue
+            try:
+                day = datetime.fromisoformat(str(order.get("created_at")).replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Bangkok")).date().isoformat()
+            except Exception:
+                continue
+            momentum_daily[day] = momentum_daily.get(day, 0.0) + float(order.get("realized_pnl") or 0)
+        momentum_capital = float(account.get("starting_balance") or 0)
+        momentum_cash = float(account.get("cash_balance") or 0)
+        momentum_market_value = sum(float(x.get("quantity") or 0) * float(x.get("current_price") or 0) for x in momentum_positions)
+        momentum_realized = float(account.get("realized_pnl") or 0)
+        momentum_unrealized = sum(float(x.get("unrealized_pnl") or 0) for x in momentum_positions)
+        momentum_equity = momentum_cash + momentum_market_value
+        momentum_running = momentum_capital
+        momentum_series = [{"date": cutoff.date().isoformat(), "equity": round(momentum_capital, 2), "realizedPnl": 0.0}]
+        for day, pnl in sorted(momentum_daily.items()):
+            momentum_running += pnl
+            momentum_series.append({"date": day, "equity": round(momentum_running, 2), "realizedPnl": round(pnl, 2)})
+        today = now.astimezone(ZoneInfo("Asia/Bangkok")).date().isoformat()
+        if momentum_series[-1]["date"] != today:
+            momentum_series.append({"date": today, "equity": round(momentum_equity, 2), "realizedPnl": round(momentum_realized, 2), "current": True})
+        else:
+            momentum_series[-1]["equity"] = round(momentum_equity, 2)
+            momentum_series[-1]["current"] = True
+        reports.append({
+            "portfolioType":"stock_momentum", "label":"Momentum Stock Paper", "currency":"USD",
+            "capital":momentum_capital, "cash":momentum_cash, "marketValue":round(momentum_market_value, 2),
+            "equity":round(momentum_equity, 2), "realizedPnl":round(momentum_realized, 2),
+            "unrealizedPnl":round(momentum_unrealized, 2), "netPnl":round(momentum_realized + momentum_unrealized, 2),
+            "returnPct":((momentum_equity - momentum_capital) / momentum_capital * 100) if momentum_capital else 0,
+            "fees":float(account.get("fees_paid") or 0), "openPositions":len(momentum_positions),
+            "series":momentum_series,
+        })
     return {"ok": True, "period": period, "timezone": "Asia/Bangkok", "generatedAt": now.isoformat(),
             "method": "Historical points use realized Paper fills; latest point uses current cash plus current marked positions.",
             "portfolios": reports}
