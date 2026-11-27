@@ -3009,7 +3009,7 @@ def admin_member_portfolios_report(request: Request):
     }) if crypto_ids else []
 
     stock_orders = _sb_rest("blessing_stock_paper_slot_orders", {
-        "select": "slot_id,symbol,side,status,fee_thb,created_at",
+        "select": "slot_id,symbol,side,status,fee_thb,realized_pnl_thb,created_at",
         "slot_id": "in.(" + ",".join(stock_ids) + ")", "limit": "5000",
         "order": "created_at.desc",
     }) if stock_ids else []
@@ -3108,6 +3108,29 @@ def admin_member_portfolios_report(request: Request):
             }
             if row.get("mode") == "live":
                 totals["liveLocked"] += 1
+        if is_paper and slot:
+            daily_pnl = {}
+            for order in orders:
+                if str(order.get("status") or "").lower() not in ("filled", "executed"):
+                    continue
+                try:
+                    day = datetime.fromisoformat(str(order.get("created_at")).replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Bangkok")).date().isoformat()
+                except Exception:
+                    continue
+                daily_pnl[day] = daily_pnl.get(day, 0.0) + num(order.get("realized_pnl_thb"))
+            series = [{"date": (datetime.now(ZoneInfo("Asia/Bangkok")).date() - timedelta(days=30)).isoformat(), "equity": round(capital, 2), "realizedPnl": 0.0}]
+            running = capital
+            for day, day_pnl in sorted(daily_pnl.items()):
+                running += day_pnl
+                series.append({"date": day, "equity": round(running, 2), "realizedPnl": round(day_pnl, 2)})
+            today = datetime.now(ZoneInfo("Asia/Bangkok")).date().isoformat()
+            if series[-1]["date"] == today:
+                series[-1].update({"equity": round(equity, 2), "current": True})
+            else:
+                series.append({"date": today, "equity": round(equity, 2), "realizedPnl": round(realized, 2), "current": True})
+            report["performanceSeries"] = series
+        else:
+            report["performanceSeries"] = []
         reports.append(report)
 
     # Owner report v2: central Paper positions remain isolated from the 40 member slots.
