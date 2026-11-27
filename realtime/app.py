@@ -3299,7 +3299,7 @@ def admin_member_portfolios_report(request: Request):
         "order": "created_at.desc",
     }) if stock_ids else []
     crypto_orders = _sb_rest("blessing_paper_slot_orders", {
-        "select": "slot_id,symbol,side,status,fee_thb,created_at",
+        "select": "slot_id,symbol,side,status,fee_thb,realized_pnl_thb,created_at",
         "slot_id": "in.(" + ",".join(crypto_ids) + ")", "limit": "5000",
         "order": "created_at.desc",
     }) if crypto_ids else []
@@ -3454,7 +3454,7 @@ def admin_member_portfolios_report(request: Request):
         }) or []
         orders = _sb_rest("blessing_dual_orders", {
             "select": "symbol,side,quantity,price,notional,fee,status,realized_pnl,reason,created_at",
-            "portfolio_id": "eq." + pid, "order": "created_at.desc", "limit": "25",
+            "portfolio_id": "eq." + pid, "order": "created_at.desc", "limit": "1000",
         }) or []
         position_reports = []
         market_value = 0.0
@@ -3535,6 +3535,25 @@ def admin_member_portfolios_report(request: Request):
             "status": o.get("status"), "realizedPnl": o.get("realized_pnl"),
             "reason": o.get("reason"), "createdAt": o.get("created_at"),
         } for o in orders]
+        dual_daily_pnl = {}
+        for order in orders:
+            if str(order.get("status") or "").lower() not in ("filled", "executed") or order.get("realized_pnl") is None:
+                continue
+            try:
+                day = datetime.fromisoformat(str(order.get("created_at")).replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Bangkok")).date().isoformat()
+            except Exception:
+                continue
+            dual_daily_pnl[day] = dual_daily_pnl.get(day, 0.0) + num(order.get("realized_pnl"))
+        dual_series = [{"date": (datetime.now(ZoneInfo("Asia/Bangkok")).date() - timedelta(days=30)).isoformat(), "equity": round(capital, 2)}]
+        dual_running = capital
+        for day, day_pnl in sorted(dual_daily_pnl.items()):
+            dual_running += day_pnl
+            dual_series.append({"date": day, "equity": round(dual_running, 2), "realizedPnl": round(day_pnl, 2)})
+        today = datetime.now(ZoneInfo("Asia/Bangkok")).date().isoformat()
+        if dual_series[-1]["date"] == today:
+            dual_series[-1].update({"equity": round(equity, 2), "current": True})
+        else:
+            dual_series.append({"date": today, "equity": round(equity, 2), "current": True})
         dual_reports.append({
             "market": market, "currency": currency, "broker": dp.get("broker"),
             "mode": dp.get("mode"), "enabled": bool(dp.get("enabled")),
@@ -3545,6 +3564,7 @@ def admin_member_portfolios_report(request: Request):
             "returnPct": ((equity - capital) / capital * 100) if capital else 0,
             "fees": fee_total, "openPositions": len(position_reports),
             "positions": position_reports, "recentOrders": order_reports,
+            "performanceSeries": dual_series,
         })
         bucket = dual_totals.setdefault(currency, {
             "capital": 0.0, "cash": 0.0, "marketValue": 0.0, "equity": 0.0,
