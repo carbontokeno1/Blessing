@@ -983,7 +983,7 @@ function memberPortfoliosView(){
  '<div class="card section"><div class="heading"><h3>ภาพรวมมูลค่าพอร์ต Paper ของสมาชิก</h3><span class="pill">READ ONLY</span></div><div id="portfolioReportUpdated" class="small muted">กำลังโหลด...</div><div id="portfolioReportSummary" class="grid"></div><div id="portfolioReportBody" class="empty">กำลังอ่านข้อมูลพอร์ต...</div></div>';
 }
 function adminPortfolioReportView(){
- return '<div class="heading"><div><h1>📊 รายงานเรียลไทม์ทุกพอร์ต</h1><div class="muted">สมาชิก 5 ราย · 4 พอร์ตต่อสมาชิก · อัปเดตทุก 10 วินาที</div></div><button class="primary" onclick="loadAdminPortfolioReport()">รีเฟรชรายงาน</button></div>'+
+ return '<div class="heading"><div><h1>📊 รายงานเรียลไทม์ทุกพอร์ต</h1><div class="muted">สมาชิก 5 ราย · 4 พอร์ตต่อสมาชิก · อัปเดตทุก 60 วินาที</div></div><button class="primary" onclick="loadAdminPortfolioReport()">รีเฟรชรายงาน</button></div>'+
  '<div class="notice">รายงานพอร์ตและผลการซื้อขาย Paper อ่านจากฐานข้อมูลจริง · พอร์ต Live จะแสดงสถานะ LOCKED จนกว่าจะผ่านระบบอนุมัติเงินจริงและระบบหยุดฉุกเฉิน</div>'+
  '<div class="card section" style="border:1px solid var(--gold,#c99b45)"><div class="heading"><div><h3>💰 ศูนย์ควบคุมวงเงินและสวิตช์ทุกพอร์ตสมาชิก</h3><div class="small muted">Super Admin เท่านั้น · รวม Paper และเงินจริงไว้ในจุดเดียว · แยกคริปโต/หุ้นและรายสมาชิก</div></div><span class="pill">OWNER ONLY</span></div><div class="notice">เลือกเปิด–ปิด Paper ได้จากสวิตช์ด้านล่าง · วงเงินอนุมัติไม่ใช่ยอดเงินฝากหรือเงินคงเหลือจริง</div><h4 style="margin:16px 0 8px">🧪 สวิตช์ระบบทดลอง PAPER</h4><div id="adminPortfolioControls" class="empty">กำลังโหลดสวิตช์ควบคุมพอร์ตสมาชิก...</div><div class="heading" style="margin-top:18px"><h4>จัดการวงเงินและประวัติคำสั่ง</h4></div><div class="notice">วงเงินที่ตั้งคือวงเงินอนุมัติ ไม่ใช่ยอดเงินฝากหรือเงินคงเหลือจริง</div><form id="adminCapitalCommandForm" style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0"><input id="adminCapitalCommandInput" type="text" maxlength="500" placeholder="เช่น ตั้งวงเงินหุ้นทดลองสมาชิก 701 เป็น 80,000 บาท" style="flex:1;min-width:220px;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--text)"><button class="primary" type="submit">ส่งคำสั่ง</button><button class="secondary" type="button" id="adminCapitalRefresh">รีเฟรชวงเงิน</button></form><div id="adminCapitalCommandMessage" class="small muted">ระบุตลาดและโหมดให้ชัดเจนทุกครั้ง · ตรวจสอบวงเงินได้ด้วยคำสั่ง “ตรวจสอบวงเงินทั้งหมดสมาชิก 701”</div><div id="adminCapitalReport" class="empty">กำลังโหลดวงเงิน...</div></div>'+
  '<div class="card section"><div class="heading"><div><h3>⚙️ สถานะ Paper Engine ทุกบัญชี</h3><div class="small muted">ติดตามการทำงานแยก 10 บัญชีคริปโต + 10 บัญชีหุ้น</div></div><button class="secondary" type="button" onclick="loadAdminSlotEngineStatus()">รีเฟรช Engine</button></div><div id="paperEngineStatus" class="empty">กำลังตรวจสอบการทำงาน...</div></div>'+ '<div id="portfolioReportUpdated" class="small muted" style="margin:10px 0">กำลังโหลด...</div>'+
@@ -1100,7 +1100,7 @@ async function loadAdminPortfolioReport(){
    else detail.innerHTML=dual.map(p=>'<div class="section"><h3>'+esc(p.memberLabel||'พอร์ต Paper กลาง')+' · '+esc(p.market||'')+'</h3><div class="grid"><div class="card metric"><label>Equity</label><strong>'+Number(p.equity||0).toFixed(2)+' '+esc(p.currency||'')+'</strong></div><div class="card metric"><label>เงินสด</label><strong>'+Number(p.cash||0).toFixed(2)+' '+esc(p.currency||'')+'</strong></div><div class="card metric"><label>มูลค่าสถานะ</label><strong>'+Number(p.marketValue||0).toFixed(2)+' '+esc(p.currency||'')+'</strong></div><div class="card metric"><label>Net P/L</label><strong>'+Number(p.netPnl||0).toFixed(2)+' '+esc(p.currency||'')+'</strong></div></div><div class="small muted">ทุน '+Number(p.capital||0).toFixed(2)+' · Realized '+Number(p.realizedPnl||0).toFixed(2)+' · Unrealized '+Number(p.unrealizedPnl||0).toFixed(2)+' · Return '+Number(p.returnPct||0).toFixed(2)+'% · Fees '+Number(p.fees||0).toFixed(2)+'</div><details><summary>ดูสถานะเปิดและประวัติคำสั่ง ('+(p.positions||[]).length+' สถานะ / '+(p.recentOrders||[]).length+' คำสั่ง)</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px">'+esc(JSON.stringify({positions:p.positions||[],recentOrders:p.recentOrders||[]},null,2))+'</pre></details></div>').join('');
   }
   body.dataset.loaded='1';
-  updated.textContent='อัปเดตล่าสุด '+new Date(j.refreshedAt).toLocaleString('th-TH')+' · ทุก 10 วินาที · '+rows.length+'/20 พอร์ต';
+  updated.textContent='อัปเดตล่าสุด '+new Date(j.refreshedAt).toLocaleString('th-TH')+' · ทุก 60 วินาที · '+rows.length+'/20 พอร์ต';
  }catch(e){updated.textContent='อัปเดตไม่สำเร็จ: '+e.message;if(!body.dataset.loaded)body.innerHTML='<div class="notice">'+esc(e.message)+'</div>';if(detail)detail.innerHTML='<div class="notice">'+esc(e.message)+'</div>'}
 }
 function membersView(){return '<div class="heading"><div><h1>จัดการสมาชิก</h1><div class="muted">สร้างบัญชี อนุมัติ/ระงับ และดูแลสมาชิกจากหน้านี้</div></div><span class="pill">ADMIN ONLY</span></div>'+
@@ -1927,7 +1927,7 @@ async function start(session){
  if(!p||p.status!=='active'||!['admin','super_admin'].includes(p.role))throw Error('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ');
  current=session.user;ownerMode=p.role==='super_admin';window.BLESSING_OWNER_CENTER_ENABLED=ownerMode;window.BLESSING_REFRESH_NAV?.();$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');
  $('tradingControls').style.display=ownerMode?'block':'none';$('centerDashboard').style.display=ownerMode?'block':'none';
- await loadMembers();if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},10000)}
+ await loadMembers();if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},60000)}
 }
 async function loadMembers(){
  const {data,error}=await sb.from('profiles').select('user_id,email,display_name,role,status').eq('role','member').order('created_at',{ascending:false}).limit(5);
@@ -1969,10 +1969,10 @@ function renderCenter(report,rows){
  $('centerActivity').replaceChildren();
  if(!activity.length){const empty=document.createElement('div');empty.className='muted';empty.textContent='ยังไม่มี Order Log ในพอร์ตสมาชิก';$('centerActivity').append(empty)}
  for(const o of activity){const item=document.createElement('div');item.className='activityItem';const left=document.createElement('div');const title=document.createElement('b');title.textContent=(o.symbol||'Order')+' · '+String(o.side||'').toUpperCase();const sub=document.createElement('small');sub.textContent=(o.portfolioType||'PAPER')+' · '+stamp(o.createdAt);left.append(title,sub);const right=document.createElement('b');right.textContent=String(o.status||'—').toUpperCase();item.append(left,right);$('centerActivity').append(item)}
- $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก '+(report.refreshIntervalSeconds||10)+' วินาที';
+ $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก 60 วินาที';
 }
 async function loadTradingControls(){
- const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังอ่านข้อมูลเรียลไทม์ทั้ง 20 พอร์ต...';box.replaceChildren();
+ const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังตรวจสอบข้อมูลล่าสุด · กำลังคงข้อมูลเดิมไว้ระหว่างโหลด';
  try{
   const [data,report]=await Promise.all([adminApi('/api/admin/member-portfolios'),adminApi('/api/admin/member-portfolios/report')]);
   const rows=(data.portfolios||[]).filter(x=>['crypto_paper','stock_paper','crypto_live','stock_live'].includes(x.portfolio_type));
@@ -1982,6 +1982,7 @@ async function loadTradingControls(){
   for(const row of rows){const key=String(row.member_no);if(byMember.has(key))byMember.get(key).push(row)}
   status.textContent='ข้อมูลพอร์ตเชื่อมต่อแล้ว · '+rows.length+'/20 รายการ · LIVE EXECUTION LOCKED';
   renderCenter(report,rows);
+  const nextCards=document.createDocumentFragment();
   const labels={crypto_paper:'CRYPTO PAPER',stock_paper:'STOCK PAPER',crypto_live:'CRYPTO LIVE',stock_live:'STOCK LIVE'};
   const order=['crypto_paper','stock_paper','crypto_live','stock_live'];
   for(const [memberNo,items] of byMember){
@@ -2013,8 +2014,9 @@ async function loadTradingControls(){
     if(isLive){stats.querySelectorAll('.portfolioStat')[0].lastChild.textContent='— · ยังไม่เชื่อมบัญชีเงินจริง';stats.querySelectorAll('.portfolioStat')[1].lastChild.textContent='— · STANDBY';stats.querySelectorAll('.portfolioStat')[2].lastChild.textContent='0 · ไม่มี Live Orders';}
     card.append(stats);
    }
-   box.append(card);
+   nextCards.append(card);
   }
+  box.replaceChildren(nextCards);
   if(rows.length!==20)status.textContent+=' · คำเตือน: ทะเบียนมี '+rows.length+' แถว ไม่ครบ 20';
  }catch(e){status.textContent='โหลดข้อมูล Dashboard ไม่สำเร็จ: '+e.message}
 }
