@@ -1791,7 +1791,9 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     range_long_reversal = bool(range_low > 0 and latest_close > latest_open and latest_close > previous_close and latest_close <= range_low * 1.01)
     range_short_reversal = bool(range_high > 0 and latest_close < latest_open and latest_close < previous_close and latest_close >= range_high * 0.99)
 
-    spread = None    bid, ask = float(row.get("bidPrice") or row.get("bid") or 0), float(row.get("askPrice") or row.get("ask") or 0)
+    spread = None
+
+    bid, ask = float(row.get("bidPrice") or row.get("bid") or 0), float(row.get("askPrice") or row.get("ask") or 0)
     if price > 0 and bid > 0 and ask >= bid:
         spread = ((ask - bid) / price) * 100
 
