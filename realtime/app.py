@@ -4381,6 +4381,7 @@ def _paper_worker_loop():
         try:
             if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
                 PAPER_WORKER_STATE.update({"status":"waiting_config","lastError":"SUPABASE_WORKER_CONFIG_MISSING"})
+                STOCK_PAPER_WORKER_STATE.update({"status":"waiting_config","lastError":"SUPABASE_WORKER_CONFIG_MISSING"})
                 time.sleep(30)
                 continue
             try:
@@ -4502,33 +4503,66 @@ def stock_paper_engine_status(request: Request):
         "select":"id,symbol,quantity,entry_price,current_price,take_profit_price,stop_loss_price,unrealized_pnl,opened_at,status",
         "user_id":"eq." + uid, "status":"eq.open", "order":"opened_at.desc", "limit":"50"
     })
+    with UNIVERSE_LOCK:
+        scanner_state = dict(UNIVERSE_STATE)
+    scanner_updated = scanner_state.get("updatedAt")
+    scanner_age = None
+    if scanner_updated:
+        try:
+            scanner_age = max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(
+                scanner_updated.replace("Z", "+00:00")
+            )).total_seconds()))
+        except Exception:
+            scanner_age = None
+    scanner_fresh = (
+        scanner_state.get("status") == "ok" and scanner_age is not None
+        and scanner_age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
+    )
     return {"ok": True, "configured": bool(settings), "enabled": bool(settings and settings[0].get("enabled")),
             "mode":"paper", "settings": settings[0] if settings else None,
             "account": accounts[0] if accounts else None, "openPositions": positions,
             "worker": dict(STOCK_PAPER_WORKER_STATE),
-            "scanner": {"status":UNIVERSE_STATE.get("status"), "updatedAt":UNIVERSE_STATE.get("updatedAt"),
-                        "candidateCount":0, "feed":"disabled", "disabledProvider":"Alpaca"}}
+            "scanner": {
+                "status": scanner_state.get("status") if scanner_fresh else ("stale" if scanner_updated else "waiting_scan"),
+                "updatedAt": scanner_updated,
+                "staleSeconds": scanner_age,
+                "fresh": scanner_fresh,
+                "candidateCount": scanner_state.get("candidateCount", len(scanner_state.get("candidates") or [])),
+                "fastEntryCount": scanner_state.get("fastEntryCount", 0),
+                "feed": scanner_state.get("feed") or scanner_state.get("provider") or "waiting",
+                "coverage": scanner_state.get("coverage"),
+                "lastError": scanner_state.get("lastError"),
+            }}
 
 
 def _stock_snapshot_from_payload(snap: dict):
-    """Return only a positive price backed by a recent Alpaca IEX trade or minute bar."""
+    """Choose the freshest valid Alpaca IEX trade/minute price; reject stale or future data."""
     if not isinstance(snap, dict):
         return None, None
-    trade = snap.get("latestTrade") or {}
-    minute = snap.get("minuteBar") or {}
-    price = _num(trade.get("p"), _num(minute.get("c"), 0)) or 0
-    stamp = trade.get("t") or minute.get("t")
-    if price <= 0 or not stamp:
-        return None, stamp
-    try:
-        parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
-        if age < -30 or age > 180:
-            return None, stamp
-    except Exception:
-        return None, stamp
+    now = datetime.now(timezone.utc)
+    valid = []
+    latest_stamp = None
+    for field, price_key in (("latestTrade", "p"), ("minuteBar", "c")):
+        item = snap.get(field) or {}
+        price = _num(item.get(price_key), 0) or 0
+        stamp = item.get("t")
+        if not stamp:
+            continue
+        latest_stamp = stamp
+        if price <= 0:
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age = (now - parsed.astimezone(timezone.utc)).total_seconds()
+        except Exception:
+            continue
+        if -30 <= age <= 180:
+            valid.append((age, price, stamp))
+    if not valid:
+        return None, latest_stamp
+    _, price, stamp = min(valid, key=lambda item: item[0])
     return price, stamp
 
 
@@ -4560,6 +4594,9 @@ def _stock_paper_worker_cycle():
     fresh = scanner.get("status") == "ok" and age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
     candidates = {x.get("symbol"):x for x in (scanner.get("candidates") or [])
                   if x.get("symbol") and x.get("fastEntry") is True and _num(x.get("price"),0)}
+    enabled_users = sum(1 for row in settings_rows if row.get("enabled"))
+    buy_entries = 0
+    sell_exits = 0
     for setting in settings_rows:
         uid = str(setting["user_id"])
         positions = _sb_rest("stock_paper_positions", {
@@ -4597,6 +4634,7 @@ def _stock_paper_worker_cycle():
                     "p_user_id":uid,"p_action":"sell","p_symbol":pos["symbol"],
                     "p_price":price,"p_position_id":pos["id"],"p_reason":reason,"p_signal_score":None
                 })
+                sell_exits += 1
                 STOCK_PAPER_WORKER_STATE["actions"].append({
                     "at":datetime.now(timezone.utc).isoformat(),"action":"sell",
                     "symbol":pos["symbol"],"reason":reason,"result":result
@@ -4658,6 +4696,7 @@ def _stock_paper_worker_cycle():
                     ))
                 })
                 STOCK_PAPER_ENTRY_COOLDOWNS[cooldown_key] = time.time()
+                buy_entries += 1
                 STOCK_PAPER_WORKER_STATE["actions"].append({
                     "at":datetime.now(timezone.utc).isoformat(),"action":"buy",
                     "symbol":candidate["symbol"],"result":result
@@ -4669,9 +4708,13 @@ def _stock_paper_worker_cycle():
     STOCK_PAPER_WORKER_STATE.update({
         "status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
         "lastError":None,"cycles":STOCK_PAPER_WORKER_STATE.get("cycles",0)+1,
-        "scannerAgeSeconds":int(age),"scannerFresh":fresh,"candidateCount":len(candidates)
+        "scannerAgeSeconds":int(age),"scannerFresh":fresh,"candidateCount":len(candidates),
+        "enabledUsers":enabled_users,"buyEntries":buy_entries,"sellExits":sell_exits
     })
-
+    log.info(
+        "Stock Paper worker cycle complete scanner_fresh=%s scanner_age=%ss fast_entry_candidates=%d enabled_users=%d buys=%d sells=%d",
+        fresh, int(age), len(candidates), enabled_users, buy_entries, sell_exits
+    )
 
 
 @app.get("/paper-reports/{market}")
