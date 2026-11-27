@@ -1695,6 +1695,8 @@ def _crypto_three_strategy_decision(row: dict):
         "PULLBACK_REJECT": "Bearish Pullback Rejection",
         "BREAKDOWN": "Support Breakdown",
         "DOWNTREND": "Downtrend Momentum",
+        "RANGE_SUPPORT_REVERSAL": "Range Support Reversal",
+        "RANGE_RESISTANCE_REVERSAL": "Range Resistance Reversal",
     }.get(decision.get("strategy"), "Adaptive Momentum")
     return {
         **decision,
@@ -2014,7 +2016,7 @@ def _altcoin_scanner_run(refresh: int = 0):
             row["rejectReason"] = "BALANCED_SCORE_NOT_QUALIFIED"
 
     reject_signals = {}
-    paper_strategy_counts = {"TREND": 0, "BREAKOUT": 0, "PULLBACK": 0, "PULLBACK_REJECT": 0, "BREAKDOWN": 0, "DOWNTREND": 0}
+    paper_strategy_counts = {"TREND": 0, "BREAKOUT": 0, "PULLBACK": 0, "PULLBACK_REJECT": 0, "BREAKDOWN": 0, "DOWNTREND": 0, "RANGE_SUPPORT_REVERSAL": 0, "RANGE_RESISTANCE_REVERSAL": 0}
     for row in selected:
         reason = row.get("rejectReason") or "BALANCED_ENTRY"
         reject_signals[reason] = reject_signals.get(reason, 0) + 1
