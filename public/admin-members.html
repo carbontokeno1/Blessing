@@ -57,7 +57,7 @@ async function start(session){
  if(!p||p.status!=='active'||!['admin','super_admin'].includes(p.role))throw Error('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ');
  current=session.user;ownerMode=p.role==='super_admin';$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');
  $('tradingControls').style.display=ownerMode?'block':'none';$('centerDashboard').style.display=ownerMode?'block':'none';
- await loadMembers();if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},10000)}
+ await loadMembers();if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},60000)}
 }
 async function loadMembers(){
  const box=$('members');box.textContent='กำลังโหลด...';
@@ -126,10 +126,10 @@ function renderCenter(report,rows){
  $('centerActivity').replaceChildren();
  if(!activity.length){const empty=document.createElement('div');empty.className='muted';empty.textContent='ยังไม่มี Order Log ในพอร์ตสมาชิก';$('centerActivity').append(empty)}
  for(const o of activity){const item=document.createElement('div');item.className='activityItem';const left=document.createElement('div');const title=document.createElement('b');title.textContent=(o.symbol||'Order')+' · '+String(o.side||'').toUpperCase();const sub=document.createElement('small');sub.textContent=(o.portfolioType||'PAPER')+' · '+stamp(o.createdAt);left.append(title,sub);const right=document.createElement('b');right.textContent=String(o.status||'—').toUpperCase();item.append(left,right);$('centerActivity').append(item)}
- $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก '+(report.refreshIntervalSeconds||10)+' วินาที';
+ $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก 60 วินาที';
 }
 async function loadTradingControls(){
- const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังอ่านข้อมูลเรียลไทม์ทั้ง 40 พอร์ต...';box.replaceChildren();
+ const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังตรวจสอบข้อมูลล่าสุด · คงข้อมูลเดิมไว้ระหว่างโหลด';
  try{
   const [data,report]=await Promise.all([adminApi('/api/admin/member-portfolios'),adminApi('/api/admin/member-portfolios/report')]);
   const rows=(data.portfolios||[]).filter(x=>['crypto_paper','stock_paper','crypto_live','stock_live'].includes(x.portfolio_type));
@@ -173,8 +173,9 @@ async function loadTradingControls(){
     if(isLive){stats.querySelectorAll('.portfolioStat')[0].lastChild.textContent='— · ยังไม่เชื่อมบัญชีเงินจริง';stats.querySelectorAll('.portfolioStat')[1].lastChild.textContent='— · STANDBY';stats.querySelectorAll('.portfolioStat')[2].lastChild.textContent='0 · ไม่มี Live Orders';}
     card.append(stats);
    }
-   box.append(card);
+   nextCards.append(card);
   }
+  box.replaceChildren(nextCards);
   if(rows.length!==40)status.textContent+=' · คำเตือน: ทะเบียนมี '+rows.length+' แถว ไม่ครบ 40';
  }catch(e){status.textContent='โหลดข้อมูล Dashboard ไม่สำเร็จ: '+e.message}
 }
