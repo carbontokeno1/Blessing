@@ -47,7 +47,7 @@ BINANCE_API_KEY = (os.getenv("BINANCE_TH_API_KEY", "") or os.getenv("BINANCE_API
 BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")).strip()
 # REST batch scanning avoids Alpaca Basic websocket symbol limits.
 ALPACA_DISABLED = not bool(ALPACA_KEY and ALPACA_SECRET)
-ALPACA_STREAM_ENABLED = True
+ALPACA_STREAM_ENABLED = os.getenv("ALPACA_STREAM_ENABLED", "true").strip().lower() in {"1","true","yes","on"}
 REGION = os.getenv("WEBULL_REGION", "th")
 HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.co.th")
 MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.co.th")
@@ -803,6 +803,7 @@ def _fetch_yahoo_chart_quote(symbol: str):
 
 @app.get("/quotes-fallback")
 def quotes_fallback(symbols: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD"):
+    """Fresh Alpaca/Webull first; Yahoo is display-only and never a trade signal."""
     requested = []
     for item in symbols.split(","):
         symbol = item.strip().upper()
@@ -810,167 +811,98 @@ def quotes_fallback(symbols: str = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD"):
             requested.append(symbol)
     requested = requested[:20]
     if not requested:
-        return {"status": "error", "message": "ไม่มีสัญลักษณ์หุ้นที่ถูกต้อง", "quotes": [], "count": 0}
+        return {"status":"error","message":"ไม่มีสัญลักษณ์หุ้นที่ถูกต้อง","quotes":[],"count":0}
+    now = datetime.now(timezone.utc)
+    output, errors = {}, {}
 
-    # Prefer actual Alpaca/Webull stream data when available; never label cached Yahoo data as live.
-    live_rows = []
+    def age_seconds(stamp):
+        if not stamp:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(stamp).replace("Z","+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return max(0,(now-parsed.astimezone(timezone.utc)).total_seconds())
+        except Exception:
+            return None
+
     for symbol in requested:
-        live = state["quotes"].get(symbol)
-        if live and live.get("raw"):
-            raw = live["raw"]
-            price = raw.get("price") or raw.get("last_price")
-            if price is not None:
-                history = state.get("barHistory", {}).get(symbol, [])
-                closes = [_num(bar.get("close"), None) for bar in history]
-                closes = [value for value in closes if value and value > 0]
-                m1 = ((closes[-1] / closes[-2]) - 1) * 100 if len(closes) >= 2 else None
-                m5 = ((closes[-1] / closes[-6]) - 1) * 100 if len(closes) >= 6 else None
-                daily_open = _num(raw.get("daily_open"), None)
-                change_pct = ((float(price) / daily_open) - 1) * 100 if daily_open and daily_open > 0 else None
-                received_at = live.get("receivedAt")
-                age = 999999
-                try:
-                    received = datetime.fromisoformat(str(received_at).replace("Z", "+00:00"))
-                    age = max(0, (datetime.now(timezone.utc) - received).total_seconds())
-                except Exception:
-                    pass
-                stamp = raw.get("timestamp") or raw.get("quote_timestamp")
-                price_time = None
-                if stamp:
-                    try:
-                        price_time = int(datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp() * 1000)
-                    except Exception:
-                        try:
-                            price_time = int(float(stamp))
-                        except Exception:
-                            pass
-                live_rows.append({
-                    "symbol": symbol, "price": float(price), "changePct": change_pct,
-                    "volume": int(_num(raw.get("daily_volume"), _num(raw.get("volume"), 0)) or 0),
-                    "m1": m1, "m5": m5, "session": raw.get("session") or "UNKNOWN",
-                    "priceTime": price_time, "receivedAt": received_at,
-                    "source": live.get("source") or state["provider"],
-                    "stale": age > 60, "staleSeconds": int(age)
-                })
-    if live_rows:
-        return {
-            "status": "ok", "provider": "Webull OpenAPI",
-            "message": "ข้อมูลจาก Webull สำหรับหุ้นในรายการติดตามเท่านั้น",
-            "quotes": live_rows, "count": len(live_rows),
-            "staleCount": sum(1 for row in live_rows if row.get("stale")),
-            "streamStatus": public_status(), "updatedAt": datetime.now(timezone.utc).isoformat()
-        }
+        live = state.get("alpaca_quotes",{}).get(symbol) or {}
+        raw = live.get("raw") or {}
+        price = _num(raw.get("price"),_num(raw.get("last_price"),0)) or 0
+        stamp = raw.get("timestamp") or raw.get("quote_timestamp")
+        age = age_seconds(stamp)
+        if price > 0 and age is not None and age <= 180:
+            history = state.get("barHistory",{}).get(symbol,[])
+            closes = [_num(bar.get("close"),None) for bar in history]
+            closes = [v for v in closes if v and v > 0]
+            m1 = ((closes[-1]/closes[-2])-1)*100 if len(closes)>=2 else None
+            m5 = ((closes[-1]/closes[-6])-1)*100 if len(closes)>=6 else None
+            daily_open = _num(raw.get("daily_open"),None)
+            output[symbol] = {"symbol":symbol,"price":price,
+                "changePct":((price/daily_open)-1)*100 if daily_open else None,
+                "volume":int(_num(raw.get("daily_volume"),_num(raw.get("volume"),0)) or 0),
+                "m1":m1,"m5":m5,"session":"UNKNOWN",
+                "priceTime":int((now.timestamp()-age)*1000),"receivedAt":live.get("receivedAt"),
+                "source":live.get("source") or "Alpaca stream","stale":False,"staleSeconds":int(age)}
 
-    return {
-        "status": "source_unavailable", "provider": "Webull OpenAPI",
-        "message": "ยังไม่มีข้อมูลหุ้นจาก Webull สำหรับสัญลักษณ์ที่ร้องขอ; ไม่ใช้ Alpaca, Yahoo หรือแหล่งข้อมูลอื่นแทน",
-        "quotes": [], "count": 0, "staleCount": 0,
-        "streamStatus": public_status(), "updatedAt": datetime.now(timezone.utc).isoformat()
-    }
-
-    fresh = {}
-    now = time.time()
     for symbol in requested:
-        cached = QUOTE_CACHE.get(symbol)
-        if cached and now - cached["at"] < QUOTE_CACHE_SECONDS:
-            fresh[symbol] = dict(cached["payload"])
-
-    missing = [symbol for symbol in requested if symbol not in fresh]
-    errors = {}
-    if missing:
-        with QUOTE_LOCK:
-            # Another visitor may have refreshed while this request waited.
-            now = time.time()
-            for symbol in list(missing):
-                cached = QUOTE_CACHE.get(symbol)
-                if cached and now - cached["at"] < QUOTE_CACHE_SECONDS:
-                    fresh[symbol] = dict(cached["payload"])
-                    missing.remove(symbol)
-            # Use Alpaca's REST snapshot as a second source when the websocket has
-            # not produced a quote yet. This also covers brief websocket reconnects.
-            if missing and ALPACA_KEY and ALPACA_SECRET:
-                try:
-                    snapshots = _alpaca_snapshots(missing)
-                    snapshot_count = 0
-                    for symbol in list(missing):
-                        snap = snapshots.get(symbol) or {}
-                        trade = snap.get("latestTrade") or {}
-                        minute = snap.get("minuteBar") or {}
-                        daily = snap.get("dailyBar") or {}
-                        previous = snap.get("prevDailyBar") or {}
-                        price = _num(trade.get("p"), _num(minute.get("c"), _num(daily.get("c"), _num(previous.get("c")))))
-                        if not price or price <= 0:
-                            continue
-                        stamp = trade.get("t") or minute.get("t") or daily.get("t") or previous.get("t")
-                        price_time = None
-                        age = 999999
-                        if stamp:
-                            try:
-                                parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-                                price_time = int(parsed.timestamp() * 1000)
-                                age = max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
-                            except Exception:
-                                pass
-                        previous_close = _num(previous.get("c"), None)
-                        payload = {
-                            "symbol": symbol,
-                            "price": float(price),
-                            "changePct": round((float(price) / previous_close - 1) * 100, 4) if previous_close else None,
-                            "volume": int(_num(daily.get("v"), _num(previous.get("v"), 0)) or 0),
-                            "m1": None,
-                            "m5": None,
-                            "session": "PRE_MARKET_OR_REGULAR",
-                            "priceTime": price_time,
-                            "receivedAt": datetime.now(timezone.utc).isoformat(),
-                            "source": "Alpaca IEX REST snapshot",
-                            "stale": age > 300,
-                            "staleSeconds": age,
-                        }
-                        QUOTE_CACHE[symbol] = {"at": time.time(), "payload": payload}
-                        fresh[symbol] = payload
-                        snapshot_count += 1
-                    missing = [symbol for symbol in missing if symbol not in fresh]
-                    log.info("Alpaca REST snapshot fallback returned %d/%d requested symbols", snapshot_count, len(snapshots) or len(missing) + snapshot_count)
-                except Exception as exc:
-                    log.warning("Alpaca REST snapshot fallback unavailable: %s", type(exc).__name__)
-            if missing:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                    futures = {pool.submit(_fetch_yahoo_chart_quote, symbol): symbol for symbol in missing}
-                    for future in concurrent.futures.as_completed(futures):
-                        symbol = futures[future]
-                        try:
-                            payload = future.result()
-                            QUOTE_CACHE[symbol] = {"at": time.time(), "payload": payload}
-                            fresh[symbol] = dict(payload)
-                        except Exception as exc:
-                            errors[symbol] = type(exc).__name__
-
-    stale_count = 0
-    output = []
-    for symbol in requested:
-        if symbol in fresh:
-            output.append(fresh[symbol])
+        if symbol in output:
             continue
-        cached = QUOTE_CACHE.get(symbol)
-        if cached and time.time() - cached["at"] <= QUOTE_STALE_MAX_SECONDS:
-            payload = dict(cached["payload"])
-            payload["stale"] = True
-            payload["staleSeconds"] = max(0, int(time.time() - cached["at"]))
-            output.append(payload)
-            stale_count += 1
+        live = state.get("quotes",{}).get(symbol) or {}
+        raw = live.get("raw") or {}
+        price = _num(raw.get("price"),_num(raw.get("last_price"),0)) or 0
+        age = age_seconds(raw.get("timestamp") or raw.get("quote_timestamp"))
+        if price > 0 and age is not None and age <= 60:
+            output[symbol] = {"symbol":symbol,"price":price,"changePct":None,
+                "volume":int(_num(raw.get("daily_volume"),_num(raw.get("volume"),0)) or 0),
+                "m1":None,"m5":None,"session":"UNKNOWN",
+                "priceTime":int((now.timestamp()-age)*1000),"receivedAt":live.get("receivedAt"),
+                "source":live.get("source") or "Webull stream","stale":False,"staleSeconds":int(age)}
 
-    return {
-        "status": "ok" if output else "source_unavailable",
-        "provider": "Yahoo Finance chart (unofficial fallback)",
-        "message": "ข้อมูลสำรองจาก Yahoo Finance · ไม่รับประกันว่าเป็น real-time",
-        "quotes": output,
-        "count": len(output),
-        "staleCount": stale_count,
-        "errors": errors,
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-    }
+    missing = [symbol for symbol in requested if symbol not in output]
+    if missing and ALPACA_KEY and ALPACA_SECRET:
+        try:
+            snapshots = _alpaca_snapshots(missing)
+            for symbol in missing:
+                snap = snapshots.get(symbol) or {}
+                trade, minute = snap.get("latestTrade") or {}, snap.get("minuteBar") or {}
+                daily, previous = snap.get("dailyBar") or {}, snap.get("prevDailyBar") or {}
+                price = _num(trade.get("p"),_num(minute.get("c"),0)) or 0
+                age = age_seconds(trade.get("t") or minute.get("t"))
+                if price <= 0 or age is None or age > 180:
+                    continue
+                prev_close = _num(previous.get("c"),None)
+                output[symbol] = {"symbol":symbol,"price":price,
+                    "changePct":((price/prev_close)-1)*100 if prev_close else None,
+                    "volume":int(_num(daily.get("v"),0) or 0),"m1":None,"m5":None,
+                    "session":"UNKNOWN","priceTime":int((now.timestamp()-age)*1000),
+                    "receivedAt":now.isoformat(),"source":"Alpaca IEX REST snapshot",
+                    "stale":False,"staleSeconds":int(age)}
+        except Exception as exc:
+            errors["alpaca"] = type(exc).__name__
 
-
+    missing = [symbol for symbol in requested if symbol not in output]
+    if missing:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4,len(missing))) as pool:
+            futures = {pool.submit(_fetch_yahoo_chart_quote,symbol):symbol for symbol in missing}
+            for future in concurrent.futures.as_completed(futures):
+                symbol = futures[future]
+                try:
+                    row = future.result()
+                    row["stale"] = True
+                    row["source"] = "Yahoo Finance chart (display-only; not execution data)"
+                    output[symbol] = row
+                except Exception as exc:
+                    errors[symbol] = type(exc).__name__
+    rows = [output[s] for s in requested if s in output]
+    return {"status":"ok" if rows else "source_unavailable",
+        "provider":"Alpaca/Webull live + Yahoo display-only fallback",
+        "message":"ข้อมูล stale ใช้แสดงเป็นข้อมูลอ้างอิงเท่านั้น ไม่ใช้ส่งคำสั่ง Paper",
+        "quotes":rows,"count":len(rows),
+        "staleCount":sum(1 for row in rows if row.get("stale")),
+        "missingSymbols":[s for s in requested if s not in output],
+        "errors":errors,"streamStatus":public_status(),"updatedAt":now.isoformat()}
 
 
 def forecast_10m_from_bars(bars, price):
@@ -1005,7 +937,7 @@ def forecast_10m_from_bars(bars, price):
 
 # Alpaca Basic IEX all-universe scanner. REST batches are used because the
 # Basic websocket trade/quote subscription is limited to 30 symbols.
-UNIVERSE_SCAN_INTERVAL = max(60, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "120")))
+UNIVERSE_SCAN_INTERVAL = max(180, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "300")))
 UNIVERSE_LIQUIDITY_LIMIT = max(200, min(2000, int(os.getenv("UNIVERSE_LIQUIDITY_LIMIT", "800"))))
 UNIVERSE_BATCH_SIZE = 100
 UNIVERSE_CANDIDATE_LIMIT = 150
