@@ -47,7 +47,7 @@ BINANCE_API_KEY = (os.getenv("BINANCE_TH_API_KEY", "") or os.getenv("BINANCE_API
 BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")).strip()
 # REST batch scanning avoids Alpaca Basic websocket symbol limits.
 ALPACA_DISABLED = not bool(ALPACA_KEY and ALPACA_SECRET)
-ALPACA_STREAM_ENABLED = os.getenv("ALPACA_STREAM_ENABLED", "true").strip().lower() in {"1","true","yes","on"}
+ALPACA_STREAM_ENABLED = os.getenv("ALPACA_STREAM_ENABLED", "false").strip().lower() in {"1","true","yes","on"}
 REGION = os.getenv("WEBULL_REGION", "th")
 HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.co.th")
 MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.co.th")
@@ -280,13 +280,14 @@ def stream_main():
 
 
 def alpaca_stream_main():
-    """Run an independent Alpaca market-data stream; never overwrite Webull quotes."""
+    """Optional Alpaca market-data stream; REST snapshots remain the primary fallback."""
     if not (ALPACA_KEY and ALPACA_SECRET):
         state["alpacaConnection"] = "waiting_credentials"
         log.warning("Alpaca stream not started: credentials are missing")
         return
     feed = ALPACA_FEED if ALPACA_FEED in {"iex", "sip", "delayed_sip"} else "iex"
     url = f"wss://stream.data.alpaca.markets/v2/{feed}"
+    retry_delay = 5
     while True:
         try:
             async def run_stream():
@@ -383,14 +384,19 @@ def alpaca_stream_main():
                                     broadcast({"type": "alpaca_quotes", "data": state["alpaca_quotes"], "status": public_status()}), loop
                                 )
             asyncio.run(run_stream())
+            raise RuntimeError("Alpaca stream closed by provider")
         except Exception as exc:
             state["alpacaAuthenticated"] = False
-            state["alpacaConnection"] = "reconnecting"
+            message = str(exc)
+            connection_limited = "connection limit exceeded" in message.lower()
+            state["alpacaConnection"] = "connection_limit" if connection_limited else "reconnecting"
             state["alpacaLastError"] = type(exc).__name__
-            # Keep the diagnostic traceback so transient server-side closes can be
-            # distinguished from authentication/subscription errors without logging secrets.
-            log.exception("Alpaca stream disconnected (%s); retrying shortly", type(exc).__name__)
-            time.sleep(5)
+            # A connection-limit rejection usually means this key is already used
+            # by another client. Back off for five minutes instead of hammering auth.
+            wait_seconds = 300 if connection_limited else retry_delay
+            log.exception("Alpaca stream disconnected (%s); next retry in %ss", type(exc).__name__, wait_seconds)
+            time.sleep(wait_seconds)
+            retry_delay = min(120, retry_delay * 2)
 
 
 def binance_th_stream_main():
@@ -597,7 +603,10 @@ async def startup():
     if alpaca_ready and ALPACA_STREAM_ENABLED:
         alpaca_thread = threading.Thread(target=alpaca_stream_main, name="alpaca-us-equity-stream", daemon=True)
         alpaca_thread.start()
-        log.info("Alpaca %s stream started as PRIMARY US-stock market-data provider", ALPACA_FEED.upper())
+        log.info("Alpaca %s stream started as optional US-stock quote stream", ALPACA_FEED.upper())
+    elif alpaca_ready:
+        state["alpacaConnection"] = "rest_only"
+        log.info("Alpaca WebSocket disabled by default to avoid account connection-limit conflicts; REST snapshots remain enabled")
     if not alpaca_ready and APP_KEY and APP_SECRET:
         state["connection"] = "connecting"
         state["marketDataEntitlement"] = "webull_subscription_pending"
@@ -1415,6 +1424,15 @@ def _universe_scan_cycle():
         bar_errors = 0
         batch_count = ((len(assets) + 99) // 100) + ((len(selected) + 99) // 100)
 
+    if provider == "Alpaca IEX":
+        market_open = _alpaca_market_clock_cached()
+        if not market_open:
+            for candidate in candidates:
+                candidate["fastEntry"] = False
+                candidate["marketDataFresh"] = False
+                reasons = candidate.setdefault("fastEntryReasons", [])
+                if "MARKET_DATA_NOT_FRESH_OR_MARKET_CLOSED" not in reasons:
+                    reasons.append("MARKET_DATA_NOT_FRESH_OR_MARKET_CLOSED")
     candidates.sort(key=lambda x: (
         (x.get("score") or 0) * 2 + (x.get("relativeVolume") or 0)
         + (x.get("m5") or 0) + (x.get("m1") or 0)
