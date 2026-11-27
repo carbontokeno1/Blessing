@@ -6715,7 +6715,7 @@ def admin_member_slot_engine_status(request: Request):
 # Entries are allowed only after the Super Admin explicitly starts LIVE mode.
 # STOP blocks new entries but keeps monitoring and closing already-owned positions.
 # TEMPORARY SAFETY PAUSE approved by the owner while database authentication is repaired.
-OWNER_LIVE_ENGINE_PAUSED = False
+OWNER_LIVE_ENGINE_PAUSED = True
 OWNER_LIVE_ENGINE_INTERVAL = max(10, int(os.getenv("OWNER_LIVE_ENGINE_INTERVAL", "15")))
 OWNER_LIVE_ENGINE_STATE = {"status":"waiting_config","lastCycleAt":None,"lastError":None,
                            "cycles":0,"entries":0,"exits":0,"candidates":0,"actions":[]}
