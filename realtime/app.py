@@ -946,7 +946,7 @@ def forecast_10m_from_bars(bars, price):
 
 # Alpaca Basic IEX all-universe scanner. REST batches are used because the
 # Basic websocket trade/quote subscription is limited to 30 symbols.
-UNIVERSE_SCAN_INTERVAL = max(180, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "300")))
+UNIVERSE_SCAN_INTERVAL = max(60, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "90")))
 UNIVERSE_LIQUIDITY_LIMIT = max(200, min(2000, int(os.getenv("UNIVERSE_LIQUIDITY_LIMIT", "800"))))
 UNIVERSE_BATCH_SIZE = 100
 UNIVERSE_CANDIDATE_LIMIT = 150
@@ -1072,9 +1072,24 @@ def _load_active_universe(force: bool = False) -> list[dict]:
     return assets
 
 
+_ALPACA_DATA_RATE_LOCK = threading.Lock()
+_ALPACA_DATA_LAST_REQUEST_AT = 0.0
+
+
+def _alpaca_data_request_slot():
+    """Pace REST data calls below the provider's approximate 200 req/min ceiling."""
+    global _ALPACA_DATA_LAST_REQUEST_AT
+    with _ALPACA_DATA_RATE_LOCK:
+        wait = 0.36 - (time.monotonic() - _ALPACA_DATA_LAST_REQUEST_AT)
+        if wait > 0:
+            time.sleep(wait)
+        _ALPACA_DATA_LAST_REQUEST_AT = time.monotonic()
+
+
 def _alpaca_snapshots(symbols: list[str]) -> dict:
     if not symbols:
         return {}
+    _alpaca_data_request_slot()
     response = requests.get(
         "https://data.alpaca.markets/v2/stocks/snapshots",
         params={"symbols": ",".join(symbols), "feed": ALPACA_FEED},
@@ -1088,6 +1103,7 @@ def _alpaca_snapshots(symbols: list[str]) -> dict:
 def _alpaca_recent_bars(symbols: list[str]) -> dict:
     if not symbols:
         return {}
+    _alpaca_data_request_slot()
     end = datetime.now(timezone.utc)
     start = end.timestamp() - 15 * 60
     response = requests.get(
@@ -1342,13 +1358,22 @@ def _universe_scan_cycle():
         symbols = [x["symbol"] for x in assets]
         snapshots = {}
         snapshot_errors = 0
-        for offset in range(0, len(symbols), UNIVERSE_BATCH_SIZE):
-            batch = symbols[offset:offset + UNIVERSE_BATCH_SIZE]
-            try:
-                snapshots.update(_alpaca_snapshots(batch))
-            except Exception:
-                snapshot_errors += 1
-                log.exception("Alpaca IEX snapshot batch failed at offset=%d", offset)
+        snapshot_batches = [
+            (offset, symbols[offset:offset + UNIVERSE_BATCH_SIZE])
+            for offset in range(0, len(symbols), UNIVERSE_BATCH_SIZE)
+        ]
+        # Concurrent pages are paced by _alpaca_data_request_slot to stay below
+        # the provider's approximate REST request ceiling.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(_alpaca_snapshots, batch): offset
+                       for offset, batch in snapshot_batches}
+            for future in concurrent.futures.as_completed(futures):
+                offset = futures[future]
+                try:
+                    snapshots.update(future.result())
+                except Exception:
+                    snapshot_errors += 1
+                    log.exception("Alpaca IEX snapshot batch failed at offset=%d", offset)
         if not snapshots:
             raise RuntimeError("ALPACA_IEX_NO_SNAPSHOTS")
         liquid = []
@@ -1364,13 +1389,20 @@ def _universe_scan_cycle():
         selected = [symbol for _, symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
         bars_by_symbol = {}
         bar_errors = 0
-        for offset in range(0, len(selected), UNIVERSE_BATCH_SIZE):
-            batch = selected[offset:offset + UNIVERSE_BATCH_SIZE]
-            try:
-                bars_by_symbol.update(_alpaca_recent_bars(batch))
-            except Exception:
-                bar_errors += 1
-                log.exception("Alpaca IEX minute-bar batch failed at offset=%d", offset)
+        bar_batches = [
+            (offset, selected[offset:offset + UNIVERSE_BATCH_SIZE])
+            for offset in range(0, len(selected), UNIVERSE_BATCH_SIZE)
+        ]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(_alpaca_recent_bars, batch): offset
+                       for offset, batch in bar_batches}
+            for future in concurrent.futures.as_completed(futures):
+                offset = futures[future]
+                try:
+                    bars_by_symbol.update(future.result())
+                except Exception:
+                    bar_errors += 1
+                    log.exception("Alpaca IEX minute-bar batch failed at offset=%d", offset)
         news_catalysts = _alpaca_news_catalysts(selected)
         candidates = []
         for symbol in selected:
@@ -1465,8 +1497,9 @@ def _universe_scan_cycle():
             "extendedHoursAvailable": False if provider == "Alpaca IEX" else "depends_on_Webull_entitlement",
             "marketOpen": bool(market_open) if provider == "Alpaca IEX" else None,
         })
-    log.info("%s universe scan complete: instruments=%d snapshots=%d evaluated=%d candidates=%d snapshot_errors=%d bar_errors=%d duration=%.1fs",
-             provider, len(assets), len(snapshots), len(selected), len(candidates), snapshot_errors, bar_errors, elapsed)
+    log.info("%s universe scan complete: instruments=%d snapshots=%d evaluated=%d candidates=%d fast_entries=%d snapshot_errors=%d bar_errors=%d duration=%.1fs",
+             provider, len(assets), len(snapshots), len(selected), len(candidates),
+             sum(1 for row in candidates if row.get("fastEntry")), snapshot_errors, bar_errors, elapsed)
 
 
 def _universe_scanner_loop():
@@ -1508,7 +1541,7 @@ def universe_scanner():
         except Exception:
             age = None
     result["staleSeconds"] = age
-    if age is not None and age > max(180, UNIVERSE_SCAN_INTERVAL * 3):
+    if age is not None and age > 120:
         result["status"] = "stale"
     result["limitations"] = [
         "ราคาหุ้นและปริมาณซื้อขายจาก Alpaca IEX ครอบคลุมเฉพาะตลาด IEX ไม่ใช่ consolidated SIP ทุกตลาด",
@@ -4666,7 +4699,7 @@ def stock_paper_engine_status(request: Request):
             scanner_age = None
     scanner_fresh = (
         scanner_state.get("status") == "ok" and scanner_age is not None
-        and scanner_age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
+        and scanner_age <= 120
     )
     return {"ok": True, "configured": bool(settings), "enabled": bool(settings and settings[0].get("enabled")),
             "mode":"paper", "settings": settings[0] if settings else None,
@@ -4788,7 +4821,11 @@ def _stock_paper_worker_cycle_locked():
     allowed_sessions = {"CORE"} if market_open else set()
     candidates = {x.get("symbol"):x for x in (scanner.get("candidates") or [])
                   if x.get("symbol") and x.get("session") in allowed_sessions
-                  and x.get("fastEntry") is True and _num(x.get("price"),0)}
+                  and x.get("fastEntry") is True and x.get("marketDataFresh") is True
+                  and _num(x.get("tradeAgeSeconds"),999) + age <= 120
+                  and _num(x.get("quoteAgeSeconds"),999) + age <= 120
+                  and _num(x.get("latestBarAgeSeconds"),999) + age <= 120
+                  and _num(x.get("price"),0)}
     session_candidate_counts = {
         session: sum(1 for x in candidates.values() if x.get("session") == session)
         for session in ("PRE_MARKET", "CORE", "AFTER_HOURS")
