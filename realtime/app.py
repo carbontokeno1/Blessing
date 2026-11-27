@@ -5007,6 +5007,37 @@ def _stock_paper_member_snapshot(user_id: str):
         "select":"id,symbol,quantity,entry_price,current_price,unrealized_pnl,realized_pnl,opened_at,status,take_profit_price,stop_loss_price",
         "user_id":"eq." + user_id, "order":"opened_at.desc", "limit":"1000"
     }) or []
+    # Refresh open-position mark-to-market at report time so both member and
+    # central reports do not depend solely on the background worker cadence.
+    open_for_mark = [p for p in positions if p.get("status") == "open" and p.get("symbol")]
+    if open_for_mark and ALPACA_KEY and ALPACA_SECRET:
+        symbols = list(dict.fromkeys(str(p["symbol"]).upper() for p in open_for_mark))
+        try:
+            for offset in range(0, len(symbols), 100):
+                snapshots = _alpaca_snapshots(symbols[offset:offset+100])
+                for symbol, snap in snapshots.items():
+                    price, stamp = _stock_snapshot_from_payload(snap)
+                    if price is None or not stamp:
+                        continue
+                    try:
+                        age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(stamp).replace("Z","+00:00")).astimezone(timezone.utc)).total_seconds()
+                    except Exception:
+                        continue
+                    if not (-30 <= age <= 90):
+                        continue
+                    for pos in open_for_mark:
+                        if str(pos.get("symbol") or "").upper() == symbol:
+                            _sb_rpc("stock_paper_worker_trade", {
+                                "p_user_id":user_id,"p_action":"mark","p_symbol":symbol,
+                                "p_price":float(price),"p_position_id":pos["id"],
+                                "p_reason":"REPORT_MARK_TO_MARKET","p_signal_score":None
+                            })
+            positions = _sb_rest("stock_paper_positions", {
+                "select":"id,symbol,quantity,entry_price,current_price,unrealized_pnl,realized_pnl,opened_at,status,take_profit_price,stop_loss_price",
+                "user_id":"eq." + user_id, "order":"opened_at.desc", "limit":"1000"
+            }) or []
+        except Exception as exc:
+            log.warning("Stock Paper report mark-to-market refresh failed for %s (%s)", user_id[:8], type(exc).__name__)
     account = accounts[0] if accounts else {}
     setting = settings[0] if settings else {}
     opened = [p for p in positions if p.get("status") == "open"]
