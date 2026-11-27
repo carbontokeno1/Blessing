@@ -1677,7 +1677,8 @@ def _moderate_crypto_entry_metrics(row: dict):
     spread_points = 10 if spread <= Decimal("0.20") else 6
     risk_points = 10 if stop <= Decimal("1.5") else 6
     score = min(100, trend_points + momentum_points + 20 + volume_points + spread_points + risk_points)
-    if score < 75: return None
+    minimum_score = 70 if setup and setup.startswith("RANGE_") else 75
+    if score < minimum_score: return None
     return {"decision":"PAPER_CANDIDATE", "side":direction, "opportunityScore":score,
             "liveEntryScore":0, "liveEntryModel":"PAPER_ONLY_REGIME_ADAPTIVE", "strategy":setup,
             "netEdgeProxyPct":float(expected_move-estimated_cost), "btcMarketBias":btc_bias,
@@ -4964,10 +4965,21 @@ def _dual_paper_worker_cycle():
             "fresh": bool(crypto_fresh)
         }
         if crypto_fresh:
+            btc_row = next((item for item in (crypto_scan.get("candidates") or []) if item.get("symbol") == "BTCUSDT"), {})
+            btc_m15 = _num(btc_row.get("m15"), 0) or 0
+            btc_m60 = _num(btc_row.get("m60"), 0) or 0
+            if btc_row.get("trendDownAligned") is True and btc_m15 < -0.08 and btc_m60 < 0:
+                btc_market_bias = "bearish"
+            elif btc_row.get("trendAligned") is True and btc_m15 > 0.08 and btc_m60 > 0:
+                btc_market_bias = "bullish"
+            else:
+                btc_market_bias = "neutral"
+            DUAL_PAPER_WORKER_STATE["cryptoScanDiagnostics"]["btcMarketBias"] = btc_market_bias
             for row in (crypto_scan.get("candidates") or []):
-                decision = _crypto_three_strategy_decision(row)
+                row_context = {**row, "btcMarketBias": btc_market_bias}
+                decision = _crypto_three_strategy_decision(row_context)
                 if decision:
-                    crypto_candidates[row["symbol"]] = (row, decision)
+                    crypto_candidates[row["symbol"]] = (row_context, decision)
         with UNIVERSE_LOCK:
             stock_scan = dict(UNIVERSE_STATE)
         try:
