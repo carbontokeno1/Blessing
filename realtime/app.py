@@ -4503,6 +4503,22 @@ def stock_paper_engine_status(request: Request):
         "select":"id,symbol,quantity,entry_price,current_price,take_profit_price,stop_loss_price,unrealized_pnl,opened_at,status",
         "user_id":"eq." + uid, "status":"eq.open", "order":"opened_at.desc", "limit":"50"
     })
+    account = accounts[0] if accounts else {}
+    portfolio_base = float(account.get("starting_balance") or (settings[0].get("starting_balance") if settings else 0) or 0)
+    allocated_30 = portfolio_base * 0.30
+    open_exposure = sum(
+        (_num(pos.get("quantity"),0) or 0) * (_num(pos.get("entry_price"),0) or 0)
+        for pos in positions
+    )
+    allocation = {
+        "strategy":"PREMARKET_MOMENTUM_PAPER",
+        "allocationPct":30,
+        "reservePct":70,
+        "portfolioBase":portfolio_base,
+        "allocationCap":round(allocated_30,2),
+        "used":round(open_exposure,2),
+        "available":round(max(0,allocated_30-open_exposure),2)
+    }
     with UNIVERSE_LOCK:
         scanner_state = dict(UNIVERSE_STATE)
     scanner_updated = scanner_state.get("updatedAt")
@@ -4521,6 +4537,7 @@ def stock_paper_engine_status(request: Request):
     return {"ok": True, "configured": bool(settings), "enabled": bool(settings and settings[0].get("enabled")),
             "mode":"paper", "settings": settings[0] if settings else None,
             "account": accounts[0] if accounts else None, "openPositions": positions,
+            "premarketAllocation": allocation,
             "worker": dict(STOCK_PAPER_WORKER_STATE),
             "scanner": {
                 "status": scanner_state.get("status") if scanner_fresh else ("stale" if scanner_updated else "waiting_scan"),
@@ -4580,9 +4597,28 @@ def _stock_paper_worker_cycle():
     if not (ALPACA_KEY and ALPACA_SECRET):
         STOCK_PAPER_WORKER_STATE.update({"status":"waiting_credentials","lastError":"ALPACA_CREDENTIALS_MISSING"})
         return
+    # Keep every active member on an isolated stock Paper account; never include removed/suspended users.
+    active_member_rows = _sb_rest("profiles", {
+        "select":"user_id", "role":"eq.member", "status":"eq.active", "limit":"1000"
+    })
+    active_member_ids = list(dict.fromkeys(str(row.get("user_id")) for row in (active_member_rows or []) if row.get("user_id")))
+    if not active_member_ids:
+        STOCK_PAPER_WORKER_STATE.update({"status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
+                                         "enabledUsers":0,"buyEntries":0,"sellExits":0})
+        return
+    existing_rows = _sb_rest("stock_paper_settings", {
+        "select":"user_id", "user_id":"in.(" + ",".join(active_member_ids) + ")", "mode":"eq.paper", "limit":"1000"
+    })
+    existing_ids = {str(row.get("user_id")) for row in (existing_rows or [])}
+    for member_id in active_member_ids:
+        if member_id not in existing_ids:
+            _stock_paper_ensure_user(member_id)
+            _sb_rest("stock_paper_settings", {"user_id":"eq." + member_id}, "PATCH", {
+                "enabled":True, "mode":"paper", "updated_at":datetime.now(timezone.utc).isoformat()
+            })
     settings_rows = _sb_rest("stock_paper_settings", {
         "select":"user_id,enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,fee_pct,slippage_bps",
-        "mode":"eq.paper", "limit":"100"
+        "user_id":"in.(" + ",".join(active_member_ids) + ")", "mode":"eq.paper", "limit":"1000"
     })
     with UNIVERSE_LOCK:
         scanner = dict(UNIVERSE_STATE)
