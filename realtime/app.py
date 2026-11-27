@@ -1324,6 +1324,7 @@ def _universe_scan_cycle():
     """Scan US equities from Alpaca IEX first; Webull is a fallback only when Alpaca is unavailable."""
     started = time.time()
     source = "Alpaca IEX"
+    market_open = False
     if ALPACA_KEY and ALPACA_SECRET:
         market_open = _alpaca_market_clock_cached()
         assets = _load_active_universe(force=False)
@@ -4542,6 +4543,7 @@ STOCK_PAPER_WORKER_STATE = {
     "lastCycleAt": None, "lastError": None, "cycles": 0, "actions": []
 }
 STOCK_PAPER_ENTRY_COOLDOWNS = {}
+_STOCK_PAPER_CYCLE_LOCK = threading.Lock()
 
 
 def _stock_paper_engine_user(request: Request):
@@ -4674,7 +4676,7 @@ def stock_paper_engine_status(request: Request):
 
 
 def _stock_snapshot_from_payload(snap: dict):
-    """Choose the freshest valid Alpaca IEX trade/minute price; reject stale or future data."""
+    """Choose a fresh Alpaca IEX trade/minute price; reject stale or future data."""
     if not isinstance(snap, dict):
         return None, None
     now = datetime.now(timezone.utc)
@@ -4696,7 +4698,7 @@ def _stock_snapshot_from_payload(snap: dict):
             age = (now - parsed.astimezone(timezone.utc)).total_seconds()
         except Exception:
             continue
-        if -30 <= age <= 180:
+        if -30 <= age <= 90:
             valid.append((age, price, stamp))
     if not valid:
         return None, latest_stamp
@@ -4714,10 +4716,21 @@ def _stock_snapshot_price(symbol: str):
 
 
 def _stock_paper_worker_cycle():
-    # Paper-only stock engine uses the same Alpaca IEX feed as the US-equity scanner.
+    # Prevent overlapping cycles if startup hooks or deployment workers ever duplicate.
     if not (ALPACA_KEY and ALPACA_SECRET):
         STOCK_PAPER_WORKER_STATE.update({"status":"waiting_credentials","lastError":"ALPACA_CREDENTIALS_MISSING"})
         return
+    if not _STOCK_PAPER_CYCLE_LOCK.acquire(blocking=False):
+        log.warning("Stock Paper cycle skipped: previous cycle is still running")
+        return
+    try:
+        _stock_paper_worker_cycle_locked()
+    finally:
+        _STOCK_PAPER_CYCLE_LOCK.release()
+
+
+def _stock_paper_worker_cycle_locked():
+    # Paper-only stock engine uses the same Alpaca IEX feed as the US-equity scanner.
     # Keep every active member on an isolated stock Paper account; never include removed/suspended users.
     active_member_rows = _sb_rest("profiles", {
         "select":"user_id", "role":"eq.member", "status":"eq.active", "limit":"1000"
@@ -4748,14 +4761,13 @@ def _stock_paper_worker_cycle():
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(updated.replace("Z","+00:00"))).total_seconds() if updated else 999999
     except Exception:
         age = 999999
-    fresh = scanner.get("status") == "ok" and age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
+    market_open = _alpaca_market_clock_cached()
+    fresh = scanner.get("status") == "ok" and age <= 120 and market_open
     # One independent 30% Momentum sleeve trades across all US equity sessions.
     # CORE entries use the verified regular-session scanner feed. Premarket and
     # After-hours entries require an explicitly verified extended-hours entitlement.
     extended_hours_ready = scanner.get("extendedHoursAvailable") is True
-    allowed_sessions = {"CORE"}
-    if extended_hours_ready:
-        allowed_sessions.update({"PRE_MARKET", "AFTER_HOURS"})
+    allowed_sessions = {"CORE"} if market_open else set()
     candidates = {x.get("symbol"):x for x in (scanner.get("candidates") or [])
                   if x.get("symbol") and x.get("session") in allowed_sessions
                   and x.get("fastEntry") is True and _num(x.get("price"),0)}
@@ -4763,6 +4775,43 @@ def _stock_paper_worker_cycle():
         session: sum(1 for x in candidates.values() if x.get("session") == session)
         for session in ("PRE_MARKET", "CORE", "AFTER_HOURS")
     }
+    # Scanner prices are rankings only. Re-price each potential entry from a
+    # fresh broker snapshot immediately before any Paper order is submitted.
+    fresh_candidate_prices = {}
+    if fresh and candidates:
+        ranked_symbols = sorted(candidates.values(), key=lambda x: float(x.get("momentumScore") or 0), reverse=True)
+        symbols_to_refresh = list(dict.fromkeys(x["symbol"] for x in ranked_symbols[:100]))
+        for offset in range(0, len(symbols_to_refresh), 100):
+            batch = symbols_to_refresh[offset:offset+100]
+            try:
+                fresh_snaps = _alpaca_snapshots(batch)
+            except Exception as quote_error:
+                log.warning("Stock Paper pre-trade snapshot refresh failed (%s)", type(quote_error).__name__)
+                fresh_snaps = {}
+            for symbol, snap in fresh_snaps.items():
+                px, stamp = _stock_snapshot_from_payload(snap)
+                quote = snap.get("latestQuote") or {}
+                quote_age = None
+                try:
+                    parsed_quote = datetime.fromisoformat(str(quote.get("t")).replace("Z","+00:00"))
+                    if parsed_quote.tzinfo is None:
+                        parsed_quote = parsed_quote.replace(tzinfo=timezone.utc)
+                    quote_age = (datetime.now(timezone.utc)-parsed_quote.astimezone(timezone.utc)).total_seconds()
+                except Exception:
+                    pass
+                bid, ask = _num(quote.get("bp"),0) or 0, _num(quote.get("ap"),0) or 0
+                spread = ((ask-bid)/px*100) if px and bid>0 and ask>=bid else None
+                scanned_price = _num((candidates.get(symbol) or {}).get("price"),0) or 0
+                price_drift = abs(px-scanned_price)/scanned_price*100 if px and scanned_price>0 else 999
+                if (px and stamp and quote_age is not None and -30 <= quote_age <= 90
+                        and spread is not None and 0 < spread <= 0.50 and price_drift <= 0.75):
+                    fresh_candidate_prices[symbol] = px
+        candidates = {
+            symbol: {**row, "price": fresh_candidate_prices[symbol], "executionPriceFresh": True}
+            for symbol, row in candidates.items() if symbol in fresh_candidate_prices
+        }
+    else:
+        candidates = {}
     enabled_users = sum(1 for row in settings_rows if row.get("enabled"))
     buy_entries = 0
     sell_exits = 0
@@ -4823,7 +4872,8 @@ def _stock_paper_worker_cycle():
         if not account_rows:
             continue
         account = account_rows[0]
-        day_start = datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        day_start = now_et.replace(hour=0,minute=0,second=0,microsecond=0).astimezone(timezone.utc).isoformat()
         todays = _sb_rest("stock_paper_orders", {
             "select":"side,realized_pnl","user_id":"eq." + uid,
             "created_at":"gte." + day_start,"side":"eq.sell","limit":"500"
@@ -4840,6 +4890,7 @@ def _stock_paper_worker_cycle():
             continue
         held = {p["symbol"] for p in positions}
         ranked = [x for x in candidates.values() if x["symbol"] not in held
+                  and x.get("executionPriceFresh") is True
                   and _num(x.get("spreadPct"),0) is not None
                   and 0 < float(x.get("spreadPct") or 0) <= 0.5
                   and _num(x.get("m1"),0) > 0
@@ -4875,7 +4926,7 @@ def _stock_paper_worker_cycle():
                 STOCK_PAPER_WORKER_STATE["actions"] = STOCK_PAPER_WORKER_STATE["actions"][-20:]
                 positions.append({"symbol":candidate["symbol"]})
             except Exception as exc:
-                log.warning("Stock Paper buy skipped for %s: %s",candidate["symbol"],type(exc).__name__)
+                log.warning("Stock Paper buy skipped for %s: %s",candidate["symbol"],str(exc)[:180])
     STOCK_PAPER_WORKER_STATE.update({
         "status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
         "lastError":None,"cycles":STOCK_PAPER_WORKER_STATE.get("cycles",0)+1,
