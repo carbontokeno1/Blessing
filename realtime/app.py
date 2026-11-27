@@ -615,7 +615,7 @@ async def startup():
         if UNIVERSE_THREAD is None or not UNIVERSE_THREAD.is_alive():
             UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="us-equity-universe-scanner", daemon=True)
             UNIVERSE_THREAD.start()
-        log.info("%s US universe scanner started; interval=%ss", "Alpaca IEX" if alpaca_ready else "Webull fallback", max(180,UNIVERSE_SCAN_INTERVAL))
+        log.info("%s US universe scanner started; target_interval=%ss", "Alpaca IEX" if alpaca_ready else "Webull fallback", UNIVERSE_SCAN_INTERVAL)
     else:
         with UNIVERSE_LOCK:
             UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"Alpaca IEX / Webull fallback","lastError":"NO_MARKET_DATA_CREDENTIALS"})
@@ -735,6 +735,8 @@ def scanner(rank_type: str = "DAY_1", direction: str = "DESC"):
         "message":"จัดอันดับจากแหล่งข้อมูลหุ้นที่ระบุใน feed; แสดงข้อจำกัดของ IEX/ผู้ให้บริการตามจริง",
         "rankType":rank_type,"direction":direction,"scanned":scan.get("scanned",0),
         "candidates":candidates[:100],"updatedAt":scan.get("updatedAt"),
+        "fastEntryCount":scan.get("fastEntryCount",0),
+        "fastEntryRejectionCounts":scan.get("fastEntryRejectionCounts",{}),
         "feed":scan.get("feed") or scan.get("provider") or "Alpaca IEX","coverage":scan.get("coverage"),
         "lastError":scan.get("lastError"),
     }
@@ -1003,8 +1005,8 @@ def forecast_10m_from_bars(bars, price):
 
 # Alpaca Basic IEX all-universe scanner. REST batches are used because the
 # Basic websocket trade/quote subscription is limited to 30 symbols.
-UNIVERSE_SCAN_INTERVAL = max(60, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "60")))
-UNIVERSE_LIQUIDITY_LIMIT = max(200, min(2000, int(os.getenv("UNIVERSE_LIQUIDITY_LIMIT", "1200"))))
+UNIVERSE_SCAN_INTERVAL = max(60, int(os.getenv("UNIVERSE_SCAN_INTERVAL", "120")))
+UNIVERSE_LIQUIDITY_LIMIT = max(200, min(2000, int(os.getenv("UNIVERSE_LIQUIDITY_LIMIT", "800"))))
 UNIVERSE_BATCH_SIZE = 100
 UNIVERSE_CANDIDATE_LIMIT = 150
 UNIVERSE_CACHE_SECONDS = 6 * 60 * 60
@@ -1447,6 +1449,10 @@ def _universe_scan_cycle():
         + (x.get("m5") or 0) + (x.get("m1") or 0)
         + min((x.get("dailyVolumeIex") or x.get("volume") or 0) / 1000000, 5)
     ), reverse=True)
+    rejection_counts = {}
+    for candidate in candidates:
+        for reason in (candidate.get("fastEntryReasons") or []):
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
     now = datetime.now(timezone.utc).isoformat()
     elapsed = round(time.time() - started, 2)
     with UNIVERSE_LOCK:
@@ -1458,6 +1464,7 @@ def _universe_scan_cycle():
             "candidateCount": len(candidates),
             "fastEntryCount": sum(1 for x in candidates if x.get("fastEntry")),
             "fastEntryWatchCount": sum(1 for x in candidates if not x.get("fastEntry") and x.get("score", 0) >= 3),
+            "fastEntryRejectionCounts": rejection_counts,
             "candidates": candidates[:UNIVERSE_CANDIDATE_LIMIT],
             "updatedAt": now, "lastError": None, "cycleSeconds": elapsed,
             "batchCount": batch_count, "snapshotBatchErrors": snapshot_errors,
@@ -1494,7 +1501,8 @@ def _universe_scanner_loop():
                     "provider": "Alpaca IEX / Webull fallback",
                     "lastError": type(exc).__name__,
                     "updatedAt": datetime.now(timezone.utc).isoformat()})
-        time.sleep(max(180, UNIVERSE_SCAN_INTERVAL))
+        cycle_elapsed = max(0.0, time.time() - locals().get("started", time.time()))
+        time.sleep(max(15, UNIVERSE_SCAN_INTERVAL - cycle_elapsed))
 
 
 @app.get("/universe-scanner")
