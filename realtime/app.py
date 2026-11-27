@@ -4974,6 +4974,43 @@ def _stock_snapshot_from_payload(snap: dict):
     return price, stamp
 
 
+def _stock_snapshot_exit_price(snap: dict):
+    """Conservative executable-side price for a long Paper stock exit."""
+    if not isinstance(snap, dict):
+        return None, None
+    now = datetime.now(timezone.utc)
+    quote = snap.get("latestQuote") or {}
+    stamp = quote.get("t")
+    bid, ask = _num(quote.get("bp"), 0) or 0, _num(quote.get("ap"), 0) or 0
+    if stamp and bid > 0 and ask >= bid:
+        try:
+            parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age = (now - parsed.astimezone(timezone.utc)).total_seconds()
+            midpoint = (bid + ask) / 2
+            spread_pct = ((ask - bid) / midpoint) * 100 if midpoint > 0 else 999
+            if 0 <= age <= 90 and spread_pct <= 2.0:
+                return float(bid), "fresh_bid"
+        except Exception:
+            pass
+    for field, price_key, max_age in (("latestTrade", "p", 90), ("minuteBar", "c", 120)):
+        item = snap.get(field) or {}
+        price, stamp = _num(item.get(price_key), 0) or 0, item.get("t")
+        if price <= 0 or not stamp:
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age = (now - parsed.astimezone(timezone.utc)).total_seconds()
+            if 0 <= age <= max_age:
+                return float(price), field
+        except Exception:
+            continue
+    return None, None
+
+
 def _stock_snapshot_price(symbol: str):
     try:
         snapshots = _alpaca_snapshots([str(symbol).upper()])
@@ -5118,21 +5155,28 @@ def _stock_paper_worker_cycle_locked():
         })
         if not setting.get("enabled") and not positions:
             continue
-        # Manage open stock positions from current IEX snapshots, independently of new entries.
+        # Manage existing positions independently from new entries, but only with
+        # fresh executable-side prices during an open US equity session.
         prices = {}
-        if positions:
+        position_monitor_checked = 0
+        position_monitor_stale = []
+        if positions and market_open:
             symbols = list(dict.fromkeys(p["symbol"] for p in positions))
             for offset in range(0, len(symbols), 100):
                 batch = symbols[offset:offset+100]
                 try:
                     snaps = _alpaca_snapshots(batch)
                 except Exception as quote_error:
-                    log.warning("Stock Paper price refresh failed: %s", type(quote_error).__name__)
+                    log.warning("Stock Paper position price refresh failed: %s", type(quote_error).__name__)
                     snaps = {}
                 for symbol, snap in snaps.items():
-                    px, quote_stamp = _stock_snapshot_from_payload(snap)
+                    px, price_source = _stock_snapshot_exit_price(snap)
                     if px is not None:
                         prices[symbol] = px
+                        position_monitor_checked += 1
+            position_monitor_stale.extend(symbol for symbol in symbols if symbol not in prices)
+        elif positions:
+            position_monitor_stale.extend(p["symbol"] for p in positions)
         for pos in positions:
             price = prices.get(pos["symbol"])
             if not price:
@@ -5239,11 +5283,18 @@ def _stock_paper_worker_cycle_locked():
             for setup in ("GAP_AND_GO","VOLUME_EXPLOSION","HIGH_OF_DAY_BREAKOUT","PULLBACK_REVERSAL","NEWS_CATALYST")
         },
         "enabledUsers":enabled_users,"buyEntries":buy_entries,"sellExits":sell_exits,
-        "skipCounts":skip_counts
+        "skipCounts":skip_counts,
+        "positionMonitor":{
+            "marketOpen":bool(market_open),"checked":position_monitor_checked,
+            "staleCount":len(set(position_monitor_stale)),
+            "staleSymbols":sorted(set(position_monitor_stale))[:50],
+            "lastCheckedAt":datetime.now(timezone.utc).isoformat()
+        }
     })
     log.info(
-        "Stock Paper worker cycle complete scanner_fresh=%s scanner_age=%ss candidates_after_pretrade=%d filters=%s pretrade=%s enabled_users=%d buys=%d sells=%d skip_counts=%s",
-        fresh, int(age), len(candidates), filter_counts, pretrade_counts, enabled_users, buy_entries, sell_exits, skip_counts
+        "Stock Paper worker cycle complete scanner_fresh=%s scanner_age=%ss candidates_after_pretrade=%d filters=%s pretrade=%s enabled_users=%d buys=%d sells=%d skip_counts=%s position_monitor=%s",
+        fresh, int(age), len(candidates), filter_counts, pretrade_counts, enabled_users, buy_entries, sell_exits, skip_counts,
+        STOCK_PAPER_WORKER_STATE.get("positionMonitor")
     )
 
 
@@ -5892,18 +5943,35 @@ def _dual_paper_worker_cycle():
             "select":"id,user_id,market,symbol","status":"eq.open","order":"opened_at.asc","limit":"1000"
         }) or []
         checked, exits = 0, 0
+        stock_market_open = _alpaca_market_clock_cached()
+        stock_monitor_checked = 0
+        stock_monitor_stale = []
         for position in open_rows:
+            market = str(position.get("market") or "")
+            symbol = str(position.get("symbol") or "")
+            # US equities cannot be paper-filled while the exchange is closed.
+            # Wait for the next session rather than repeatedly treating a closed-market quote as a failure.
+            if market == "stocks" and not stock_market_open:
+                continue
             try:
-                price = _dual_market_price(position["market"],position["symbol"])
+                price = _dual_market_price(market, symbol)
                 result = _sb_rpc("blessing_dual_mark_position",{
-                    "p_user_id":str(position["user_id"]),"p_market":position["market"],
+                    "p_user_id":str(position["user_id"]),"p_market":market,
                     "p_position_id":str(position["id"]),"p_price":price
                 })
                 checked += 1
+                if market == "stocks":
+                    stock_monitor_checked += 1
                 if isinstance(result,dict) and result.get("closed"):
                     exits += 1
             except Exception as exc:
-                log.info("Dual paper monitor skipped %s/%s (%s: %s)",position.get("market"),position.get("symbol"),type(exc).__name__,getattr(exc,"detail",str(exc))[:180])
+                if market == "stocks":
+                    stock_monitor_stale.append(symbol)
+                log.warning("Dual Paper monitor skipped %s/%s (%s: %s)",market,symbol,type(exc).__name__,getattr(exc,"detail",str(exc))[:180])
+        stock_monitor_stale = sorted(set(stock_monitor_stale))
+        if stock_market_open and stock_monitor_stale:
+            log.error("Stock Paper position monitor has %d symbols without a fresh executable quote: %s",
+                      len(stock_monitor_stale), ",".join(stock_monitor_stale[:50]))
 
         now = datetime.now(timezone.utc)
         experiments = _sb_rest("blessing_dual_experiments",{
@@ -6051,6 +6119,11 @@ def _dual_paper_worker_cycle():
             "status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),"lastError":None,
             "cycles":DUAL_PAPER_WORKER_STATE.get("cycles",0)+1,
             "positionsChecked":checked,"automaticExits":exits,
+            "stockPositionMonitor":{
+                "marketOpen":bool(stock_market_open),"checked":stock_monitor_checked,
+                "staleCount":len(stock_monitor_stale),"staleSymbols":stock_monitor_stale[:50],
+                "lastCheckedAt":datetime.now(timezone.utc).isoformat()
+            },
             "activeExperiments":len(experiments),
             "cryptoCandidates":len(crypto_candidates),"stocksCandidates":len(stock_candidates),
             "entriesOpened":entries_opened,"selectedMarkets":selected_markets
@@ -6124,7 +6197,7 @@ def _dual_price_number(value):
 
 
 def _dual_market_price(market: str, symbol: str) -> float:
-    """Return a fresh server-side quote for Paper execution; never trust browser prices."""
+    """Return a fresh server-side price; stale scanner cache is never an execution price."""
     if market == "crypto":
         if not symbol.endswith("USDT"):
             raise HTTPException(status_code=422, detail="คู่เหรียญต้องเป็น Spot/USDT")
@@ -6138,7 +6211,6 @@ def _dual_market_price(market: str, symbol: str) -> float:
             price = _num(quote.get("price"), 0)
             if 0 <= age <= 5 and price > 0:
                 return float(price)
-        # Use a fresh Binance TH server-side ticker when the local websocket is stale.
         try:
             price = _binance_th_public_price(symbol)
             if price > 0:
@@ -6148,66 +6220,53 @@ def _dual_market_price(market: str, symbol: str) -> float:
         raise HTTPException(status_code=503, detail="ไม่มีราคา Binance TH สดสำหรับส่งคำสั่ง Paper")
     if market == "stocks":
         now = datetime.now(timezone.utc)
-        # Independent provider caches: prefer fresh Webull, then fresh Alpaca.
-        for provider, cache in (("Webull", state.get("quotes", {})), ("Alpaca", state.get("alpaca_quotes", {}))):
-            quote = cache.get(symbol) if isinstance(cache, dict) else None
-            if not isinstance(quote, dict):
+        # A fresh Webull stream tick is acceptable only while it is genuinely recent.
+        for cache in (state.get("quotes", {}), state.get("alpaca_quotes", {})):
+            quote_cache = cache.get(symbol) if isinstance(cache, dict) else None
+            if not isinstance(quote_cache, dict):
                 continue
             try:
-                received = datetime.fromisoformat(str(quote.get("receivedAt")).replace("Z", "+00:00"))
+                received = datetime.fromisoformat(str(quote_cache.get("receivedAt")).replace("Z", "+00:00"))
                 age = (now - received).total_seconds()
             except Exception:
                 age = 999999
-            raw = quote.get("raw") or quote
+            raw = quote_cache.get("raw") or quote_cache
             price = _dual_price_number(raw)
             if 0 <= age <= 8 and price and price > 0:
                 return float(price)
-        # Reuse a recently scanned candidate only when its scan timestamp is valid.
-        try:
-            with UNIVERSE_LOCK:
-                universe = dict(UNIVERSE_STATE)
-            updated = universe.get("updatedAt")
-            if updated:
-                scan_stamp = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
-                scan_age = (now - scan_stamp).total_seconds()
-                scan_limit = max(180, UNIVERSE_SCAN_INTERVAL * 3)
-                if 0 <= scan_age <= scan_limit:
-                    match = next((row for row in (universe.get("candidates") or [])
-                                  if str(row.get("symbol") or "").upper() == symbol), None)
-                    if match:
-                        scanned_price = _num(match.get("price"), 0)
-                        if scanned_price > 0:
-                            return float(scanned_price)
-        except Exception as exc:
-            log.info("Paper stock scanner cache ignored for %s (%s)", symbol, type(exc).__name__)
+
         if not (ALPACA_KEY and ALPACA_SECRET):
             raise HTTPException(status_code=503, detail="ยังไม่มีราคาหุ้นสดจาก Webull/Alpaca สำหรับ Paper Trading")
         try:
-            snapshot = _alpaca_snapshots([symbol]).get(symbol) or {}
-            trade = snapshot.get("latestTrade") or {}
+            snapshot = (_alpaca_snapshots([symbol]).get(symbol) or {})
             latest_quote = snapshot.get("latestQuote") or {}
-            minute = snapshot.get("minuteBar") or {}
-            # Choose the newest available market timestamp; don't let an old last
-            # trade hide a fresh bid/ask update during premarket or after-hours.
-            stamps = []
-            for item in (trade, latest_quote, minute):
-                value = item.get("t")
-                if value:
-                    try:
-                        stamps.append(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
-                    except Exception:
-                        pass
-            stamp = max(stamps) if stamps else None
-            age = (now - stamp).total_seconds() if stamp else 999999
-            price = _num(trade.get("p"), 0)
-            if price <= 0:
-                bid, ask = _num(latest_quote.get("bp"), 0), _num(latest_quote.get("ap"), 0)
-                if bid > 0 and ask >= bid:
-                    price = (bid + ask) / 2
-            if price <= 0:
-                price = _num(minute.get("c"), 0)
-            if 0 <= age <= 90 and price > 0:
-                return float(price)
+            quote_stamp = latest_quote.get("t")
+            if quote_stamp:
+                parsed = datetime.fromisoformat(str(quote_stamp).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                quote_age = (now - parsed.astimezone(timezone.utc)).total_seconds()
+                bid = _num(latest_quote.get("bp"), 0) or 0
+                ask = _num(latest_quote.get("ap"), 0) or 0
+                if 0 <= quote_age <= 90 and bid > 0 and ask >= bid:
+                    spread_pct = ((ask - bid) / ((ask + bid) / 2)) * 100 if ask > 0 else 999
+                    if spread_pct <= 2.0:
+                        # Long stock positions exit at bid, not midpoint/ask.
+                        return float(bid)
+
+            # Fallback to a fresh trade print, then a fresh one-minute bar.
+            for field, price_key, max_age in (("latestTrade", "p", 90), ("minuteBar", "c", 120)):
+                item = snapshot.get(field) or {}
+                stamp = item.get("t")
+                price = _num(item.get(price_key), 0) or 0
+                if not stamp or price <= 0:
+                    continue
+                parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                age = (now - parsed.astimezone(timezone.utc)).total_seconds()
+                if 0 <= age <= max_age:
+                    return float(price)
         except Exception as exc:
             log.info("Paper stock Alpaca snapshot unavailable for %s (%s)", symbol, type(exc).__name__)
         raise HTTPException(status_code=503, detail="ราคาหุ้นยังไม่สดพอ ระบบจึงงดส่งคำสั่ง Paper อย่างปลอดภัย")
