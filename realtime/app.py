@@ -1220,31 +1220,55 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
     # Include EARLY setups from score 3/11 upward so the daily scanner can surface developing moves; FAST_ENTRY remains independently strict.
     if spread is not None and spread > 1.25:
         return None
-    # Intraday stock FAST ENTRY: prioritize the user's 5%+ daily movers,
-    # while requiring fresh upward momentum, a volume expansion, a nearby breakout,
-    # and a tradable (not excessively wide) IEX quote spread.
-    # FAST ENTRY is a qualified intraday setup, not a prediction. Basic/IEX
-    # frequently has incomplete quotes; missing spread must remain WATCH, never BUY.
-    # Accept either a fresh micro-breakout OR strong 3-minute continuation so that
-    # a stock does not have to print a new 5-bar high on the exact scan minute.
+    # Five parallel momentum playbooks. Each setup has its own trigger;
+    # a single shared breakout rule is deliberately NOT required.
     continuation = bool(m3 is not None and m3 >= 0.30)
-    breakout_or_continuation = bool(breakout or continuation)
-    fast_entry = bool(
-        change is not None and 5 <= change <= 300
+    prior_closes = closes[-5:-1]
+    prior_lows = [x["low"] for x in bars[-5:-1] if x.get("low") and x["low"] > 0]
+    pullback_reclaim = bool(
+        len(prior_closes) >= 3 and len(prior_lows) >= 3
+        and min(prior_closes) < max(prior_closes)
+        and price > max(prior_closes[-2:])
         and m1 is not None and m1 > 0
-        and m5 is not None and m5 >= 0.15
-        and rvol is not None and rvol >= 1.3
-        and spread is not None and 0 < spread <= 1.0
-        and breakout_or_continuation
     )
+    gap_go = bool(change is not None and 3 <= change <= 30
+                  and m1 is not None and m1 > 0
+                  and m5 is not None and m5 >= 0.15
+                  and rvol is not None and rvol >= 1.3)
+    volume_explosion = bool(rvol is not None and rvol >= 2
+                            and m1 is not None and m1 > 0
+                            and m5 is not None and m5 > 0)
+    hod_breakout = bool(breakout and m1 is not None and m1 > 0
+                        and rvol is not None and rvol >= 1.3)
+    pullback_reversal = bool(pullback_reclaim and rvol is not None and rvol >= 1.0)
+    # Catalyst entries are only recognized when a verified news provider supplies
+    # a timestamped, sourced catalyst object; price movement alone is not "news".
+    catalyst = snap.get("newsCatalyst") if isinstance(snap.get("newsCatalyst"), dict) else {}
+    catalyst_time = catalyst.get("publishedAt")
+    catalyst_source = catalyst.get("source")
+    news_catalyst = bool(catalyst.get("verified") is True and catalyst_time and catalyst_source)
+    momentum_setups = []
+    if gap_go: momentum_setups.append("GAP_AND_GO")
+    if volume_explosion: momentum_setups.append("VOLUME_EXPLOSION")
+    if hod_breakout: momentum_setups.append("HIGH_OF_DAY_BREAKOUT")
+    if pullback_reversal: momentum_setups.append("PULLBACK_REVERSAL")
+    if news_catalyst: momentum_setups.append("NEWS_CATALYST")
+    momentum_score = min(100, (28 if gap_go else 0) + (25 if volume_explosion else 0)
+                         + (25 if hod_breakout else 0) + (22 if pullback_reversal else 0)
+                         + (25 if news_catalyst else 0))
+    # Shared execution safety: positive short-term tape, fresh bid/ask, tight spread.
+    fast_entry = bool(momentum_setups and momentum_score >= 50
+                      and m1 is not None and m1 > 0
+                      and m5 is not None and m5 >= -0.10
+                      and spread is not None and 0 < spread <= 0.50
+                      and change is not None and -5 <= change <= 100)
     fast_entry_reasons = []
-    if change is None or change < 5: fast_entry_reasons.append("DAILY_MOVE_BELOW_5PCT")
-    elif change > 300: fast_entry_reasons.append("DAILY_MOVE_ABOVE_300PCT")
+    if not momentum_setups: fast_entry_reasons.append("NO_MOMENTUM_SETUP")
+    if momentum_score < 50: fast_entry_reasons.append("MOMENTUM_SCORE_BELOW_50")
     if m1 is None or m1 <= 0: fast_entry_reasons.append("M1_NOT_POSITIVE")
-    if m5 is None or m5 < 0.15: fast_entry_reasons.append("M5_MOMENTUM_WEAK")
-    if rvol is None or rvol < 1.3: fast_entry_reasons.append("RVOL_BELOW_1_3")
-    if not breakout_or_continuation: fast_entry_reasons.append("NO_BREAKOUT_OR_M3_CONTINUATION")
-    if spread is None or spread <= 0 or spread > 1.0: fast_entry_reasons.append("SPREAD_NOT_TRADABLE")
+    if m5 is None or m5 < -0.10: fast_entry_reasons.append("M5_TREND_WEAK")
+    if spread is None or spread <= 0 or spread > 0.50: fast_entry_reasons.append("SPREAD_NOT_TRADABLE")
+    if change is None or change < -5 or change > 100: fast_entry_reasons.append("DAILY_MOVE_OUT_OF_RANGE")
     forecast = forecast_10m_from_bars(bars, price)
     setup = "STRONG" if score >= 7 else ("WATCH" if score >= 5 else "EARLY")
     return {
@@ -1253,6 +1277,11 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
         "session": session, "volume": int(daily_volume),
         "relativeVolume": rvol, "spreadPct": spread,
         "barsCount": len(bars), "breakout": breakout, "fastEntry": fast_entry,
+        "momentumSetups": momentum_setups, "momentumScore": momentum_score,
+        "gapAndGo": gap_go, "volumeExplosion": volume_explosion,
+        "highOfDayBreakout": hod_breakout, "pullbackReversal": pullback_reversal,
+        "newsCatalyst": news_catalyst,
+        "newsCatalystSource": catalyst_source if news_catalyst else None,
         "volumeSource": "IEX_CURRENT_SESSION" if daily_volume > 0 else "PREVIOUS_SESSION_REFERENCE",
         "currentSessionVolume": int(daily_volume),
         "fastEntryReasons": [] if fast_entry else fast_entry_reasons,
@@ -4728,10 +4757,15 @@ def _stock_paper_worker_cycle():
         ranked = [x for x in candidates.values() if x["symbol"] not in held
                   and _num(x.get("spreadPct"),0) is not None
                   and 0 < float(x.get("spreadPct") or 0) <= 0.5
-                  and _num(x.get("m1"),0) > 0 and _num(x.get("m5"),0) > 0
-                  and _num(x.get("relativeVolume"),0) >= 2 and x.get("breakout") is True]
+                  and _num(x.get("m1"),0) > 0
+                  and _num(x.get("m5"),0) >= -0.10
+                  and _num(x.get("momentumScore"),0) >= 50
+                  and bool(x.get("momentumSetups"))]
         ranked.sort(key=lambda x:(
-            float(x.get("relativeVolume") or 0)*2 + float(x.get("m5") or 0) + float(x.get("m1") or 0)
+            float(x.get("momentumScore") or 0)
+            + min(float(x.get("relativeVolume") or 0)*5,20)
+            + max(0,float(x.get("m5") or 0))*2
+            + max(0,float(x.get("m1") or 0))
             + min(float(x.get("dailyVolumeIex") or 0)/1000000,5)
         ),reverse=True)
         for candidate in ranked:
@@ -4744,11 +4778,8 @@ def _stock_paper_worker_cycle():
                 result = _sb_rpc("stock_paper_worker_trade", {
                     "p_user_id":uid,"p_action":"buy","p_symbol":candidate["symbol"],
                     "p_price":float(candidate["price"]),"p_position_id":None,
-                    "p_reason":"MOMENTUM_" + str(candidate.get("session") or "UNKNOWN") + "_FAST_ENTRY","p_signal_score":min(100,int(
-                        40 + float(candidate.get("relativeVolume") or 0)*8
-                        + max(0,float(candidate.get("m1") or 0))*3
-                        + max(0,float(candidate.get("m5") or 0))*2
-                    ))
+                    "p_reason":"MOMENTUM_" + str(candidate.get("session") or "UNKNOWN") + "_" + "_".join(candidate.get("momentumSetups") or ["SETUP"])[:90],
+                    "p_signal_score":min(100,int(candidate.get("momentumScore") or 0))
                 })
                 STOCK_PAPER_ENTRY_COOLDOWNS[cooldown_key] = time.time()
                 buy_entries += 1
@@ -4768,6 +4799,10 @@ def _stock_paper_worker_cycle():
         "allocationPct":30,"reservePct":70,
         "extendedHoursReady":extended_hours_ready,
         "sessionCandidateCounts":session_candidate_counts,
+        "momentumSetupCounts":{
+            setup:sum(1 for x in candidates.values() if setup in (x.get("momentumSetups") or []))
+            for setup in ("GAP_AND_GO","VOLUME_EXPLOSION","HIGH_OF_DAY_BREAKOUT","PULLBACK_REVERSAL","NEWS_CATALYST")
+        },
         "enabledUsers":enabled_users,"buyEntries":buy_entries,"sellExits":sell_exits
     })
     log.info(
