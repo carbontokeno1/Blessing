@@ -1026,6 +1026,58 @@ def _alpaca_headers():
     return {"APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET}
 
 
+def _alpaca_news_catalysts(symbols: list[str]) -> dict[str, dict]:
+    """Return only recent, explicitly positive, symbol-matched news catalysts."""
+    if not ALPACA_KEY or not ALPACA_SECRET or not symbols:
+        return {}
+    try:
+        response = requests.get(
+            "https://data.alpaca.markets/v1beta1/news",
+            params={
+                "symbols": ",".join(list(dict.fromkeys(symbols))[:50]),
+                "start": (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat(),
+                "limit": 100, "sort": "desc",
+            },
+            headers=_alpaca_headers(), timeout=(3, 8),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        positive_terms = (
+            "beats estimates", "earnings beat", "raises guidance", "raised guidance",
+            "fda approval", "wins contract", "contract award", "acquisition",
+            "merger agreement", "price target raised", "upgraded to buy",
+            "record revenue", "strategic partnership", "positive trial results",
+        )
+        negative_terms = (
+            "offering", "dilution", "cuts guidance", "misses estimates",
+            "downgraded", "investigation", "bankruptcy", "recall", "fraud",
+        )
+        catalysts = {}
+        for item in payload.get("news") or []:
+            headline = str(item.get("headline") or "")
+            text_value = (headline + " " + str(item.get("summary") or "")).lower()
+            if not any(term in text_value for term in positive_terms):
+                continue
+            if any(term in text_value for term in negative_terms):
+                continue
+            published = item.get("created_at") or item.get("updated_at")
+            if not published:
+                continue
+            for symbol in item.get("symbols") or []:
+                key = str(symbol).upper()
+                if key not in symbols or key in catalysts:
+                    continue
+                catalysts[key] = {
+                    "verified": True, "publishedAt": published,
+                    "source": str(item.get("source") or "Alpaca News"),
+                    "headline": headline,
+                }
+        return catalysts
+    except Exception as exc:
+        log.warning("Alpaca news catalyst feed unavailable: %s", type(exc).__name__)
+        return {}
+
+
 def _load_active_universe(force: bool = False) -> list[dict]:
     global UNIVERSE_ASSETS, UNIVERSE_ASSETS_AT
     if UNIVERSE_ASSETS and not force and time.time() - UNIVERSE_ASSETS_AT < UNIVERSE_CACHE_SECONDS:
@@ -1338,9 +1390,13 @@ def _universe_scan_cycle():
             except Exception:
                 bar_errors += 1
                 log.exception("Alpaca IEX minute-bar batch failed at offset=%d", offset)
+        news_catalysts = _alpaca_news_catalysts(selected)
         candidates = []
         for symbol in selected:
-            row = _universe_candidate(symbol, snapshots.get(symbol) or {},
+            candidate_snapshot = dict(snapshots.get(symbol) or {})
+            if symbol in news_catalysts:
+                candidate_snapshot["newsCatalyst"] = news_catalysts[symbol]
+            row = _universe_candidate(symbol, candidate_snapshot,
                                       bars_by_symbol.get(symbol) or [], exchange_by_symbol.get(symbol, ""))
             if row:
                 row["exchange"] = exchange_by_symbol.get(symbol, "")
@@ -4320,7 +4376,8 @@ def _paper_worker_cycle():
                 PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":close_action,
                                                        "symbol":pos["symbol"],"reason":reason,"result":result})
                 PAPER_WORKER_STATE["actions"] = PAPER_WORKER_STATE["actions"][-20:]
-        if not setting.get("enabled") or not fresh or not premarket_feed_ready:
+        # Crypto markets trade continuously; stock extended-hours entitlements do not apply.
+        if not setting.get("enabled") or not fresh:
             continue
         # Refresh open positions after exits and enforce the persisted position cap.
         positions = _sb_rest("paper_bot_positions", {"select":"id,symbol,status,position_side,entry_price,quantity", "user_id":"eq." + uid, "status":"eq.open", "limit":"20"})
