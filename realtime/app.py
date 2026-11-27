@@ -961,6 +961,8 @@ UNIVERSE_STATE: dict[str, Any] = {
 UNIVERSE_LOCK = threading.Lock()
 UNIVERSE_ASSETS: list[dict] = []
 UNIVERSE_ASSETS_AT = 0.0
+UNIVERSE_LIQUID_CACHE = {"at": 0.0, "symbols": [], "universeCount": 0}
+UNIVERSE_LIQUID_CACHE_SECONDS = 6 * 60 * 60
 UNIVERSE_THREAD: threading.Thread | None = None
 UNIVERSE_EXCHANGES = {"NASDAQ", "NYSE", "AMEX", "ARCA", "BATS", "NYSEARCA", "NYSEAMERICAN", "IEX"}
 
@@ -1355,7 +1357,16 @@ def _universe_scan_cycle():
         assets = _load_active_universe(force=False)
         exchange_by_symbol = {x["symbol"]: x.get("exchange", "") for x in assets}
         asset_by_symbol = {x["symbol"]: x for x in assets}
-        symbols = [x["symbol"] for x in assets]
+        all_symbols = [x["symbol"] for x in assets]
+        cached_liquid_symbols = list(UNIVERSE_LIQUID_CACHE.get("symbols") or [])
+        cache_age = time.time() - float(UNIVERSE_LIQUID_CACHE.get("at") or 0)
+        use_liquid_cache = bool(cached_liquid_symbols) and 0 <= cache_age < UNIVERSE_LIQUID_CACHE_SECONDS
+        if use_liquid_cache:
+            symbols = [symbol for symbol in cached_liquid_symbols if symbol in asset_by_symbol]
+            if len(symbols) < 100:
+                use_liquid_cache = False
+        if not use_liquid_cache:
+            symbols = all_symbols
         snapshots = {}
         snapshot_errors = 0
         snapshot_batches = [
@@ -1385,8 +1396,15 @@ def _universe_scan_cycle():
                           _num((snap.get("minuteBar") or {}).get("c")))
             if price and price >= 1 and volume >= 10000:
                 liquid.append((volume * price, symbol))
-        liquid.sort(reverse=True)
-        selected = [symbol for _, symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
+        if use_liquid_cache:
+            selected = [symbol for symbol in symbols if symbol in snapshots]
+        else:
+            liquid.sort(reverse=True)
+            selected = [symbol for _, symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
+            UNIVERSE_LIQUID_CACHE.update({
+                "at": time.time(), "symbols": list(selected),
+                "universeCount": len(all_symbols),
+            })
         bars_by_symbol = {}
         bar_errors = 0
         bar_batches = [
