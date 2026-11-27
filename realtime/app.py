@@ -4291,7 +4291,7 @@ def _paper_worker_cycle():
                 PAPER_WORKER_STATE["actions"].append({"at":datetime.now(timezone.utc).isoformat(),"action":close_action,
                                                        "symbol":pos["symbol"],"reason":reason,"result":result})
                 PAPER_WORKER_STATE["actions"] = PAPER_WORKER_STATE["actions"][-20:]
-        if not setting.get("enabled") or not fresh:
+        if not setting.get("enabled") or not fresh or not premarket_feed_ready:
             continue
         # Refresh open positions after exits and enforce the persisted position cap.
         positions = _sb_rest("paper_bot_positions", {"select":"id,symbol,status,position_side,entry_price,quantity", "user_id":"eq." + uid, "status":"eq.open", "limit":"20"})
@@ -4546,6 +4546,7 @@ def stock_paper_engine_status(request: Request):
                 "fresh": scanner_fresh,
                 "candidateCount": scanner_state.get("candidateCount", len(scanner_state.get("candidates") or [])),
                 "fastEntryCount": scanner_state.get("fastEntryCount", 0),
+                "premarketFeedReady": scanner_state.get("extendedHoursAvailable") is True,
                 "feed": scanner_state.get("feed") or scanner_state.get("provider") or "waiting",
                 "coverage": scanner_state.get("coverage"),
                 "lastError": scanner_state.get("lastError"),
@@ -4628,8 +4629,10 @@ def _stock_paper_worker_cycle():
     except Exception:
         age = 999999
     fresh = scanner.get("status") == "ok" and age <= max(180, UNIVERSE_SCAN_INTERVAL * 3)
+    premarket_feed_ready = scanner.get("extendedHoursAvailable") is True
     candidates = {x.get("symbol"):x for x in (scanner.get("candidates") or [])
-                  if x.get("symbol") and x.get("fastEntry") is True and _num(x.get("price"),0)}
+                  if x.get("symbol") and x.get("session") == "PRE_MARKET"
+                  and x.get("fastEntry") is True and _num(x.get("price"),0)}
     enabled_users = sum(1 for row in settings_rows if row.get("enabled"))
     buy_entries = 0
     sell_exits = 0
