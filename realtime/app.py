@@ -1767,7 +1767,7 @@ def _binance_public_tickers():
             except Exception as exc:
                 discovered_symbols = []
                 log.warning("Binance TH dynamic universe discovery failed: %s", type(exc).__name__)
-            candidate_symbols = [x for x in discovered_symbols if x not in existing_symbols][:120]
+            candidate_symbols = [x for x in discovered_symbols if x not in existing_symbols][:400]
             diagnostics = {"http_403": 0, "http_429": 0, "http_other": 0,
                            "bad_payload": 0, "low_volume": 0, "bad_book_or_price": 0}
             def fetch_symbol_24h(pair):
