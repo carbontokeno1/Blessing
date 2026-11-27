@@ -510,7 +510,7 @@ def public_status() -> dict:
         "alpacaAuthenticated": bool(state.get("alpacaAuthenticated")),
         "alpacaAuthenticatedAt": state.get("alpacaAuthenticatedAt"),
         "alpacaConnected": UNIVERSE_STATE.get("status") == "ok",
-        "stockProvider": "Webull OpenAPI REST universe scanner" if APP_KEY and APP_SECRET else "waiting for Webull credentials",
+        "stockProvider": "Alpaca IEX REST universe scanner" if ALPACA_KEY and ALPACA_SECRET else "Webull OpenAPI fallback" if APP_KEY and APP_SECRET else "waiting for market-data credentials",
         "webullConfigured": bool(APP_KEY and APP_SECRET),
         "webullRegion": REGION,
         "webullConnection": state.get("webullConnection"),
@@ -591,34 +591,35 @@ async def startup():
     global crypto_book_stream_thread
     crypto_book_stream_thread = threading.Thread(target=binance_th_book_stream_main, name="binance-th-book-ticker", daemon=True)
     crypto_book_stream_thread.start()
-    # Keep Webull and Alpaca as independent market-data providers.
-    state["provider"] = "webull"
-    if ALPACA_KEY and ALPACA_SECRET and ALPACA_STREAM_ENABLED:
+    # Alpaca IEX is the temporary primary US-equity source; Webull is fallback.
+    alpaca_ready = bool(ALPACA_KEY and ALPACA_SECRET)
+    state["provider"] = "alpaca_iex" if alpaca_ready else "webull"
+    if alpaca_ready and ALPACA_STREAM_ENABLED:
         alpaca_thread = threading.Thread(target=alpaca_stream_main, name="alpaca-us-equity-stream", daemon=True)
         alpaca_thread.start()
-        log.info("Alpaca %s stream started independently from Webull", ALPACA_FEED.upper())
-    if APP_KEY and APP_SECRET:
+        log.info("Alpaca %s stream started as PRIMARY US-stock market-data provider", ALPACA_FEED.upper())
+    if not alpaca_ready and APP_KEY and APP_SECRET:
         state["connection"] = "connecting"
         state["marketDataEntitlement"] = "webull_subscription_pending"
         state["webullConnection"] = "connecting"
         stream_thread = threading.Thread(target=stream_main, name="webull-mqtt", daemon=True)
         stream_thread.start()
-        log.info("Webull stream started as PRIMARY US-stock market-data provider; Alpaca is not used for quotes.")
-    else:
+        log.info("Webull stream started as fallback US-stock market-data provider")
+    elif not alpaca_ready:
         state["connection"] = "waiting_credentials"
         state["webullConnection"] = "waiting_credentials"
         present = sorted(k for k in os.environ if k.startswith("WEBULL_"))
-        log.warning("Webull primary stock market data credentials unavailable; Webull variable names=%s; webull_key_present=%s webull_secret_present=%s", present, bool(APP_KEY), bool(APP_SECRET))
+        log.warning("No primary US stock market data credentials; Webull variable names=%s; webull_key_present=%s webull_secret_present=%s", present, bool(APP_KEY), bool(APP_SECRET))
     global UNIVERSE_THREAD
-    if APP_KEY and APP_SECRET:
+    if alpaca_ready or (APP_KEY and APP_SECRET):
         if UNIVERSE_THREAD is None or not UNIVERSE_THREAD.is_alive():
-            UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="webull-us-universe-scanner", daemon=True)
+            UNIVERSE_THREAD = threading.Thread(target=_universe_scanner_loop, name="us-equity-universe-scanner", daemon=True)
             UNIVERSE_THREAD.start()
-        log.info("Webull OpenAPI US universe scanner started; interval=%ss", max(180,UNIVERSE_SCAN_INTERVAL))
+        log.info("%s US universe scanner started; interval=%ss", "Alpaca IEX" if alpaca_ready else "Webull fallback", max(180,UNIVERSE_SCAN_INTERVAL))
     else:
         with UNIVERSE_LOCK:
-            UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"Webull OpenAPI","lastError":"WEBULL_CREDENTIALS_MISSING"})
-        log.warning("Webull US universe scanner waiting for Webull App Key/Secret.")
+            UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"Alpaca IEX / Webull fallback","lastError":"NO_MARKET_DATA_CREDENTIALS"})
+        log.warning("US equity universe scanner waiting for Alpaca or Webull credentials.")
 
 
 
@@ -730,11 +731,11 @@ def scanner(rank_type: str = "DAY_1", direction: str = "DESC"):
         key = lambda x: _num(x.get("changePct"),-999) or -999
     candidates.sort(key=key, reverse=(direction=="DESC"))
     return {
-        "provider":"Webull OpenAPI","status":scan.get("status","waiting_scan"),
-        "message":"จัดอันดับจากข้อมูล snapshot และแท่งราคา Webull เท่านั้น; ไม่มีการใช้ Alpaca/Yahoo แทน",
+        "provider":scan.get("feed") or scan.get("provider") or "Alpaca IEX","status":scan.get("status","waiting_scan"),
+        "message":"จัดอันดับจากแหล่งข้อมูลหุ้นที่ระบุใน feed; แสดงข้อจำกัดของ IEX/ผู้ให้บริการตามจริง",
         "rankType":rank_type,"direction":direction,"scanned":scan.get("scanned",0),
         "candidates":candidates[:100],"updatedAt":scan.get("updatedAt"),
-        "feed":"Webull OpenAPI","coverage":scan.get("coverage"),
+        "feed":scan.get("feed") or scan.get("provider") or "Alpaca IEX","coverage":scan.get("coverage"),
         "lastError":scan.get("lastError"),
     }
 
