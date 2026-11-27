@@ -1959,16 +1959,19 @@ function renderCenter(report,rows){
   ['Open Positions',String(openPositions),'Paper · Live ไม่มีข้อมูลบัญชี'],
   ['Open Orders',String(openOrders),'Paper · Live ไม่มีคำสั่งเงินจริง']
  ];
- $('centerMetrics').replaceChildren();
- for(const [label,value,note] of metrics){const box=document.createElement('div');box.className='metric';const a=document.createElement('small');a.textContent=label;const b=document.createElement('strong');b.textContent=value;const c=document.createElement('em');c.textContent=note;box.append(a,b,c);$('centerMetrics').append(box)}
- $('centerBreakdown').innerHTML='';
+ const metricsFragment=document.createDocumentFragment();
+ for(const [label,value,note] of metrics){const box=document.createElement('div');box.className='metric';const a=document.createElement('small');a.textContent=label;const b=document.createElement('strong');b.textContent=value;const c=document.createElement('em');c.textContent=note;box.append(a,b,c);metricsFragment.append(box)}
+ const breakdownFragment=document.createDocumentFragment();
  const paperLine=document.createElement('div');paperLine.className='activityItem';paperLine.innerHTML='<div><b>PAPER · 10 พอร์ต</b><small>'+paperOn+' Running · '+paperOff+' Off</small></div><b>'+paperOn+'/10 ACTIVE</b>';
  const liveLine=document.createElement('div');liveLine.className='activityItem';liveLine.innerHTML='<div><b>LIVE · 10 พอร์ต</b><small>'+liveReady+' Standby · '+liveOff+' Off · Execution locked</small></div><b>'+liveReady+'/10 READY</b>';
- $('centerBreakdown').append(paperLine,liveLine);
+ breakdownFragment.append(paperLine,liveLine);
  const activity=allOrders.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,8);
- $('centerActivity').replaceChildren();
- if(!activity.length){const empty=document.createElement('div');empty.className='muted';empty.textContent='ยังไม่มี Order Log ในพอร์ตสมาชิก';$('centerActivity').append(empty)}
- for(const o of activity){const item=document.createElement('div');item.className='activityItem';const left=document.createElement('div');const title=document.createElement('b');title.textContent=(o.symbol||'Order')+' · '+String(o.side||'').toUpperCase();const sub=document.createElement('small');sub.textContent=(o.portfolioType||'PAPER')+' · '+stamp(o.createdAt);left.append(title,sub);const right=document.createElement('b');right.textContent=String(o.status||'—').toUpperCase();item.append(left,right);$('centerActivity').append(item)}
+ const activityFragment=document.createDocumentFragment();
+ if(!activity.length){const empty=document.createElement('div');empty.className='muted';empty.textContent='ยังไม่มี Order Log ในพอร์ตสมาชิก';activityFragment.append(empty)}
+ for(const o of activity){const item=document.createElement('div');item.className='activityItem';const left=document.createElement('div');const title=document.createElement('b');title.textContent=(o.symbol||'Order')+' · '+String(o.side||'').toUpperCase();const sub=document.createElement('small');sub.textContent=(o.portfolioType||'PAPER')+' · '+stamp(o.createdAt);left.append(title,sub);const right=document.createElement('b');right.textContent=String(o.status||'—').toUpperCase();item.append(left,right);activityFragment.append(item)}
+ $('centerMetrics').replaceChildren(metricsFragment);
+ $('centerBreakdown').replaceChildren(breakdownFragment);
+ $('centerActivity').replaceChildren(activityFragment)
  $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก 60 วินาที';
 }
 async function loadTradingControls(){
