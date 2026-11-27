@@ -1269,92 +1269,145 @@ def _universe_candidate(symbol: str, snap: dict, bars_raw: list, exchange: str) 
 
 
 def _universe_scan_cycle():
+    """Scan US equities from Alpaca IEX first; Webull is a fallback only when Alpaca is unavailable."""
     started = time.time()
-    assets = _webull_list_active_universe()
-    snapshots_raw = _webull_snapshot_batch(assets)
-    exchange_by_symbol = {x["symbol"]:x.get("exchange","") for x in assets}
-    asset_by_symbol = {x["symbol"]:x for x in assets}
-    snapshots = {s:_normalize_webull_snapshot(row) for s,row in snapshots_raw.items()}
-    liquid = []
-    for symbol, snap in snapshots.items():
-        daily = snap.get("dailyBar") or {}
-        prev = snap.get("prevDailyBar") or {}
-        volume = _num(daily.get("v"), 0) or 0
-        price = _num((snap.get("latestTrade") or {}).get("p"),
-                      _num(daily.get("c"), _num(prev.get("c"))))
-        if price and price >= 1 and volume >= 10000:
-            liquid.append((volume * price, symbol))
-    liquid.sort(reverse=True)
-    selected = [symbol for _,symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
-    bars_by_symbol = _webull_bar_batches(selected)
-    candidates = []
-    for symbol in selected:
-        row = _universe_candidate(symbol, snapshots.get(symbol) or {},
-                                  bars_by_symbol.get(symbol) or [], exchange_by_symbol.get(symbol,""))
-        if row:
-            row["exchange"] = exchange_by_symbol.get(symbol,"")
-            row["companyName"] = (asset_by_symbol.get(symbol) or {}).get("name")
-            row["dataFeed"] = "Webull OpenAPI"
-            row["volumeSource"] = "WEBULL_SNAPSHOT"
-            candidates.append(row)
+    source = "Alpaca IEX"
+    if ALPACA_KEY and ALPACA_SECRET:
+        assets = _load_active_universe(force=False)
+        exchange_by_symbol = {x["symbol"]: x.get("exchange", "") for x in assets}
+        asset_by_symbol = {x["symbol"]: x for x in assets}
+        symbols = [x["symbol"] for x in assets]
+        snapshots = {}
+        snapshot_errors = 0
+        for offset in range(0, len(symbols), UNIVERSE_BATCH_SIZE):
+            batch = symbols[offset:offset + UNIVERSE_BATCH_SIZE]
+            try:
+                snapshots.update(_alpaca_snapshots(batch))
+            except Exception:
+                snapshot_errors += 1
+                log.exception("Alpaca IEX snapshot batch failed at offset=%d", offset)
+        if not snapshots:
+            raise RuntimeError("ALPACA_IEX_NO_SNAPSHOTS")
+        liquid = []
+        for symbol, snap in snapshots.items():
+            daily = snap.get("dailyBar") or {}
+            prev = snap.get("prevDailyBar") or {}
+            volume = _num(daily.get("v"), 0) or 0
+            price = _num((snap.get("latestTrade") or {}).get("p"),
+                          _num((snap.get("minuteBar") or {}).get("c")))
+            if price and price >= 1 and volume >= 10000:
+                liquid.append((volume * price, symbol))
+        liquid.sort(reverse=True)
+        selected = [symbol for _, symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
+        bars_by_symbol = {}
+        bar_errors = 0
+        for offset in range(0, len(selected), UNIVERSE_BATCH_SIZE):
+            batch = selected[offset:offset + UNIVERSE_BATCH_SIZE]
+            try:
+                bars_by_symbol.update(_alpaca_recent_bars(batch))
+            except Exception:
+                bar_errors += 1
+                log.exception("Alpaca IEX minute-bar batch failed at offset=%d", offset)
+        candidates = []
+        for symbol in selected:
+            row = _universe_candidate(symbol, snapshots.get(symbol) or {},
+                                      bars_by_symbol.get(symbol) or [], exchange_by_symbol.get(symbol, ""))
+            if row:
+                row["exchange"] = exchange_by_symbol.get(symbol, "")
+                row["companyName"] = (asset_by_symbol.get(symbol) or {}).get("name")
+                row["dataFeed"] = "Alpaca IEX"
+                row["volumeSource"] = "ALPACA_IEX_SNAPSHOT"
+                candidates.append(row)
+        provider = "Alpaca IEX"
+        coverage = "Alpaca active US equities universe; real-time IEX venue only, not consolidated SIP"
+        batch_count = ((len(symbols) + UNIVERSE_BATCH_SIZE - 1) // UNIVERSE_BATCH_SIZE) + ((len(selected) + UNIVERSE_BATCH_SIZE - 1) // UNIVERSE_BATCH_SIZE)
+    else:
+        source = "Webull OpenAPI fallback"
+        assets = _webull_list_active_universe()
+        snapshots_raw = _webull_snapshot_batch(assets)
+        exchange_by_symbol = {x["symbol"]: x.get("exchange", "") for x in assets}
+        asset_by_symbol = {x["symbol"]: x for x in assets}
+        snapshots = {s: _normalize_webull_snapshot(row) for s, row in snapshots_raw.items()}
+        liquid = []
+        for symbol, snap in snapshots.items():
+            daily = snap.get("dailyBar") or {}
+            prev = snap.get("prevDailyBar") or {}
+            volume = _num(daily.get("v"), 0) or 0
+            price = _num((snap.get("latestTrade") or {}).get("p"),
+                          _num(daily.get("c"), _num(prev.get("c"))))
+            if price and price >= 1 and volume >= 10000:
+                liquid.append((volume * price, symbol))
+        liquid.sort(reverse=True)
+        selected = [symbol for _, symbol in liquid[:UNIVERSE_LIQUIDITY_LIMIT]]
+        bars_by_symbol = _webull_bar_batches(selected)
+        candidates = []
+        for symbol in selected:
+            row = _universe_candidate(symbol, snapshots.get(symbol) or {},
+                                      bars_by_symbol.get(symbol) or [], exchange_by_symbol.get(symbol, ""))
+            if row:
+                row["exchange"] = exchange_by_symbol.get(symbol, "")
+                row["companyName"] = (asset_by_symbol.get(symbol) or {}).get("name")
+                row["dataFeed"] = source
+                row["volumeSource"] = "WEBULL_SNAPSHOT"
+                candidates.append(row)
+        provider = source
+        coverage = "Webull US_STOCK + US_ETF catalogue; quote coverage depends on Webull API entitlement"
+        snapshot_errors = 0
+        bar_errors = 0
+        batch_count = ((len(assets) + 99) // 100) + ((len(selected) + 99) // 100)
+
     candidates.sort(key=lambda x: (
-        (x.get("score") or 0)*2 + (x.get("relativeVolume") or 0)
+        (x.get("score") or 0) * 2 + (x.get("relativeVolume") or 0)
         + (x.get("m5") or 0) + (x.get("m1") or 0)
-        + min((x.get("dailyVolumeIex") or x.get("volume") or 0)/1000000,5)
+        + min((x.get("dailyVolumeIex") or x.get("volume") or 0) / 1000000, 5)
     ), reverse=True)
     now = datetime.now(timezone.utc).isoformat()
-    elapsed = round(time.time()-started,2)
+    elapsed = round(time.time() - started, 2)
     with UNIVERSE_LOCK:
         UNIVERSE_STATE.update({
-            "status":"ok" if snapshots else "no_quotes",
-            "provider":"Webull OpenAPI",
-            "universeCount":len(assets),"snapshotCount":len(snapshots),
-            "scanned":len(snapshots),"evaluated":len(selected),
-            "candidateCount":len(candidates),
-            "fastEntryCount":sum(1 for x in candidates if x.get("fastEntry")),
-            "fastEntryWatchCount":sum(1 for x in candidates if not x.get("fastEntry") and x.get("score",0)>=3),
-            "candidates":candidates[:UNIVERSE_CANDIDATE_LIMIT],
-            "updatedAt":now,"lastError":None,"cycleSeconds":elapsed,
-            "batchCount":((len(assets)+99)//100)+((len(selected)+99)//100),
-            "snapshotBatchErrors":0,"barBatchErrors":0,
-            "symbolsWithMinuteBars":len(bars_by_symbol),
-            "symbolsWithLiveBidAsk":sum(1 for x in snapshots.values()
+            "status": "ok" if snapshots else "no_quotes",
+            "provider": provider,
+            "universeCount": len(assets), "snapshotCount": len(snapshots),
+            "scanned": len(snapshots), "evaluated": len(selected),
+            "candidateCount": len(candidates),
+            "fastEntryCount": sum(1 for x in candidates if x.get("fastEntry")),
+            "fastEntryWatchCount": sum(1 for x in candidates if not x.get("fastEntry") and x.get("score", 0) >= 3),
+            "candidates": candidates[:UNIVERSE_CANDIDATE_LIMIT],
+            "updatedAt": now, "lastError": None, "cycleSeconds": elapsed,
+            "batchCount": batch_count, "snapshotBatchErrors": snapshot_errors,
+            "barBatchErrors": bar_errors,
+            "symbolsWithMinuteBars": len(bars_by_symbol),
+            "symbolsWithLiveBidAsk": sum(1 for x in snapshots.values()
                 if _num((x.get("latestQuote") or {}).get("bp")) and _num((x.get("latestQuote") or {}).get("ap"))),
-            "feed":"Webull OpenAPI",
-            "coverage":"Webull US_STOCK + US_ETF instrument catalogue; quotes subject to active market-data entitlements",
+            "feed": provider, "coverage": coverage,
+            "extendedHoursAvailable": False if provider == "Alpaca IEX" else "depends_on_Webull_entitlement",
         })
-    log.info("Webull universe scan complete: instruments=%d snapshots=%d evaluated=%d candidates=%d duration=%.1fs",
-             len(assets),len(snapshots),len(selected),len(candidates),elapsed)
+    log.info("%s universe scan complete: instruments=%d snapshots=%d evaluated=%d candidates=%d snapshot_errors=%d bar_errors=%d duration=%.1fs",
+             provider, len(assets), len(snapshots), len(selected), len(candidates), snapshot_errors, bar_errors, elapsed)
+
 
 def _universe_scanner_loop():
     while True:
-        if not (APP_KEY and APP_SECRET):
-            with UNIVERSE_LOCK:
-                UNIVERSE_STATE.update({"status":"waiting_credentials","provider":"Webull OpenAPI","lastError":"WEBULL_CREDENTIALS_MISSING"})
-            time.sleep(60)
-            continue
-        # Wait for the MQTT-created authenticated REST client before scanning;
-        # otherwise the first cycle would fail and sleep for the full scan interval.
-        wait_started = time.time()
-        while time.time() - wait_started < 120:
-            with _WEBULL_SHARED_API_CLIENT_LOCK:
-                ready = _WEBULL_SHARED_API_CLIENT is not None
-            if ready:
-                break
-            time.sleep(2)
-        if not ready:
-            with UNIVERSE_LOCK:
-                UNIVERSE_STATE.update({"status":"waiting_webull_auth","provider":"Webull OpenAPI",
-                    "lastError":"WEBULL_SHARED_AUTH_CLIENT_NOT_READY"})
-            time.sleep(30)
-            continue
         try:
-            _universe_scan_cycle()
+            if ALPACA_KEY and ALPACA_SECRET:
+                _universe_scan_cycle()
+            else:
+                with _WEBULL_SHARED_API_CLIENT_LOCK:
+                    webull_ready = _WEBULL_SHARED_API_CLIENT is not None
+                if webull_ready:
+                    _universe_scan_cycle()
+                else:
+                    with UNIVERSE_LOCK:
+                        UNIVERSE_STATE.update({"status": "waiting_credentials",
+                            "provider": "Alpaca IEX / Webull fallback",
+                            "lastError": "NO_MARKET_DATA_PROVIDER_READY"})
         except Exception as exc:
-            log.exception("Webull US universe scan failed")
+            log.exception("US equity universe scan failed")
             with UNIVERSE_LOCK:
-                UNIVERSE_STATE.update({"status":"source_error","provider":"Webull OpenAPI",
-                    "lastError":type(exc).__name__,"updatedAt":datetime.now(timezone.utc).isoformat()})
+                UNIVERSE_STATE.update({"status": "source_error",
+                    "provider": "Alpaca IEX / Webull fallback",
+                    "lastError": type(exc).__name__,
+                    "updatedAt": datetime.now(timezone.utc).isoformat()})
         time.sleep(max(180, UNIVERSE_SCAN_INTERVAL))
 
 
@@ -1373,8 +1426,8 @@ def universe_scanner():
     if age is not None and age > max(180, UNIVERSE_SCAN_INTERVAL * 3):
         result["status"] = "stale"
     result["limitations"] = [
-        "ราคาหุ้นและปริมาณซื้อขายมาจาก IEX เท่านั้น ไม่ใช่ consolidated SIP ทุกตลาด",
-        "Alpaca REST market data is enabled; IEX coverage depends on the account subscription",
+        "ราคาหุ้นและปริมาณซื้อขายจาก Alpaca IEX ครอบคลุมเฉพาะตลาด IEX ไม่ใช่ consolidated SIP ทุกตลาด",
+        "ข้อมูลนอกเวลาตลาดและหุ้นที่ไม่มีการซื้อขายบน IEX อาจไม่มีราคาใหม่",
         "สแกนเป็นรอบด้วย REST batch ไม่ใช่ real-time stream สำหรับหุ้นทุกตัว",
         "หุ้นที่ไม่มีข้อมูล IEX ในรอบนั้นอาจไม่ถูกประเมินหรือไม่ปรากฏในรายการ",
         "Basic จำกัด historical data ไว้ในช่วง 15 นาทีล่าสุด และ API 200 requests/minute",
