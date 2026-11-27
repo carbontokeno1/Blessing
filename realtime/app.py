@@ -4890,14 +4890,16 @@ def _stock_paper_worker_cycle_locked():
         "market_data_fresh": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True and x.get("marketDataFresh") is True),
         "trade_age_ok": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True and x.get("marketDataFresh") is True and _num(x.get("tradeAgeSeconds"),999) + age <= 120),
         "quote_age_ok": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True and x.get("marketDataFresh") is True and _num(x.get("tradeAgeSeconds"),999) + age <= 120 and _num(x.get("quoteAgeSeconds"),999) + age <= 120),
-        "bar_age_ok": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True and x.get("marketDataFresh") is True and _num(x.get("tradeAgeSeconds"),999) + age <= 120 and _num(x.get("quoteAgeSeconds"),999) + age <= 120 and _num(x.get("latestBarAgeSeconds"),999) + age <= 120),
+        # 1-minute bars are naturally older than the live quote by up to one bar interval.
+        # Allow 180s total bar age (bar timestamp + scanner age), while keeping trade/quote at 120s.
+        "bar_age_ok": sum(1 for x in raw_candidates if x.get("session") in allowed_sessions and x.get("fastEntry") is True and x.get("marketDataFresh") is True and _num(x.get("tradeAgeSeconds"),999) + age <= 120 and _num(x.get("quoteAgeSeconds"),999) + age <= 120 and _num(x.get("latestBarAgeSeconds"),999) + age <= 180),
     }
     candidates = {x.get("symbol"):x for x in raw_candidates
                   if x.get("session") in allowed_sessions
                   and x.get("fastEntry") is True and x.get("marketDataFresh") is True
                   and _num(x.get("tradeAgeSeconds"),999) + age <= 120
                   and _num(x.get("quoteAgeSeconds"),999) + age <= 120
-                  and _num(x.get("latestBarAgeSeconds"),999) + age <= 120
+                  and _num(x.get("latestBarAgeSeconds"),999) + age <= 180
                   and _num(x.get("price"),0)}
     session_candidate_counts = {
         session: sum(1 for x in candidates.values() if x.get("session") == session)
@@ -4906,9 +4908,11 @@ def _stock_paper_worker_cycle_locked():
     # Scanner prices are rankings only. Re-price each potential entry from a
     # fresh broker snapshot immediately before any Paper order is submitted.
     fresh_candidate_prices = {}
+    pretrade_counts = {"requested":0,"snapshot_received":0,"fresh_quote":0,"tradable_spread":0,"price_drift_ok":0,"accepted":0}
     if fresh and candidates:
         ranked_symbols = sorted(candidates.values(), key=lambda x: float(x.get("momentumScore") or 0), reverse=True)
         symbols_to_refresh = list(dict.fromkeys(x["symbol"] for x in ranked_symbols[:100]))
+        pretrade_counts["requested"] = len(symbols_to_refresh)
         for offset in range(0, len(symbols_to_refresh), 100):
             batch = symbols_to_refresh[offset:offset+100]
             try:
@@ -4916,6 +4920,7 @@ def _stock_paper_worker_cycle_locked():
             except Exception as quote_error:
                 log.warning("Stock Paper pre-trade snapshot refresh failed (%s)", type(quote_error).__name__)
                 fresh_snaps = {}
+            pretrade_counts["snapshot_received"] += len(fresh_snaps)
             for symbol, snap in fresh_snaps.items():
                 px, stamp = _stock_snapshot_from_payload(snap)
                 quote = snap.get("latestQuote") or {}
@@ -4927,13 +4932,21 @@ def _stock_paper_worker_cycle_locked():
                     quote_age = (datetime.now(timezone.utc)-parsed_quote.astimezone(timezone.utc)).total_seconds()
                 except Exception:
                     pass
+                if not (px and stamp and quote_age is not None and -30 <= quote_age <= 90):
+                    continue
+                pretrade_counts["fresh_quote"] += 1
                 bid, ask = _num(quote.get("bp"),0) or 0, _num(quote.get("ap"),0) or 0
                 spread = ((ask-bid)/px*100) if px and bid>0 and ask>=bid else None
+                if spread is None or not (0 < spread <= 0.50):
+                    continue
+                pretrade_counts["tradable_spread"] += 1
                 scanned_price = _num((candidates.get(symbol) or {}).get("price"),0) or 0
                 price_drift = abs(px-scanned_price)/scanned_price*100 if px and scanned_price>0 else 999
-                if (px and stamp and quote_age is not None and -30 <= quote_age <= 90
-                        and spread is not None and 0 < spread <= 0.50 and price_drift <= 0.75):
-                    fresh_candidate_prices[symbol] = px
+                if price_drift > 0.75:
+                    continue
+                pretrade_counts["price_drift_ok"] += 1
+                fresh_candidate_prices[symbol] = px
+                pretrade_counts["accepted"] += 1
         candidates = {
             symbol: {**row, "price": fresh_candidate_prices[symbol], "executionPriceFresh": True}
             for symbol, row in candidates.items() if symbol in fresh_candidate_prices
@@ -4994,6 +5007,7 @@ def _stock_paper_worker_cycle_locked():
             "status":"eq.open","limit":"30"
         })
         if len(positions) >= int(setting.get("max_open_positions") or 5):
+            skip_counts["at_max_positions"] += 1
             continue
         account_rows = _sb_rest("stock_paper_accounts", {
             "select":"cash_balance,starting_balance","user_id":"eq." + uid,"limit":"1"
@@ -5061,7 +5075,7 @@ def _stock_paper_worker_cycle_locked():
         "status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
         "lastError":None,"cycles":STOCK_PAPER_WORKER_STATE.get("cycles",0)+1,
         "scannerAgeSeconds":int(age),"scannerFresh":fresh,"candidateCount":len(candidates),
-        "candidateFilterCounts":filter_counts,
+        "candidateFilterCounts":filter_counts,"pretradeRefreshCounts":pretrade_counts,
         "strategy":"PREMARKET_REGULAR_AFTER_HOURS_MOMENTUM",
         "allocationPct":30,"reservePct":70,
         "extendedHoursReady":extended_hours_ready,
@@ -5074,8 +5088,8 @@ def _stock_paper_worker_cycle_locked():
         "skipCounts":skip_counts
     })
     log.info(
-        "Stock Paper worker cycle complete scanner_fresh=%s scanner_age=%ss candidates=%d filters=%s enabled_users=%d buys=%d sells=%d skip_counts=%s",
-        fresh, int(age), len(candidates), filter_counts, enabled_users, buy_entries, sell_exits, skip_counts
+        "Stock Paper worker cycle complete scanner_fresh=%s scanner_age=%ss candidates_after_pretrade=%d filters=%s pretrade=%s enabled_users=%d buys=%d sells=%d skip_counts=%s",
+        fresh, int(age), len(candidates), filter_counts, pretrade_counts, enabled_users, buy_entries, sell_exits, skip_counts
     )
 
 
