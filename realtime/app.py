@@ -47,7 +47,7 @@ BINANCE_API_KEY = (os.getenv("BINANCE_TH_API_KEY", "") or os.getenv("BINANCE_API
 BINANCE_API_SECRET = (os.getenv("BINANCE_TH_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")).strip()
 # REST batch scanning avoids Alpaca Basic websocket symbol limits.
 ALPACA_DISABLED = not bool(ALPACA_KEY and ALPACA_SECRET)
-ALPACA_STREAM_ENABLED = False
+ALPACA_STREAM_ENABLED = True
 REGION = os.getenv("WEBULL_REGION", "th")
 HTTP_HOST = os.getenv("WEBULL_HTTP_HOST", "api.webull.co.th")
 MQTT_HOST = os.getenv("WEBULL_MQTT_HOST", "data-api.webull.co.th")
@@ -69,6 +69,7 @@ state = {
     "alpacaAuthenticated": False,
     "alpacaAuthenticatedAt": None,
     "quotes": {},
+    "alpaca_quotes": {},
     "crypto_quotes": {},
     "crypto_book_quotes": {},
     "cryptoConnection": "starting",
@@ -279,15 +280,17 @@ def stream_main():
 
 
 def alpaca_stream_main():
-    """Alpaca is permanently disabled; never open a socket."""
-    log.info("Alpaca stream disabled by configuration")
-    return
+    """Run an independent Alpaca market-data stream; never overwrite Webull quotes."""
+    if not (ALPACA_KEY and ALPACA_SECRET):
+        state["alpacaConnection"] = "waiting_credentials"
+        log.warning("Alpaca stream not started: credentials are missing")
+        return
     feed = ALPACA_FEED if ALPACA_FEED in {"iex", "sip", "delayed_sip"} else "iex"
     url = f"wss://stream.data.alpaca.markets/v2/{feed}"
     while True:
         try:
             async def run_stream():
-                state["provider"] = "alpaca"
+                state["alpacaConnection"] = "connecting"
                 state["marketDataEntitlement"] = f"{feed.upper()} feed; entitlement depends on Alpaca plan"
                 state["connection"] = "connecting"
                 state["alpacaAuthenticated"] = False
@@ -320,8 +323,8 @@ def alpaca_stream_main():
                         "bars": SYMBOLS,
                         "dailyBars": SYMBOLS
                     }))
-                    state["connection"] = "connected"
-                    state["lastError"] = None
+                    state["alpacaConnection"] = "connected"
+                    state["alpacaLastError"] = None
                     log.info("Alpaca %s stream authenticated; subscribed to %d watchlist symbols", feed, len(SYMBOLS))
                     async for raw_message in ws:
                         messages = json.loads(raw_message)
@@ -339,7 +342,7 @@ def alpaca_stream_main():
                                     state["lastError"] = str(msg.get("msg", "Alpaca stream error"))[:180]
                                     log.warning("Alpaca stream reported an error: %s", state["lastError"])
                                 continue
-                            prior = state["quotes"].get(symbol, {})
+                            prior = state["alpaca_quotes"].get(symbol, {})
                             quote = dict(prior.get("raw") or {})
                             if kind == "t":
                                 quote.update({"price": msg.get("p"), "last_price": msg.get("p"), "trade_size": msg.get("s"), "timestamp": msg.get("t")})
@@ -367,23 +370,23 @@ def alpaca_stream_main():
                                     state["barHistory"][symbol] = []
                                 if msg.get("o") is not None:
                                     state["sessionOpen"][symbol] = msg.get("o")
-                            state["quotes"][symbol] = {
+                            state["alpaca_quotes"][symbol] = {
                                 "symbol": symbol, "topic": kind, "receivedAt": now,
                                 "source": f"Alpaca {feed.upper()} real-time stream", "raw": quote
                             }
                             changed = True
                         if changed:
-                            state["lastMessageAt"] = now
-                            state["connection"] = "streaming"
+                            state["alpacaLastMessageAt"] = now
+                            state["alpacaConnection"] = "streaming"
                             if loop and loop.is_running():
                                 asyncio.run_coroutine_threadsafe(
-                                    broadcast({"type": "quotes", "data": state["quotes"], "status": public_status()}), loop
+                                    broadcast({"type": "alpaca_quotes", "data": state["alpaca_quotes"], "status": public_status()}), loop
                                 )
             asyncio.run(run_stream())
         except Exception as exc:
             state["alpacaAuthenticated"] = False
-            state["connection"] = "reconnecting"
-            state["lastError"] = type(exc).__name__
+            state["alpacaConnection"] = "reconnecting"
+            state["alpacaLastError"] = type(exc).__name__
             # Keep the diagnostic traceback so transient server-side closes can be
             # distinguished from authentication/subscription errors without logging secrets.
             log.exception("Alpaca stream disconnected (%s); retrying shortly", type(exc).__name__)
@@ -588,8 +591,12 @@ async def startup():
     global crypto_book_stream_thread
     crypto_book_stream_thread = threading.Thread(target=binance_th_book_stream_main, name="binance-th-book-ticker", daemon=True)
     crypto_book_stream_thread.start()
-    # Webull is the sole US-stock market-data and universe-scanner provider.
+    # Keep Webull and Alpaca as independent market-data providers.
     state["provider"] = "webull"
+    if ALPACA_KEY and ALPACA_SECRET and ALPACA_STREAM_ENABLED:
+        alpaca_thread = threading.Thread(target=alpaca_stream_main, name="alpaca-us-equity-stream", daemon=True)
+        alpaca_thread.start()
+        log.info("Alpaca %s stream started independently from Webull", ALPACA_FEED.upper())
     if APP_KEY and APP_SECRET:
         state["connection"] = "connecting"
         state["marketDataEntitlement"] = "webull_subscription_pending"
