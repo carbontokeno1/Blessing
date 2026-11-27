@@ -14,6 +14,7 @@ import os
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -1524,18 +1525,20 @@ def _universe_scanner_loop():
     while True:
         cycle_started = time.time()
         try:
-            if ALPACA_KEY and ALPACA_SECRET:
-                _universe_scan_cycle()
-            else:
-                with _WEBULL_SHARED_API_CLIENT_LOCK:
-                    webull_ready = _WEBULL_SHARED_API_CLIENT is not None
-                if webull_ready:
-                    _universe_scan_cycle()
-                else:
-                    with UNIVERSE_LOCK:
-                        UNIVERSE_STATE.update({"status": "waiting_credentials",
-                            "provider": "Alpaca IEX / Webull fallback",
-                            "lastError": "NO_MARKET_DATA_PROVIDER_READY"})
+            with _distributed_worker_lease("us-equity-universe-scanner", 240) as leader:
+                if leader:
+                    if ALPACA_KEY and ALPACA_SECRET:
+                        _universe_scan_cycle()
+                    else:
+                        with _WEBULL_SHARED_API_CLIENT_LOCK:
+                            webull_ready = _WEBULL_SHARED_API_CLIENT is not None
+                        if webull_ready:
+                            _universe_scan_cycle()
+                        else:
+                            with UNIVERSE_LOCK:
+                                UNIVERSE_STATE.update({"status": "waiting_credentials",
+                                    "provider": "Alpaca IEX / Webull fallback",
+                                    "lastError": "NO_MARKET_DATA_PROVIDER_READY"})
         except Exception as exc:
             log.exception("US equity universe scan failed")
             with UNIVERSE_LOCK:
@@ -2497,6 +2500,61 @@ def _sb_rpc(name, payload):
                              headers=_sb_headers(), timeout=(3, 10))
     response.raise_for_status()
     return response.json()
+
+
+# A database-backed lease prevents duplicate background trading/scanning cycles
+# when Render briefly overlaps old and new instances during a deployment.
+WORKER_INSTANCE_ID = str(uuid.uuid4())
+
+
+@contextmanager
+def _distributed_worker_lease(worker_key: str, lease_seconds: int = 240):
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        log.error("Worker lease unavailable: Supabase credentials are missing (%s)", worker_key)
+        yield False
+        return
+    payload = {"p_worker_key": worker_key, "p_owner_id": WORKER_INSTANCE_ID,
+               "p_lease_seconds": lease_seconds}
+    try:
+        acquired = bool(_sb_rpc("blessing_worker_lease_acquire", payload))
+    except Exception as exc:
+        log.exception("Worker lease acquisition failed for %s (%s)", worker_key, type(exc).__name__)
+        yield False
+        return
+    if not acquired:
+        log.info("Worker standby: another instance owns lease %s", worker_key)
+        yield False
+        return
+
+    stop_heartbeat = threading.Event()
+
+    def heartbeat():
+        interval = max(10, min(60, lease_seconds // 3))
+        while not stop_heartbeat.wait(interval):
+            try:
+                renewed = bool(_sb_rpc("blessing_worker_lease_renew", payload))
+                if not renewed:
+                    log.error("Worker lease lost for %s; no further cycle should be started by this instance", worker_key)
+                    return
+            except Exception as exc:
+                log.exception("Worker lease heartbeat failed for %s (%s)", worker_key, type(exc).__name__)
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat, name="lease-heartbeat-" + worker_key, daemon=True
+    )
+    heartbeat_thread.start()
+    try:
+        yield True
+    finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=2)
+        try:
+            _sb_rpc("blessing_worker_lease_release", {
+                "p_worker_key": worker_key, "p_owner_id": WORKER_INSTANCE_ID
+            })
+        except Exception as exc:
+            # The lease expires automatically if a process disappears or release fails.
+            log.warning("Worker lease release deferred for %s (%s)", worker_key, type(exc).__name__)
 
 
 def _paper_auth_user(request: Request):
@@ -4665,20 +4723,25 @@ def _paper_worker_loop():
                 STOCK_PAPER_WORKER_STATE.update({"status":"waiting_config","lastError":"SUPABASE_WORKER_CONFIG_MISSING"})
                 time.sleep(30)
                 continue
-            try:
-                _paper_worker_cycle()
-                PAPER_WORKER_STATE.update({"status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
-                                           "lastError":None,"cycles":PAPER_WORKER_STATE.get("cycles",0)+1})
-            except Exception as crypto_exc:
-                PAPER_WORKER_STATE.update({"status":"error","lastError":type(crypto_exc).__name__,
-                                           "lastCycleAt":datetime.now(timezone.utc).isoformat()})
-                log.exception("Crypto Paper Trading worker cycle failed")
-            try:
-                _stock_paper_worker_cycle()
-            except Exception as stock_exc:
-                STOCK_PAPER_WORKER_STATE.update({"status":"error","lastError":type(stock_exc).__name__,
-                                                 "lastCycleAt":datetime.now(timezone.utc).isoformat()})
-                log.exception("Stock Paper Trading worker cycle failed")
+            with _distributed_worker_lease("crypto-stock-paper-worker", 240) as leader:
+                if not leader:
+                    PAPER_WORKER_STATE.update({"status":"standby","lastError":"WORKER_LEASE_HELD_BY_ANOTHER_INSTANCE"})
+                    STOCK_PAPER_WORKER_STATE.update({"status":"standby","lastError":"WORKER_LEASE_HELD_BY_ANOTHER_INSTANCE"})
+                else:
+                    try:
+                        _paper_worker_cycle()
+                        PAPER_WORKER_STATE.update({"status":"running","lastCycleAt":datetime.now(timezone.utc).isoformat(),
+                                                   "lastError":None,"cycles":PAPER_WORKER_STATE.get("cycles",0)+1})
+                    except Exception as crypto_exc:
+                        PAPER_WORKER_STATE.update({"status":"error","lastError":type(crypto_exc).__name__,
+                                                   "lastCycleAt":datetime.now(timezone.utc).isoformat()})
+                        log.exception("Crypto Paper Trading worker cycle failed")
+                    try:
+                        _stock_paper_worker_cycle()
+                    except Exception as stock_exc:
+                        STOCK_PAPER_WORKER_STATE.update({"status":"error","lastError":type(stock_exc).__name__,
+                                                         "lastCycleAt":datetime.now(timezone.utc).isoformat()})
+                        log.exception("Stock Paper Trading worker cycle failed")
         except Exception as exc:
             PAPER_WORKER_STATE.update({"status":"error","lastError":type(exc).__name__,
                                        "lastCycleAt":datetime.now(timezone.utc).isoformat()})
@@ -5965,7 +6028,16 @@ def _dual_paper_worker_cycle():
 
 def _dual_paper_worker_loop():
     while True:
-        _dual_paper_worker_cycle()
+        try:
+            with _distributed_worker_lease("dual-paper-monitor", 240) as leader:
+                if leader:
+                    _dual_paper_worker_cycle()
+                else:
+                    DUAL_PAPER_WORKER_STATE.update({"status":"standby","lastError":"WORKER_LEASE_HELD_BY_ANOTHER_INSTANCE"})
+        except Exception as exc:
+            DUAL_PAPER_WORKER_STATE.update({"status":"error","lastError":type(exc).__name__,
+                                            "lastCycleAt":datetime.now(timezone.utc).isoformat()})
+            log.exception("Dual Paper monitor loop failed")
         time.sleep(DUAL_PAPER_WORKER_INTERVAL)
 
 
@@ -6788,8 +6860,14 @@ def _member_slot_engine_cycle():
 def _member_slot_engine_loop():
     while True:
         try:
-            _member_slot_engine_cycle()
-        except Exception:
+            with _distributed_worker_lease("member-slot-paper-engine", 240) as leader:
+                if leader:
+                    _member_slot_engine_cycle()
+                else:
+                    MEMBER_SLOT_ENGINE_STATE.update({"status":"standby","lastError":"WORKER_LEASE_HELD_BY_ANOTHER_INSTANCE"})
+        except Exception as exc:
+            MEMBER_SLOT_ENGINE_STATE.update({"status":"error","lastError":type(exc).__name__,
+                                             "lastCycleAt":datetime.now(timezone.utc).isoformat()})
             log.exception("Member slot Paper engine loop error")
         time.sleep(MEMBER_SLOT_ENGINE_INTERVAL)
 
