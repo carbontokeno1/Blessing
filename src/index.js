@@ -312,6 +312,15 @@ export default {
         return json({ok:false,code:"ADMIN_MEMBER_ACCESS_UNAVAILABLE",message:"เชื่อมต่อระบบกำหนดสิทธิ์สมาชิกไม่สำเร็จ กรุณาลองใหม่"},502);
       }
     }
+    if (pathname === "/api/stock-paper-momentum/report") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      return memberBackendProxy(request, "/stock-paper-momentum/report");
+    }
+    if (pathname === "/api/admin/stock-paper-momentum/report") {
+      if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
+      if (!(await isBlessingOwner(request))) return json({ok:false,message:"ต้องเข้าสู่ระบบด้วยบัญชี Super Admin ของ BLESSING"},403);
+      return memberBackendProxy(request, "/admin/stock-paper-momentum/report");
+    }
     if (pathname === "/api/member/member-portfolios") {
       if (request.method !== "GET") return json({ok:false,message:"GET only"},405,{allow:"GET"});
       return memberBackendProxy(request, "/member/member-portfolios");
