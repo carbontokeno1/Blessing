@@ -4868,6 +4868,133 @@ def _stock_paper_worker_cycle():
     )
 
 
+
+
+def _stock_paper_report_user(request: Request, admin_only: bool = False):
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        raise HTTPException(status_code=503, detail="Supabase ยังไม่ได้ตั้งค่าบน Render")
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบก่อน")
+    token = authorization.split(" ", 1)[1].strip()
+    response = requests.get(
+        SUPABASE_URL + "/auth/v1/user",
+        headers={"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": "Bearer " + token},
+        timeout=(5, 12),
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่")
+    user = response.json()
+    profiles = _sb_rest("profiles", {
+        "select":"role,status", "user_id":"eq." + str(user.get("id")), "limit":"1"
+    })
+    if not profiles or profiles[0].get("status") != "active":
+        raise HTTPException(status_code=403, detail="บัญชีไม่ได้รับอนุญาตให้ดูรายงาน")
+    role = profiles[0].get("role")
+    allowed = ("super_admin", "admin") if admin_only else ("super_admin", "admin", "member", "user")
+    if role not in allowed:
+        raise HTTPException(status_code=403, detail="สิทธิ์ไม่เพียงพอสำหรับดูรายงาน")
+    return user
+
+
+def _stock_paper_member_snapshot(user_id: str):
+    accounts = _sb_rest("stock_paper_accounts", {
+        "select":"user_id,starting_balance,cash_balance,realized_pnl,fees_paid,status",
+        "user_id":"eq." + user_id, "limit":"1"
+    }) or []
+    settings = _sb_rest("stock_paper_settings", {
+        "select":"enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct",
+        "user_id":"eq." + user_id, "limit":"1"
+    }) or []
+    positions = _sb_rest("stock_paper_positions", {
+        "select":"id,symbol,quantity,entry_price,current_price,unrealized_pnl,realized_pnl,opened_at,status,take_profit_price,stop_loss_price",
+        "user_id":"eq." + user_id, "order":"opened_at.desc", "limit":"1000"
+    }) or []
+    account = accounts[0] if accounts else {}
+    setting = settings[0] if settings else {}
+    opened = [p for p in positions if p.get("status") == "open"]
+    closed = [p for p in positions if p.get("status") == "closed"]
+    start = float(account.get("starting_balance") or setting.get("starting_balance") or 0)
+    cash = float(account.get("cash_balance") or 0)
+    market_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in opened)
+    unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in opened)
+    realized = float(account.get("realized_pnl") or sum(float(p.get("realized_pnl") or 0) for p in closed))
+    pnl = realized + unrealized
+    cap = start * 0.30
+    exposure = sum(float(p.get("quantity") or 0) * float(p.get("entry_price") or 0) for p in opened)
+    return {
+        "memberId":user_id,
+        "enabled":bool(setting.get("enabled")),
+        "mode":"paper",
+        "startingBalance":round(start,2),
+        "cashBalance":round(cash,2),
+        "marketValue":round(market_value,2),
+        "equity":round(cash+market_value,2),
+        "realizedPnl":round(realized,2),
+        "unrealizedPnl":round(unrealized,2),
+        "totalPnl":round(pnl,2),
+        "returnPct":round((pnl/start*100) if start else 0,2),
+        "momentumAllocationCap":round(cap,2),
+        "allocationUsed":round(exposure,2),
+        "allocationUsedPct":round((exposure/cap*100) if cap else 0,2),
+        "allocationReturnPct":round((pnl/cap*100) if cap else 0,2),
+        "openPositionCount":len(opened),
+        "closedTradeCount":len(closed),
+        "feesPaid":round(float(account.get("fees_paid") or 0),2),
+        "openPositions":[{
+            "symbol":p.get("symbol"),"quantity":float(p.get("quantity") or 0),
+            "entryPrice":float(p.get("entry_price") or 0),
+            "currentPrice":float(p.get("current_price") or 0),
+            "marketValue":round(float(p.get("quantity") or 0)*float(p.get("current_price") or p.get("entry_price") or 0),2),
+            "unrealizedPnl":round(float(p.get("unrealized_pnl") or 0),2),
+            "returnPct":round((float(p.get("unrealized_pnl") or 0)/(float(p.get("quantity") or 0)*float(p.get("entry_price") or 0))*100) if float(p.get("quantity") or 0)*float(p.get("entry_price") or 0) else 0,2),
+            "takeProfitPrice":p.get("take_profit_price"),"stopLossPrice":p.get("stop_loss_price"),
+            "openedAt":p.get("opened_at")
+        } for p in opened],
+        "strategy":"Momentum 5 Setups",
+        "allocationPct":30,
+        "reservePct":70
+    }
+
+
+@app.get("/stock-paper-momentum/report")
+def stock_paper_momentum_member_report(request: Request):
+    """Member's own Momentum Paper report only; no other member data is returned."""
+    user = _stock_paper_report_user(request, admin_only=False)
+    return {
+        "ok":True,"reportType":"member","generatedAt":datetime.now(timezone.utc).isoformat(),
+        "strategy":"Momentum 5 Setups","currency":"USD",
+        "portfolio":_stock_paper_member_snapshot(str(user["id"]))
+    }
+
+
+@app.get("/admin/stock-paper-momentum/report")
+def stock_paper_momentum_central_report(request: Request):
+    """Super-admin-only aggregate report across all member Momentum Paper portfolios."""
+    user = _stock_paper_report_user(request, admin_only=True)
+    accounts = _sb_rest("stock_paper_accounts", {
+        "select":"user_id","limit":"1000"
+    }) or []
+    member_ids = list(dict.fromkeys(str(x.get("user_id")) for x in accounts if x.get("user_id")))
+    members = [_stock_paper_member_snapshot(uid) for uid in member_ids]
+    totals = {}
+    for key in ("startingBalance","cashBalance","marketValue","equity","realizedPnl","unrealizedPnl",
+                "totalPnl","momentumAllocationCap","allocationUsed","feesPaid"):
+        totals[key] = round(sum(float(m.get(key) or 0) for m in members),2)
+    totals["returnPct"] = round(totals["totalPnl"]/totals["startingBalance"]*100,2) if totals["startingBalance"] else 0
+    totals["allocationReturnPct"] = round(totals["totalPnl"]/totals["momentumAllocationCap"]*100,2) if totals["momentumAllocationCap"] else 0
+    totals["allocationUsedPct"] = round(totals["allocationUsed"]/totals["momentumAllocationCap"]*100,2) if totals["momentumAllocationCap"] else 0
+    totals["openPositionCount"] = sum(int(m.get("openPositionCount") or 0) for m in members)
+    totals["closedTradeCount"] = sum(int(m.get("closedTradeCount") or 0) for m in members)
+    return {
+        "ok":True,"reportType":"central_aggregate","generatedAt":datetime.now(timezone.utc).isoformat(),
+        "strategy":"Momentum 5 Setups","currency":"USD",
+        "policy":{"allocationPct":30,"reservePct":70,"mode":"paper_only"},
+        "totals":totals,"members":members,
+        "openPositions":[{"memberId":m["memberId"],**p} for m in members for p in m["openPositions"]]
+    }
+
+
 @app.get("/paper-reports/{market}")
 def paper_trading_report(market: str, request: Request, period: str = "30d"):
     """Authenticated, read-only performance report for one isolated paper market."""
