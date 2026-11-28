@@ -6121,15 +6121,17 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         daily_profit_target_pct = max(0.10, min(5.00, float(strategy_config.get("crypto_daily_profit_target_pct", 3.0))))
         if uid == "62835b65-13eb-4d99-9647-c4b22bd61ef3":
             strategy_portfolios = _sb_rest("blessing_dual_portfolios", {
-                "select":"id,initial_capital","user_id":"eq." + uid,
+                "select":"id,initial_capital,strategy_started_at","user_id":"eq." + uid,
                 "market":"eq.crypto","mode":"eq.paper","limit":"10"
             }) or []
             strategy_ids = [str(p["id"]) for p in strategy_portfolios]
             combined_initial = sum(float(p.get("initial_capital") or 0) for p in strategy_portfolios)
+            strategy_start_values = [str(p.get("strategy_started_at")) for p in strategy_portfolios if p.get("strategy_started_at")]
+            guard_start = max([day_start_utc] + strategy_start_values) if strategy_start_values else day_start_utc
             closed_today_all = _sb_rest("blessing_dual_positions", {
                 "select":"realized_pnl","portfolio_id":"in.(" + ",".join(strategy_ids) + ")",
                 "user_id":"eq." + uid,"market":"eq.crypto","status":"eq.closed",
-                "closed_at":"gte." + day_start_utc,"limit":"1000"
+                "closed_at":"gte." + guard_start,"limit":"1000"
             }) if strategy_ids else []
             realized_for_guard = sum(float(row.get("realized_pnl") or 0) for row in (closed_today_all or []))
             daily_profit_target = combined_initial * daily_profit_target_pct / 100.0
@@ -8353,7 +8355,7 @@ def owner_crypto_strategy_report(request: Request, period: str = "30d"):
         raise HTTPException(status_code=400, detail="INVALID_REPORT_PERIOD")
 
     portfolios = _sb_rest("blessing_dual_portfolios", {
-        "select":"id,strategy_key,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_open_positions,peak_equity,updated_at",
+        "select":"id,strategy_key,strategy_started_at,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_open_positions,peak_equity,updated_at",
         "user_id":"eq." + uid, "market":"eq.crypto", "mode":"eq.paper",
         "order":"strategy_key.asc", "limit":"10"
     }) or []
@@ -8390,15 +8392,24 @@ def owner_crypto_strategy_report(request: Request, period: str = "30d"):
             continue
         pid = str(portfolio["id"])
         own_positions = [p for p in positions if str(p.get("portfolio_id")) == pid]
-        own_orders = [o for o in orders if str(o.get("portfolio_id")) == pid]
+        own_orders_all = [o for o in orders if str(o.get("portfolio_id")) == pid]
         opened = [p for p in own_positions if p.get("status") == "open"]
+        strategy_started_at = datetime.fromisoformat(str(portfolio.get("strategy_started_at") or portfolio.get("updated_at") or now.isoformat()).replace("Z","+00:00"))
         closed_all = [p for p in own_positions if p.get("status") == "closed" and p.get("closed_at")]
         closed_period = []
         for row in closed_all:
             try:
                 closed_at = datetime.fromisoformat(str(row["closed_at"]).replace("Z","+00:00"))
-                if cutoff is None or closed_at >= cutoff:
+                if closed_at >= strategy_started_at and (cutoff is None or closed_at >= cutoff):
                     closed_period.append(row)
+            except Exception:
+                continue
+        own_orders = []
+        for row in own_orders_all:
+            try:
+                order_at = datetime.fromisoformat(str(row.get("created_at") or "").replace("Z","+00:00"))
+                if order_at >= strategy_started_at and (cutoff is None or order_at >= cutoff):
+                    own_orders.append(row)
             except Exception:
                 continue
         market_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in opened)
