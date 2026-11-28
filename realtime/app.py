@@ -3487,40 +3487,55 @@ def admin_member_portfolios_report(request: Request):
         except (TypeError, ValueError):
             return 0.0
 
-    stock_slots = _sb_rest("blessing_stock_paper_member_slots", {
-        "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at",
-        "slot_no": "in.(1,2,3,4,5,6,7,8,9,10)", "limit": "20",
-    }) or []
+    # Independent Supabase reads are issued concurrently; keep calculations unchanged.
     crypto_slot_ids = list(dict.fromkeys(
         str(row["paper_slot_id"]) for row in registry
         if row.get("portfolio_type") == "crypto_paper" and row.get("paper_slot_id")
     ))
-    crypto_slots = _sb_rest("blessing_paper_member_slots", {
-        "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at",
-        "id": "in.(" + ",".join(crypto_slot_ids) + ")", "limit": "20",
-    }) if crypto_slot_ids else []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        stock_future = pool.submit(_sb_rest, "blessing_stock_paper_member_slots", {
+            "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at",
+            "slot_no": "in.(1,2,3,4,5,6,7,8,9,10)", "limit": "20",
+        })
+        crypto_future = pool.submit(_sb_rest, "blessing_paper_member_slots", {
+            "select": "id,slot_no,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,status,updated_at",
+            "id": "in.(" + ",".join(crypto_slot_ids) + ")", "limit": "20",
+        }) if crypto_slot_ids else None
+        stock_slots = stock_future.result() or []
+        crypto_slots = (crypto_future.result() or []) if crypto_future else []
 
     stock_ids = [str(row["id"]) for row in stock_slots if row.get("id")]
     crypto_ids = [str(row["id"]) for row in crypto_slots if row.get("id")]
-    stock_positions = _sb_rest("blessing_stock_paper_slot_positions", {
-        "select": "id,slot_id,symbol,quantity,average_entry_price_usd,current_price_usd,entry_fx_thb_per_usd,current_fx_thb_per_usd,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
-        "slot_id": "in.(" + ",".join(stock_ids) + ")", "status": "eq.open", "limit": "1000",
-    }) if stock_ids else []
-    crypto_positions = _sb_rest("blessing_paper_slot_positions", {
-        "select": "id,slot_id,symbol,quantity,average_entry_price_thb,current_price_thb,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
-        "slot_id": "in.(" + ",".join(crypto_ids) + ")", "status": "eq.open", "limit": "1000",
-    }) if crypto_ids else []
-
-    stock_orders = _sb_rest("blessing_stock_paper_slot_orders", {
-        "select": "slot_id,symbol,side,status,fee_thb,realized_pnl_thb,created_at",
-        "slot_id": "in.(" + ",".join(stock_ids) + ")", "limit": "5000",
-        "order": "created_at.desc",
-    }) if stock_ids else []
-    crypto_orders = _sb_rest("blessing_paper_slot_orders", {
-        "select": "slot_id,symbol,side,status,fee_thb,realized_pnl_thb,created_at",
-        "slot_id": "in.(" + ",".join(crypto_ids) + ")", "limit": "5000",
-        "order": "created_at.desc",
-    }) if crypto_ids else []
+    reads = {}
+    jobs = {
+        "stock_positions": ("blessing_stock_paper_slot_positions", {
+            "select": "id,slot_id,symbol,quantity,average_entry_price_usd,current_price_usd,entry_fx_thb_per_usd,current_fx_thb_per_usd,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
+            "slot_id": "in.(" + ",".join(stock_ids) + ")", "status": "eq.open", "limit": "1000",
+        }, bool(stock_ids)),
+        "crypto_positions": ("blessing_paper_slot_positions", {
+            "select": "id,slot_id,symbol,quantity,average_entry_price_thb,current_price_thb,cost_basis_thb,unrealized_pnl_thb,status,opened_at",
+            "slot_id": "in.(" + ",".join(crypto_ids) + ")", "status": "eq.open", "limit": "1000",
+        }, bool(crypto_ids)),
+        "stock_orders": ("blessing_stock_paper_slot_orders", {
+            "select": "slot_id,symbol,side,status,fee_thb,realized_pnl_thb,created_at",
+            "slot_id": "in.(" + ",".join(stock_ids) + ")", "limit": "5000", "order": "created_at.desc",
+        }, bool(stock_ids)),
+        "crypto_orders": ("blessing_paper_slot_orders", {
+            "select": "slot_id,symbol,side,status,fee_thb,realized_pnl_thb,created_at",
+            "slot_id": "in.(" + ",".join(crypto_ids) + ")", "limit": "5000", "order": "created_at.desc",
+        }, bool(crypto_ids)),
+    }
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            key: pool.submit(_sb_rest, table, params)
+            for key, (table, params, enabled) in jobs.items() if enabled
+        }
+        for key in jobs:
+            reads[key] = (futures[key].result() or []) if key in futures else []
+    stock_positions = reads["stock_positions"]
+    crypto_positions = reads["crypto_positions"]
+    stock_orders = reads["stock_orders"]
+    crypto_orders = reads["crypto_orders"]
 
     stock_by_member = {str(row.get("slot_no")): row for row in stock_slots}
     crypto_by_id = {str(row.get("id")): row for row in crypto_slots}
