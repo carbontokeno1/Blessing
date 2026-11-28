@@ -2474,7 +2474,8 @@ def _altcoin_scanner_run(refresh: int = 0):
         if paper_decision:
             row["paperStrategy"] = paper_decision["strategy"]
             row["paperStrategyScore"] = paper_decision["opportunityScore"]
-            paper_strategy_counts[paper_decision["strategy"]] += 1
+            strategy_name = str(paper_decision.get("strategy") or "UNKNOWN")
+            paper_strategy_counts[strategy_name] = paper_strategy_counts.get(strategy_name, 0) + 1
         else:
             row["paperStrategy"] = None
             row["paperStrategyScore"] = 0
