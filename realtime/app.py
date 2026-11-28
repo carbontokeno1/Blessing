@@ -3960,6 +3960,7 @@ def admin_member_portfolios_report(request: Request):
             "cryptoCandidates": DUAL_PAPER_WORKER_STATE.get("cryptoCandidates", 0),
             "scan": dict(DUAL_PAPER_WORKER_STATE.get("cryptoScanDiagnostics") or {}),
             "liveTradingEnabled": False,
+            "stocksNewEntriesEnabled": DUAL_PAPER_STOCK_ENTRIES_ENABLED,
         },
         "dataNote": "Paper equity uses saved cash plus current position values. Live portfolios are locked and do not show allocated plans as real balances.",
     }
@@ -5970,6 +5971,8 @@ def dual_paper_status(request: Request):
 
 
 # A full 420-symbol candle scan can take about a minute; keep one bounded cycle per 90s.
+# Owner request: keep BLESSING on Crypto Paper only; continue monitoring existing stock positions.
+DUAL_PAPER_STOCK_ENTRIES_ENABLED = False
 DUAL_PAPER_WORKER_INTERVAL = max(60, int(os.getenv("DUAL_PAPER_WORKER_INTERVAL", "90")))
 DUAL_ADAPTIVE_ENTRY_COOLDOWNS = {}  # per-user cooldown shared across crypto and equities
 DUAL_PAPER_WORKER_STATE = {
@@ -6290,7 +6293,7 @@ def _dual_paper_worker_cycle():
             stock_age = 999999
         stock_fresh = stock_scan.get("status")=="ok" and stock_age <= max(180,UNIVERSE_SCAN_INTERVAL*3)
         stock_candidates = {}
-        if stock_fresh:
+        if DUAL_PAPER_STOCK_ENTRIES_ENABLED and stock_fresh:
             for row in (stock_scan.get("candidates") or []):
                 if row.get("symbol") and _num(row.get("price"),0):
                     normalized=dict(row); normalized["rvol"]=normalized.get("relativeVolume")
@@ -6305,7 +6308,8 @@ def _dual_paper_worker_cycle():
             "webullConfigured":bool(APP_KEY and APP_SECRET),
             "alpacaConfigured":bool(ALPACA_KEY and ALPACA_SECRET),
             "evaluated":len(stock_scan.get("candidates") or []),
-            "paperStrategyCandidateCount":len(stock_candidates)
+            "paperStrategyCandidateCount":len(stock_candidates),
+            "newEntriesEnabled":bool(DUAL_PAPER_STOCK_ENTRIES_ENABLED)
         }
         # All enabled member portfolios run independently; no experiment-row gate.
             # Crypto Paper: every enabled member portfolio runs automatically without an experiment gate.
