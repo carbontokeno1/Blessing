@@ -88,6 +88,7 @@ class BlessingFastCryptoPaperTests(unittest.TestCase):
             "exchangeSymbol": "SOLUSDT",
             "source": "Binance TH Spot API",
             "price": 150.0,
+            "quoteVolume24h": 1000000.0,
             "m1": 0.18,
             "m5": 0.72,
             "m15": 1.1,
@@ -109,6 +110,10 @@ class BlessingFastCryptoPaperTests(unittest.TestCase):
         self.assertEqual(result["side"], "long")
         self.assertEqual(result["liveEntryScore"], 0)
         self.assertEqual(result["liveEntryModel"], "PAPER_ONLY_BLESSING_FAST_MOMENTUM")
+
+    def test_fast_rejects_low_liquidity_even_when_discovered(self):
+        self.row["quoteVolume24h"] = 49999.0
+        self.assertIsNone(blessing_app._blessing_fast_momentum_decision(self.row))
 
     def test_fast_requires_scanner_breakout_signal(self):
         self.row["breakout"] = False
