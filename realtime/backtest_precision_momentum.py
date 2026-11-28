@@ -84,12 +84,16 @@ def features(bars, idx, btc_bearish):
 def signal(f, mode):
     if not f or f["btc_bearish"] or not (0<f["spread"]<=.20) or not (.8<=f["stop"]<=1.5): return False
     if not f["trend"] or f["price"]<=f["ema20"] or (f["price"]-f["ema20"])/f["price"]*100>1.25: return False
-    if mode=="precision":
-        if not (f["m1"]>0 and f["m5"]>=.05 and f["m15"]>=.12 and f["m60"]>0): return False
-        if not (48<=f["rsi"]<=68 and 1.15<=f["rvol"]<=3.5 and (f["pullback"] or f["breakout"])): return False
+    if mode in ("precision", "precision_selective"):
+        m5_floor, m15_floor = ((.05, .12) if mode=="precision" else (.12, .25))
+        rsi_low, rsi_high = ((48, 68) if mode=="precision" else (50, 65))
+        rvol_low, rvol_high = ((1.15, 3.5) if mode=="precision" else (1.35, 2.8))
+        confirmation = (f["pullback"] or f["breakout"]) if mode=="precision" else f["pullback"]
+        if not (f["m1"]>0 and f["m5"]>=m5_floor and f["m15"]>=m15_floor and f["m60"]>0): return False
+        if not (rsi_low<=f["rsi"]<=rsi_high and rvol_low<=f["rvol"]<=rvol_high and confirmation): return False
         edge=max(f["m5"],0)*.55+max(f["m15"],0)*.30+max(f["m60"],0)*.15
         cost=.30+f["spread"]
-        return edge>=cost*1.20
+        return edge>=cost*(1.50 if mode=="precision_selective" else 1.20)
     # Existing adaptive trend-pullback branch, applied on the same historical candles.
     return (f["pullback"] and 44<=f["rsi"]<=66 and .85<=f["rvol"]<=2.8
             and f["m5"]>0 and f["m15"]>.08
@@ -116,9 +120,67 @@ def simulate(symbol, bars, btc_flags, mode):
             exit_price=b["c"]*(1-SLIPPAGE_SIDE_PCT/100); exit_time=b["ct"]
         gross=(exit_price/entry-1)*100
         net=gross-2*FEE_SIDE_PCT
-        trades.append({"symbol":symbol,"entry_time":entry_bar["t"],"exit_time":exit_time,"gross_pct":gross,"net_pct":net,"reason":reason})
+        trades.append({"symbol":symbol,"entry_time":entry_bar["t"],"exit_time":exit_time,"entry_price":entry,"gross_pct":gross,"net_pct":net,"stop_pct":stop_pct,"reason":reason})
         i=max(i+1,j+1)
     return trades
+
+def portfolio_simulate(candidates, initial_capital=100000.0):
+    """Chronological Paper replay: 0.5% risk, 3 slots, 20% reserve,
+    2% realized daily loss stop and 3% realized daily profit pause."""
+    from zoneinfo import ZoneInfo
+    bangkok=ZoneInfo("Asia/Bangkok")
+    risk_pct, max_positions, reserve_pct = .5, 3, 20.0
+    daily_loss_pct, daily_target_pct = 2.0, 3.0
+    equity=initial_capital; invested=0.0; opened=[]; closed=[]; daily={}; halted=set()
+    peak=initial_capital; max_dd=0.0
+    for t in sorted(candidates,key=lambda x:(x["entry_time"],x["symbol"])):
+        keep=[]
+        for p in opened:
+            if p["exit_time"]<=t["entry_time"]:
+                pnl=p["notional"]*p["net_pct"]/100; equity+=pnl; invested-=p["notional"]
+                closed.append({**p,"pnl_cash":pnl,"equity_after":equity})
+                day=datetime.fromtimestamp(p["exit_time"]/1000,timezone.utc).astimezone(bangkok).strftime("%Y-%m-%d")
+                if day not in daily: daily[day]={"pnl":0.0,"start_equity":equity-pnl,"trades":0}
+                daily[day]["pnl"]+=pnl; daily[day]["trades"]+=1
+            else: keep.append(p)
+        opened=keep
+        day=datetime.fromtimestamp(t["entry_time"]/1000,timezone.utc).astimezone(bangkok).strftime("%Y-%m-%d")
+        if day not in daily: daily[day]={"pnl":0.0,"start_equity":equity,"trades":0}
+        d=daily[day]
+        if day in halted: continue
+        if d["pnl"]<=-d["start_equity"]*daily_loss_pct/100 or d["pnl"]>=d["start_equity"]*daily_target_pct/100:
+            halted.add(day); continue
+        if len(opened)>=max_positions: continue
+        stop_loss_pct=t["stop_pct"]+2*(FEE_SIDE_PCT+SLIPPAGE_SIDE_PCT)
+        if stop_loss_pct<=0: continue
+        risk_cash=equity*risk_pct/100
+        notional=min(risk_cash/(stop_loss_pct/100),equity*(1-reserve_pct/100)-invested)
+        if notional<=0: continue
+        opened.append({**t,"notional":notional}); invested+=notional
+    for p in sorted(opened,key=lambda x:x["exit_time"]):
+        pnl=p["notional"]*p["net_pct"]/100; equity+=pnl; invested-=p["notional"]
+        closed.append({**p,"pnl_cash":pnl,"equity_after":equity})
+        day=datetime.fromtimestamp(p["exit_time"]/1000,timezone.utc).astimezone(bangkok).strftime("%Y-%m-%d")
+        if day not in daily: daily[day]={"pnl":0.0,"start_equity":equity-pnl,"trades":0}
+        daily[day]["pnl"]+=pnl; daily[day]["trades"]+=1
+    for p in sorted(closed,key=lambda x:x["exit_time"]):
+        peak=max(peak,p["equity_after"]); max_dd=max(max_dd,(peak-p["equity_after"])/peak*100)
+    wins=[p for p in closed if p["pnl_cash"]>0]; losses=[p for p in closed if p["pnl_cash"]<=0]
+    gp=sum(p["pnl_cash"] for p in wins); gl=abs(sum(p["pnl_cash"] for p in losses))
+    daily_returns=[v["pnl"]/v["start_equity"]*100 for v in daily.values() if v["start_equity"]>0]
+    return {"trades_taken":len(closed),"candidate_signals":len(candidates),
+      "win_rate_pct":round(len(wins)/len(closed)*100,2) if closed else 0,
+      "net_pnl_cash":round(equity-initial_capital,2),"net_return_pct":round((equity/initial_capital-1)*100,3),
+      "profit_factor":round(gp/gl,3) if gl else (None if not gp else "inf"),"max_drawdown_pct":round(max_dd,3),
+      "avg_daily_return_pct":round(statistics.mean(daily_returns),4) if daily_returns else 0,
+      "worst_day_return_pct":round(min(daily_returns),4) if daily_returns else 0,
+      "daily_profit_target_days":sum(v["pnl"]>=v["start_equity"]*daily_target_pct/100 for v in daily.values()),
+      "daily_loss_limit_days":sum(v["pnl"]<=-v["start_equity"]*daily_loss_pct/100 for v in daily.values()),
+      "daily_observations":len(daily),"initial_capital":initial_capital,"risk_per_trade_pct":risk_pct,
+      "max_open_positions":max_positions,"reserve_pct":reserve_pct,"daily_loss_limit_pct":daily_loss_pct,
+      "daily_profit_target_pct":daily_target_pct,
+      "daily":{k:{"pnl_cash":round(v["pnl"],2),"return_pct":round(v["pnl"]/v["start_equity"]*100,3),"trades":v["trades"]} for k,v in daily.items()},
+      "closed_positions":closed}
 
 def stats(trades):
     vals=[x["net_pct"] for x in trades]
@@ -158,19 +220,29 @@ def main():
                 bf=features(btc,k,False)
                 bearish=bool(bf and (bf["m15"]<0 or bf["m60"]<0))
             btc_flags[b["t"]]=bearish
-    results={}
-    all_trades={}
-    for mode in ("adaptive_baseline","precision"):
-        combined=[]
-        for sym,bars in data.items():
-            ts=simulate(sym,bars,btc_flags,mode); combined.extend(ts)
-        results[mode]=stats(combined); all_trades[mode]=combined
+    results={}; all_trades={}
+    for mode in ("adaptive_baseline","precision","precision_selective"):
+        candidates=[]
+        for sym,bars in data.items(): candidates.extend(simulate(sym,bars,btc_flags,mode))
+        replay=portfolio_simulate(candidates)
+        results[mode]={k:v for k,v in replay.items() if k not in ("daily","closed_positions")}
+        results[mode]["daily"]=replay["daily"]; all_trades[mode]=replay["closed_positions"]
     os.makedirs("backtest-output",exist_ok=True)
-    with open("backtest-output/summary.json","w") as f: json.dump({"period_days":DAYS,"symbols_loaded":{k:len(v) for k,v in data.items()},"assumptions":{"fee_per_side_pct":FEE_SIDE_PCT,"slippage_per_side_pct":SLIPPAGE_SIDE_PCT,"spread_proxy_pct":SPREAD_PROXY_PCT,"round_trip_cost_pct":ROUND_TRIP_COST,"entry":"next 1m candle open","same_bar_sl_tp":"stop first","max_hold_minutes":240,"tp_pct":"clamp 3% to 5%, at least 2R","btc_bias":"historical BTC 15m or 60m momentum negative"},"results":results},f,indent=2)
+    with open("backtest-output/summary.json","w") as f:
+        json.dump({"period_days":DAYS,"timezone":"Asia/Bangkok","symbols_loaded":{k:len(v) for k,v in data.items()},
+          "assumptions":{"fee_per_side_pct":FEE_SIDE_PCT,"slippage_per_side_pct":SLIPPAGE_SIDE_PCT,"spread_proxy_pct":SPREAD_PROXY_PCT,
+          "entry":"next 1m candle open","same_bar_sl_tp":"stop first","max_hold_minutes":240,
+          "position_sizing":"0.5% equity risk per trade, stop distance plus round-trip fees/slippage",
+          "portfolio":"max 3 simultaneous positions; 20% reserve; 2% realized daily loss stop; 3% realized daily profit pause",
+          "capital":"100,000 THB-equivalent units; percentage returns are simulated, not a live forecast",
+          "btc_bias":"historical BTC 15m or 60m momentum negative",
+          "limitation":"Historical scanner-feature approximation, not tick-level execution; candidate baseline is trend-pullback proxy."},
+          "results":results},f,indent=2)
     with open("backtest-output/trades.csv","w",newline="") as f:
-        w=csv.DictWriter(f,fieldnames=["mode","symbol","entry_time","exit_time","gross_pct","net_pct","reason"]);w.writeheader()
+        fields=["mode","symbol","entry_time","exit_time","entry_price","stop_pct","gross_pct","net_pct","notional","pnl_cash","reason"]
+        w=csv.DictWriter(f,fieldnames=fields); w.writeheader()
         for mode,ts in all_trades.items():
-            for t in ts:w.writerow({"mode":mode,**t})
+            for t in ts: w.writerow({"mode":mode,**{k:t.get(k) for k in fields[1:]}})
     print(json.dumps(results,indent=2),flush=True)
     if not all(data.get(s) for s in universe[:min(5,len(universe))]):
         raise SystemExit("Partial universe data; inspect summary and do not treat as conclusive.")
