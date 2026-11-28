@@ -1647,11 +1647,11 @@ ALTCOIN_EXCLUDED = {"USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD
 ALTCOIN_LEVERAGED_SUFFIXES = ("UP","DOWN","BULL","BEAR","3L","3S","5L","5S")
 # Broad discovery is deliberately wider than the order-eligible universe.
 # FAST Paper retains the original >=50k USDT 24h quote-volume entry floor.
-ALTCOIN_SCAN_MIN_QUOTE_VOLUME = max(1000.0, float(os.getenv("BLESSING_CRYPTO_SCAN_MIN_QUOTE_VOLUME", "10000")))
+ALTCOIN_SCAN_MIN_QUOTE_VOLUME = max(1000.0, float(os.getenv("BLESSING_CRYPTO_SCAN_MIN_QUOTE_VOLUME", "5000")))
 ALTCOIN_ENTRY_MIN_QUOTE_VOLUME = max(50000.0, float(os.getenv("BLESSING_CRYPTO_ENTRY_MIN_QUOTE_VOLUME", "50000")))
-ALTCOIN_SCAN_MAX_PAIRS = max(100, min(1000, int(os.getenv("BLESSING_CRYPTO_SCAN_MAX_PAIRS", "600"))))
-ALTCOIN_SCAN_WORKERS = max(4, min(64, int(os.getenv("BLESSING_CRYPTO_SCAN_WORKERS", "32"))))
-ALTCOIN_DISCOVERY_LIMIT = max(400, min(2000, int(os.getenv("BLESSING_CRYPTO_DISCOVERY_LIMIT", "1000"))))
+ALTCOIN_SCAN_MAX_PAIRS = max(100, min(1000, int(os.getenv("BLESSING_CRYPTO_SCAN_MAX_PAIRS", "800"))))
+ALTCOIN_SCAN_WORKERS = max(4, min(64, int(os.getenv("BLESSING_CRYPTO_SCAN_WORKERS", "40"))))
+ALTCOIN_DISCOVERY_LIMIT = max(400, min(2000, int(os.getenv("BLESSING_CRYPTO_DISCOVERY_LIMIT", "1500"))))
 
 
 def _bitmart_public_tickers():
