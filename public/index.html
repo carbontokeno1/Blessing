@@ -1991,7 +1991,7 @@ async function start(session){
  if(!p||p.status!=='active'||!['admin','super_admin'].includes(p.role))throw Error('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ');
  current=session.user;ownerMode=p.role==='super_admin';window.BLESSING_OWNER_CENTER_ENABLED=ownerMode;window.BLESSING_REFRESH_NAV?.();$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');
  $('tradingControls').style.display=ownerMode?'block':'none';$('centerDashboard').style.display=ownerMode?'block':'none';
- await loadMembers();if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},60000)}
+ if(ownerMode){await loadTradingControls();if(!dashboardTimer)dashboardTimer=setInterval(()=>{if(ownerMode&&document.visibilityState==='visible')loadTradingControls()},60000)}else{await loadMembers()}
 }
 async function loadMembers(){
  const {data,error}=await sb.from('profiles').select('user_id,email,display_name,role,status').eq('role','member').order('created_at',{ascending:false}).limit(5);
@@ -2038,10 +2038,25 @@ function renderCenter(report,rows){
  $('centerActivity').replaceChildren(activityFragment)
  $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก 60 วินาที';
 }
+async function loadMomentumSummary(){
+ const box=$('tradingMembers');
+ try{
+  const momentum=await adminApi('/api/admin/stock-paper-momentum/report');
+  if(!ownerMode||!box.isConnected)return;
+  const mt=momentum.totals||{},mCard=document.createElement('article');mCard.className='tradeMember';
+  const mh=document.createElement('h3');mh.textContent='US STOCK MOMENTUM PAPER · 30% ALLOCATION (แยกจากพอร์ตหลัก)';mCard.append(mh);
+  const mSummary=document.createElement('div');mSummary.className='memberPortfolioCount';
+  mSummary.textContent='Equity '+money(mt.equity,'USD')+' · Net P&L '+(Number(mt.totalPnl||0)>=0?'+':'')+money(mt.totalPnl,'USD')+' ('+Number(mt.returnPct||0).toFixed(2)+'%) · Allocation '+money(mt.allocationUsed,'USD')+' / '+money(mt.momentumAllocationCap,'USD')+' · '+Number(mt.openPositionCount||0)+' Open Positions';mCard.append(mSummary);
+  for(const m of (momentum.members||[])){const line=document.createElement('div');line.className='portfolioStat';const nm=document.createElement('b');nm.textContent=m.memberLabel||('สมาชิก '+String(m.memberId||'').slice(0,8));const val=document.createElement('span');val.textContent='Equity '+money(m.equity,'USD')+' · P&L '+(Number(m.totalPnl||0)>=0?'+':'')+money(m.totalPnl,'USD')+' · '+Number(m.openPositionCount||0)+' positions';line.append(nm,val);mCard.append(line)}
+  const old=box.querySelector('[data-momentum-summary]');
+  mCard.dataset.momentumSummary='true';
+  if(old)old.replaceWith(mCard);else box.append(mCard);
+ }catch(e){console.warn('[BLESSING momentum summary] deferred load failed:',e)}
+}
 async function loadTradingControls(){
  const status=$('tradingStatus'),box=$('tradingMembers');status.textContent='กำลังตรวจสอบข้อมูลล่าสุด · กำลังคงข้อมูลเดิมไว้ระหว่างโหลด';
  try{
-  const [data,report,momentum]=await Promise.all([adminApi('/api/admin/member-portfolios'),adminApi('/api/admin/member-portfolios/report'),adminApi('/api/admin/stock-paper-momentum/report')]);
+  const [data,report]=await Promise.all([loadMembers(),adminApi('/api/admin/member-portfolios'),adminApi('/api/admin/member-portfolios/report')]).then(values=>[values[1],values[2]]);
   const rows=(data.portfolios||[]).filter(x=>['crypto_paper','stock_paper','crypto_live','stock_live'].includes(x.portfolio_type));
   const reports=new Map((report.portfolios||[]).map(x=>[String(x.id),x]));
   const profileMap=new Map(profileCache.map(p=>[p.user_id,p]));
@@ -2083,7 +2098,8 @@ async function loadTradingControls(){
    }
    nextCards.append(card);
   }
-  const mt=momentum.totals||{},mCard=document.createElement('article');mCard.className='tradeMember';const mh=document.createElement('h3');mh.textContent='US STOCK MOMENTUM PAPER · 30% ALLOCATION (แยกจากพอร์ตหลัก)';mCard.append(mh);const mSummary=document.createElement('div');mSummary.className='memberPortfolioCount';mSummary.textContent='Equity '+money(mt.equity,'USD')+' · Net P&L '+(Number(mt.totalPnl||0)>=0?'+':'')+money(mt.totalPnl,'USD')+' ('+Number(mt.returnPct||0).toFixed(2)+'%) · Allocation '+money(mt.allocationUsed,'USD')+' / '+money(mt.momentumAllocationCap,'USD')+' · '+Number(mt.openPositionCount||0)+' Open Positions';mCard.append(mSummary);for(const m of (momentum.members||[])){const line=document.createElement('div');line.className='portfolioStat';const nm=document.createElement('b');nm.textContent=m.memberLabel||('สมาชิก '+String(m.memberId||'').slice(0,8));const val=document.createElement('span');val.textContent='Equity '+money(m.equity,'USD')+' · P&L '+(Number(m.totalPnl||0)>=0?'+':'')+money(m.totalPnl,'USD')+' · '+Number(m.openPositionCount||0)+' positions';line.append(nm,val);mCard.append(line)}nextCards.append(mCard);box.replaceChildren(nextCards);
+  box.replaceChildren(nextCards);
+  void loadMomentumSummary();
   box.dataset.updatedAt=new Date(report.refreshedAt||Date.now()).toISOString();
   if(rows.length!==20)status.textContent+=' · คำเตือน: ทะเบียนมี '+rows.length+' แถว ไม่ครบ 20';
  }catch(e){status.textContent='โหลดข้อมูล Dashboard ไม่สำเร็จ: '+e.message+' · คงข้อมูลเดิมไว้';console.warn('[BLESSING central report] refresh failed; keeping previous data:',e)}
