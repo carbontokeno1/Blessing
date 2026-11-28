@@ -1,0 +1,27 @@
+name: BLESSING Precision Momentum validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - realtime/app.py
+      - realtime/test_precision_momentum.py
+
+jobs:
+  precision-momentum:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r realtime/requirements.txt
+      - name: Compile BLESSING backend
+        run: python -m py_compile realtime/app.py
+      - name: Run Precision Momentum tests
+        working-directory: realtime
+        run: python -m unittest test_precision_momentum -v
