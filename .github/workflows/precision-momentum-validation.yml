@@ -1,12 +1,12 @@
 name: BLESSING Precision Momentum validation
 
 on:
+  push:
+    branches:
+      - paper-precision-momentum-guard
   pull_request:
     branches:
       - main
-    paths:
-      - realtime/app.py
-      - realtime/test_precision_momentum.py
 
 jobs:
   precision-momentum:
