@@ -1,0 +1,39 @@
+name: BLESSING 14-day Precision Momentum backtest
+
+on:
+  push:
+    branches:
+      - paper-precision-momentum-guard
+    paths:
+      - "realtime/backtest_precision_momentum.py"
+      - ".github/workflows/precision-momentum-backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  historical-paper-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BACKTEST_DAYS: "14"
+      BACKTEST_SYMBOLS: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,LTCUSDT,AVAXUSDT"
+      FEE_SIDE_PCT: "0.10"
+      SLIPPAGE_SIDE_PCT: "0.05"
+      SPREAD_PROXY_PCT: "0.10"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Run historical Binance TH backtest (Paper simulation only)
+        run: python realtime/backtest_precision_momentum.py
+      - name: Upload trades and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blessing-precision-backtest
+          path: backtest-output/
+          if-no-files-found: warn
+          retention-days: 30
