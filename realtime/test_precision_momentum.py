@@ -1,0 +1,56 @@
+import unittest
+
+import app as blessing_app
+
+
+class BlessingPrecisionMomentumTests(unittest.TestCase):
+    def setUp(self):
+        self.row = {
+            "symbol": "BTCUSDT",
+            "exchangeSymbol": "BTCUSDT",
+            "source": "Binance TH Spot API",
+            "price": 101.0,
+            "ema20": 100.5,
+            "ema50": 99.5,
+            "m1": 0.05,
+            "m5": 0.45,
+            "m15": 0.80,
+            "m60": 1.20,
+            "rsi14": 58,
+            "rvol": 1.8,
+            "spreadPct": 0.08,
+            "atrStopPct": 1.1,
+            "candleAgeSeconds": 20,
+            "trendAligned": True,
+            "pullbackReclaim": True,
+            "breakoutRetest": False,
+            "btcMarketBias": "neutral",
+        }
+
+    def test_qualified_trend_pullback_is_paper_only(self):
+        result = blessing_app._blessing_precision_momentum_decision(self.row)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["side"], "long")
+        self.assertEqual(result["strategy"], "BLESSING_PRECISION_MOMENTUM")
+        self.assertEqual(result["liveEntryScore"], 0)
+        self.assertEqual(result["liveEntryModel"], "PAPER_ONLY_BLESSING_PRECISION_MOMENTUM")
+
+    def test_bearish_btc_bias_blocks_altcoin_entries(self):
+        self.row["btcMarketBias"] = "bearish"
+        self.assertIsNone(blessing_app._blessing_precision_momentum_decision(self.row))
+
+    def test_stale_candle_blocks_entry(self):
+        self.row["candleAgeSeconds"] = 91
+        self.assertIsNone(blessing_app._blessing_precision_momentum_decision(self.row))
+
+    def test_wide_spread_blocks_entry(self):
+        self.row["spreadPct"] = 0.21
+        self.assertIsNone(blessing_app._blessing_precision_momentum_decision(self.row))
+
+    def test_non_binance_fallback_feed_blocks_entry(self):
+        self.row["source"] = "OKX"
+        self.assertIsNone(blessing_app._blessing_precision_momentum_decision(self.row))
+
+
+if __name__ == "__main__":
+    unittest.main()
