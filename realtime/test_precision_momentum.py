@@ -80,5 +80,56 @@ class BlessingPrecisionMomentumTests(unittest.TestCase):
         self.assertEqual(blessing_app.DUAL_PAPER_WORKER_STATE["dailyProfitGuard"]["status"], "target_reached")
 
 
+
+class BlessingFastCryptoPaperTests(unittest.TestCase):
+    def setUp(self):
+        self.row = {
+            "symbol": "SOLUSDT",
+            "exchangeSymbol": "SOLUSDT",
+            "source": "Binance TH Spot API",
+            "price": 150.0,
+            "m1": 0.18,
+            "m5": 0.72,
+            "m15": 1.1,
+            "m60": 2.0,
+            "rvol": 2.4,
+            "spreadPct": 0.25,
+            "atrStopPct": 1.4,
+            "candleAgeSeconds": 18,
+            "score": 75,
+            "breakout": True,
+            "fastEntry": True,
+        }
+
+    def test_fast_breakout_is_paper_only(self):
+        result = blessing_app._blessing_fast_momentum_decision(self.row)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["strategy"], "BLESSING_FAST_MOMENTUM")
+        self.assertEqual(result["strategySetup"], "VOLUME_BREAKOUT")
+        self.assertEqual(result["side"], "long")
+        self.assertEqual(result["liveEntryScore"], 0)
+        self.assertEqual(result["liveEntryModel"], "PAPER_ONLY_BLESSING_FAST_MOMENTUM")
+
+    def test_fast_requires_scanner_breakout_signal(self):
+        self.row["breakout"] = False
+        self.assertIsNone(blessing_app._blessing_fast_momentum_decision(self.row))
+
+    def test_fast_requires_relative_volume_at_least_two(self):
+        self.row["rvol"] = 1.99
+        self.assertIsNone(blessing_app._blessing_fast_momentum_decision(self.row))
+
+    def test_fast_rejects_stale_candles(self):
+        self.row["candleAgeSeconds"] = 91
+        self.assertIsNone(blessing_app._blessing_fast_momentum_decision(self.row))
+
+    def test_fast_rejects_spread_above_half_percent(self):
+        self.row["spreadPct"] = 0.51
+        self.assertIsNone(blessing_app._blessing_fast_momentum_decision(self.row))
+
+    def test_fast_rejects_non_binance_feed(self):
+        self.row["source"] = "Fallback feed"
+        self.assertIsNone(blessing_app._blessing_fast_momentum_decision(self.row))
+
+
 if __name__ == "__main__":
     unittest.main()
