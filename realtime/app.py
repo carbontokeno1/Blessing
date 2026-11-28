@@ -2036,6 +2036,89 @@ def _moderate_crypto_entry_metrics(row: dict):
             "estimatedRoundTripCostPct":float(estimated_cost)}
 
 
+
+def _blessing_precision_momentum_decision(row: dict):
+    """Strict long-only selector for the isolated Dual Crypto Paper engine."""
+    try:
+        price = Decimal(str(row.get("price") or row.get("lastPrice") or "0"))
+        ema20 = Decimal(str(row.get("ema20") or "0"))
+        ema50 = Decimal(str(row.get("ema50") or "0"))
+        m1 = Decimal(str(row.get("m1") if row.get("m1") is not None else "-999"))
+        m5 = Decimal(str(row.get("m5") if row.get("m5") is not None else "-999"))
+        m15 = Decimal(str(row.get("m15") if row.get("m15") is not None else "-999"))
+        m60 = Decimal(str(row.get("m60") if row.get("m60") is not None else "-999"))
+        rsi = Decimal(str(row.get("rsi14") if row.get("rsi14") is not None else "0"))
+        rvol = Decimal(str(row.get("rvol") if row.get("rvol") is not None else "0"))
+        spread = Decimal(str(row.get("spreadPct") if row.get("spreadPct") is not None else "999"))
+        stop = Decimal(str(row.get("atrStopPct") if row.get("atrStopPct") is not None else "0"))
+        candle_age = Decimal(str(row.get("candleAgeSeconds") if row.get("candleAgeSeconds") is not None else "999999"))
+    except Exception:
+        return None
+
+    symbol = str(row.get("symbol") or "").upper()
+    if (price <= 0 or not symbol.endswith("USDT")
+            or str(row.get("exchangeSymbol") or "").upper() != symbol
+            or str(row.get("source") or "") != "Binance TH Spot API"):
+        return None
+    if candle_age > Decimal("90") or not (Decimal("0") < spread <= Decimal("0.20")):
+        return None
+    if not (Decimal("0.8") <= stop <= Decimal("1.5")):
+        return None
+    if row.get("trendAligned") is not True or ema20 <= ema50 or ema20 <= 0:
+        return None
+    if str(row.get("btcMarketBias") or "neutral").lower() == "bearish":
+        return None
+
+    # Avoid chasing a candle that has already stretched too far above its fast EMA.
+    extension_pct = (price - ema20) / price * Decimal("100")
+    if not (Decimal("0") <= extension_pct <= Decimal("1.25")):
+        return None
+    if not (m1 > Decimal("0") and m5 >= Decimal("0.05")
+            and m15 >= Decimal("0.12") and m60 > Decimal("0")):
+        return None
+    if not (Decimal("48") <= rsi <= Decimal("68")
+            and Decimal("1.15") <= rvol <= Decimal("3.5")):
+        return None
+
+    pullback_confirmed = row.get("pullbackReclaim") is True
+    breakout_confirmed = row.get("breakoutRetest") is True
+    if not (pullback_confirmed or breakout_confirmed):
+        return None
+
+    # Conservative momentum proxy must clear modeled round-trip fees, spread and slippage.
+    expected_move_proxy = (
+        max(m5, Decimal("0")) * Decimal("0.55")
+        + max(m15, Decimal("0")) * Decimal("0.30")
+        + max(m60, Decimal("0")) * Decimal("0.15")
+    )
+    estimated_cost = Decimal("0.30") + spread
+    net_edge_proxy = expected_move_proxy - estimated_cost
+    if net_edge_proxy < estimated_cost * Decimal("0.20"):
+        return None
+
+    score = (
+        25
+        + (20 if pullback_confirmed else 18)
+        + 20
+        + (15 if rvol >= Decimal("1.5") else 12)
+        + (10 if spread <= Decimal("0.12") else 8)
+        + (10 if stop <= Decimal("1.25") else 8)
+    )
+    if score < 85:
+        return None
+    setup = "PRECISION_PULLBACK" if pullback_confirmed else "PRECISION_BREAKOUT_RETEST"
+    return {
+        "decision": "PAPER_CANDIDATE", "side": "long",
+        "opportunityScore": score, "liveEntryScore": 0,
+        "liveEntryModel": "PAPER_ONLY_BLESSING_PRECISION_MOMENTUM",
+        "strategy": "BLESSING_PRECISION_MOMENTUM",
+        "strategySetup": setup, "marketRegime": "TREND",
+        "netEdgeProxyPct": float(net_edge_proxy),
+        "estimatedRoundTripCostPct": float(estimated_cost),
+        "btcMarketBias": str(row.get("btcMarketBias") or "neutral").lower(),
+    }
+
+
 def _crypto_three_strategy_decision(row: dict):
     """Long-only member Crypto Paper selector; short selling is intentionally disabled."""
     decision = _moderate_crypto_entry_metrics(row)
@@ -5959,6 +6042,22 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         return None
 
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
+    if market == "crypto":
+        # Stop opening NEW positions after the 3% realized, net-of-fees daily target.
+        # Existing positions remain untouched and continue to be managed by their own TP/SL.
+        daily_profit_target_pct = max(
+            0.10, min(5.00, float(strategy_config.get("crypto_daily_profit_target_pct", 3.0)))
+        )
+        daily_profit_target = float(portfolio.get("initial_capital") or 0) * daily_profit_target_pct / 100.0
+        if daily_profit_target > 0 and realized_today >= daily_profit_target:
+            DUAL_PAPER_WORKER_STATE["dailyProfitGuard"] = {
+                "market": "crypto", "status": "target_reached",
+                "realizedNetPnlToday": round(realized_today, 8),
+                "target": round(daily_profit_target, 8),
+                "targetPct": daily_profit_target_pct,
+                "newEntriesPaused": True,
+            }
+            return None
     if market == "stocks":
         stop_pct = 25.0
         target_pct = float(strategy_config.get("stocks_take_profit_pct", 20.0))
@@ -6118,7 +6217,7 @@ def _dual_paper_worker_cycle():
             DUAL_PAPER_WORKER_STATE["cryptoScanDiagnostics"]["btcMarketBias"] = btc_market_bias
             for row in (crypto_scan.get("candidates") or []):
                 row_context = {**row, "btcMarketBias": btc_market_bias}
-                decision = _crypto_three_strategy_decision(row_context)
+                decision = _blessing_precision_momentum_decision(row_context)
                 if decision:
                     crypto_candidates[row["symbol"]] = (row_context, decision)
         with UNIVERSE_LOCK:
@@ -6158,7 +6257,8 @@ def _dual_paper_worker_cycle():
             for portfolio in enabled_crypto_portfolios:
                 uid = str(portfolio["user_id"])
                 crypto_experiment = {"id":"AUTO-CRYPTO", "config":{"crypto_stop_loss_pct":1.5,
-                    "crypto_take_profit_pct":3,"max_notional_pct":100,"max_total_allocation_pct":100}}
+                    "crypto_take_profit_pct":3,"crypto_daily_profit_target_pct":3.0,
+                    "max_notional_pct":100,"max_total_allocation_pct":100}}
                 for symbol,(raw,decision) in ranked_crypto_candidates:
                     cooldown_key = uid + ":crypto:" + symbol
                     if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:

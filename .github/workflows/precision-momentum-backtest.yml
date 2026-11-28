@@ -1,0 +1,40 @@
+name: BLESSING 60-day Precision Momentum walk-forward backtest
+
+on:
+  push:
+    branches:
+      - paper-precision-momentum-guard
+    paths:
+      - "realtime/backtest_precision_momentum.py"
+      - "realtime/backtest_precision_walk_forward.py"
+      - ".github/workflows/precision-momentum-backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  historical-paper-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BACKTEST_DAYS: "60"
+      BACKTEST_SYMBOLS: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,LTCUSDT,AVAXUSDT"
+      FEE_SIDE_PCT: "0.10"
+      SLIPPAGE_SIDE_PCT: "0.05"
+      SPREAD_PROXY_PCT: "0.10"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Run 60-day chronological walk-forward Paper simulation
+        run: python realtime/backtest_precision_walk_forward.py
+      - name: Upload train/test summary and trades
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blessing-precision-walk-forward-60d
+          path: backtest-output/
+          if-no-files-found: warn
+          retention-days: 30

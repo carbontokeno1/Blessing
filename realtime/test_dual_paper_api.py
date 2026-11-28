@@ -151,7 +151,10 @@ class AutomaticStockEntryTests(unittest.TestCase):
             "cash_balance": 100.0,
             "initial_capital": 100.0,
         }
+        # Entry flow reads open positions, closed-today positions,
+        # all portfolios, then all open positions across portfolios.
         sb_rest.side_effect = [
+            [],
             [],
             [portfolio],
             [],
