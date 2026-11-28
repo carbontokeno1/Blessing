@@ -8340,3 +8340,132 @@ def th_stock_market_health():
             "configured": bool(SET_MARKET_DATA_API_KEY),
             "readOnly": True,
         }
+
+
+@app.get("/owner/crypto-strategy-report")
+def owner_crypto_strategy_report(request: Request, period: str = "30d"):
+    """Owner-only, read-only FAST vs Precision Crypto Paper dashboard."""
+    user = _binance_th_owner_auth(request)
+    uid = str(user.get("id") or "")
+    if uid != "62835b65-13eb-4d99-9647-c4b22bd61ef3":
+        raise HTTPException(status_code=403, detail="เฉพาะเจ้าของ BLESSING เท่านั้น")
+    if period not in ("24h", "7d", "30d", "all"):
+        raise HTTPException(status_code=400, detail="INVALID_REPORT_PERIOD")
+
+    portfolios = _sb_rest("blessing_dual_portfolios", {
+        "select":"id,strategy_key,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_open_positions,peak_equity,updated_at",
+        "user_id":"eq." + uid, "market":"eq.crypto", "mode":"eq.paper",
+        "order":"strategy_key.asc", "limit":"10"
+    }) or []
+    ids = [str(row["id"]) for row in portfolios]
+    if not ids:
+        return {"ok":True,"updatedAt":datetime.now(timezone.utc).isoformat(),
+                "period":period,"strategies":[],"totals":{},"series":[],"recentTrades":[]}
+
+    positions = _sb_rest("blessing_dual_positions", {
+        "select":"id,portfolio_id,symbol,side,quantity,entry_price,current_price,stop_loss_price,take_profit_price,entry_fee,exit_fee,unrealized_pnl,realized_pnl,status,opened_at,closed_at,close_reason",
+        "portfolio_id":"in.(" + ",".join(ids) + ")","user_id":"eq." + uid,
+        "market":"eq.crypto","order":"opened_at.desc","limit":"5000"
+    }) or []
+    orders = _sb_rest("blessing_dual_orders", {
+        "select":"id,portfolio_id,symbol,side,quantity,price,notional,fee,status,reason,realized_pnl,created_at",
+        "portfolio_id":"in.(" + ",".join(ids) + ")","user_id":"eq." + uid,
+        "market":"eq.crypto","order":"created_at.desc","limit":"5000"
+    }) or []
+
+    now = datetime.now(timezone.utc)
+    spans = {"24h":timedelta(hours=24),"7d":timedelta(days=7),"30d":timedelta(days=30)}
+    cutoff = now - spans[period] if period != "all" else None
+    portfolio_map = {str(p["id"]):p for p in portfolios}
+    strategies = []
+    combined_series = {}
+    recent_trades = []
+    totals = {"capital":0.0,"cash":0.0,"marketValue":0.0,"equity":0.0,
+              "netPnl":0.0,"realizedPnl":0.0,"unrealizedPnl":0.0,
+              "openPositions":0,"closedTrades":0,"feesPaid":0.0}
+
+    for key in ("FAST","PRECISION"):
+        portfolio = next((p for p in portfolios if str(p.get("strategy_key") or "PRECISION").upper() == key), None)
+        if not portfolio:
+            continue
+        pid = str(portfolio["id"])
+        own_positions = [p for p in positions if str(p.get("portfolio_id")) == pid]
+        own_orders = [o for o in orders if str(o.get("portfolio_id")) == pid]
+        opened = [p for p in own_positions if p.get("status") == "open"]
+        closed_all = [p for p in own_positions if p.get("status") == "closed" and p.get("closed_at")]
+        closed_period = []
+        for row in closed_all:
+            try:
+                closed_at = datetime.fromisoformat(str(row["closed_at"]).replace("Z","+00:00"))
+                if cutoff is None or closed_at >= cutoff:
+                    closed_period.append(row)
+            except Exception:
+                continue
+        market_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in opened)
+        cash = float(portfolio.get("cash_balance") or 0)
+        capital = float(portfolio.get("initial_capital") or 0)
+        equity = cash + market_value
+        net_pnl = equity - capital
+        realized = float(portfolio.get("realized_pnl") or 0)
+        unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in opened)
+        wins = [p for p in closed_period if float(p.get("realized_pnl") or 0) > 0]
+        losses = [p for p in closed_period if float(p.get("realized_pnl") or 0) < 0]
+        gross_profit = sum(float(p.get("realized_pnl") or 0) for p in wins)
+        gross_loss = abs(sum(float(p.get("realized_pnl") or 0) for p in losses))
+        daily = {}
+        for row in closed_period:
+            try:
+                day = datetime.fromisoformat(str(row["closed_at"]).replace("Z","+00:00")).astimezone(ZoneInfo("Asia/Bangkok")).date().isoformat()
+                daily[day] = daily.get(day, 0.0) + float(row.get("realized_pnl") or 0)
+            except Exception:
+                continue
+        cumulative = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        strategy_series = []
+        for day in sorted(daily):
+            cumulative += daily[day]
+            peak = max(peak, cumulative)
+            max_dd = max(max_dd, peak - cumulative)
+            strategy_series.append({"date":day,"realizedPnl":round(cumulative,8),
+                                    "dailyPnl":round(daily[day],8)})
+            combined_series.setdefault(day, {})[key] = round(cumulative,8)
+        strategy = {
+            "key":key,"portfolioId":pid,"enabled":bool(portfolio.get("enabled")),
+            "capital":round(capital,8),"cash":round(cash,8),
+            "marketValue":round(market_value,8),"equity":round(equity,8),
+            "netPnl":round(net_pnl,8),"returnPct":round(net_pnl/capital*100,4) if capital else 0,
+            "realizedPnl":round(realized,8),"unrealizedPnl":round(unrealized,8),
+            "feesPaid":round(float(portfolio.get("fees_paid") or 0),8),
+            "openPositions":len(opened),"closedTrades":len(closed_period),
+            "winRatePct":round(len(wins)/len(closed_period)*100,2) if closed_period else 0,
+            "profitFactor":round(gross_profit/gross_loss,4) if gross_loss else (None if not gross_profit else "infinite"),
+            "maxDrawdownRealized":round(max_dd,8),
+            "series":strategy_series,
+            "openPositionRows":opened,
+            "risk":{"reserveCashPct":float(portfolio.get("reserve_cash_pct") or 0),
+                    "riskPerTradePct":float(portfolio.get("risk_per_trade_pct") or 0),
+                    "maxDailyLossPct":float(portfolio.get("max_daily_loss_pct") or 0),
+                    "maxOpenPositions":int(portfolio.get("max_open_positions") or 0)}
+        }
+        strategies.append(strategy)
+        for field in ("capital","cash","marketValue","equity","netPnl","realizedPnl","unrealizedPnl","feesPaid"):
+            totals[field] += float(strategy[field if field != "feesPaid" else "feesPaid"])
+        totals["openPositions"] += len(opened)
+        totals["closedTrades"] += len(closed_period)
+        recent_trades.extend([{**o,"strategyKey":key} for o in own_orders])
+
+    recent_trades.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    dates = sorted(combined_series)
+    series = [{"date":day,
+               "fast":combined_series[day].get("FAST",0.0),
+               "precision":combined_series[day].get("PRECISION",0.0)}
+              for day in dates]
+    return {
+        "ok":True,"updatedAt":now.isoformat(),"period":period,
+        "currency":"USDT","strategies":strategies,"totals":totals,
+        "series":series,"recentTrades":recent_trades[:100],
+        "openPositions":[{"strategyKey":s["key"],**p} for s in strategies for p in s["openPositionRows"]],
+        "notes":{"chart":"กราฟแสดงกำไรสะสมจากรายการปิดสถานะในช่วงที่เลือก (Realized P/L); ตัวเลข Equity รวมมูลค่าสถานะเปิด",
+                 "execution":"Paper only; no live orders"}
+    }
