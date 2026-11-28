@@ -1645,6 +1645,13 @@ ALTCOIN_CACHE = {"at": 0.0, "payload": None}
 ALTCOIN_CACHE_LOCK = threading.Lock()
 ALTCOIN_EXCLUDED = {"USDC","FDUSD","TUSD","USDP","DAI","EUR","USDE","USTC","BUSD"}
 ALTCOIN_LEVERAGED_SUFFIXES = ("UP","DOWN","BULL","BEAR","3L","3S","5L","5S")
+# Broad discovery is deliberately wider than the order-eligible universe.
+# FAST Paper retains the original >=50k USDT 24h quote-volume entry floor.
+ALTCOIN_SCAN_MIN_QUOTE_VOLUME = max(1000.0, float(os.getenv("BLESSING_CRYPTO_SCAN_MIN_QUOTE_VOLUME", "10000")))
+ALTCOIN_ENTRY_MIN_QUOTE_VOLUME = max(50000.0, float(os.getenv("BLESSING_CRYPTO_ENTRY_MIN_QUOTE_VOLUME", "50000")))
+ALTCOIN_SCAN_MAX_PAIRS = max(100, min(1000, int(os.getenv("BLESSING_CRYPTO_SCAN_MAX_PAIRS", "600"))))
+ALTCOIN_SCAN_WORKERS = max(4, min(64, int(os.getenv("BLESSING_CRYPTO_SCAN_WORKERS", "32"))))
+ALTCOIN_DISCOVERY_LIMIT = max(400, min(2000, int(os.getenv("BLESSING_CRYPTO_DISCOVERY_LIMIT", "1000"))))
 
 
 def _bitmart_public_tickers():
@@ -1820,7 +1827,7 @@ def _binance_public_tickers():
             except Exception as exc:
                 discovered_symbols = []
                 log.warning("Binance TH dynamic universe discovery failed: %s", type(exc).__name__)
-            candidate_symbols = [x for x in discovered_symbols if x not in existing_symbols][:400]
+            candidate_symbols = [x for x in discovered_symbols if x not in existing_symbols][:ALTCOIN_DISCOVERY_LIMIT]
             diagnostics = {"http_403": 0, "http_429": 0, "http_other": 0,
                            "bad_payload": 0, "low_volume": 0, "bad_book_or_price": 0}
             def fetch_symbol_24h(pair):
@@ -1853,7 +1860,7 @@ def _binance_public_tickers():
                 quote_volume = _num(item.get("quoteVolume"), 0) or 0
                 bid = _num(item.get("bidPrice"), 0) or 0
                 ask = _num(item.get("askPrice"), 0) or 0
-                if quote_volume < 50000:
+                if quote_volume < ALTCOIN_SCAN_MIN_QUOTE_VOLUME:
                     return ("low_volume", None)
                 if symbol != pair or price <= 0 or open_price <= 0 or bid <= 0 or ask < bid:
                     return ("bad_book_or_price", None)
@@ -2055,6 +2062,9 @@ def _blessing_fast_momentum_decision(row: dict):
     if (price <= 0 or not symbol.endswith("USDT")
             or str(row.get("exchangeSymbol") or "").upper() != symbol
             or str(row.get("source") or "") != "Binance TH Spot API"):
+        return None
+    # Wider discovery never relaxes execution liquidity requirements.
+    if Decimal(str(row.get("quoteVolume24h") or "0")) < Decimal(str(ALTCOIN_ENTRY_MIN_QUOTE_VOLUME)):
         return None
     # Reuse the scanner's explicit FAST predicate, then independently recheck
     # its core inputs and execution-quality/risk boundaries at the Paper gate.
@@ -2447,7 +2457,7 @@ def _altcoin_scanner_run(refresh: int = 0):
         if price <= 0 or open_24h <= 0:
             reject["invalid_price"] += 1
             continue
-        if quote_volume < 50000:
+        if quote_volume < ALTCOIN_SCAN_MIN_QUOTE_VOLUME:
             reject["low_volume"] += 1
             continue
         change = (price / open_24h - 1) * 100
@@ -2464,14 +2474,14 @@ def _altcoin_scanner_run(refresh: int = 0):
         })
 
     eligible.sort(key=lambda x: x["quoteVolume24h"], reverse=True)
-    # Evaluate the 420 highest-volume eligible USDT pairs per scan; all eligible pairs are counted in scanned.
-    selected = eligible[:420]
+    # Evaluate a wider, configurable top-volume slice. Discovery remains broader than entry eligibility.
+    selected = eligible[:ALTCOIN_SCAN_MAX_PAIRS]
     candle_errors = 0
     candle_scan_started = time.monotonic()
     if provider == "Binance TH Spot API" and selected:
-        # Candle requests are I/O-bound; wider bounded concurrency prevents the
-        # 420-pair scan from blocking Paper worker heartbeats for several minutes.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=48) as pool:
+        # Candle requests are I/O-bound; bounded concurrency expands coverage while
+        # avoiding an unbounded request burst against the exchange API.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=ALTCOIN_SCAN_WORKERS) as pool:
             futures = {pool.submit(_binance_1m_klines, row["symbol"]): row for row in selected}
             for future in concurrent.futures.as_completed(futures):
                 row = futures[future]
@@ -2482,7 +2492,7 @@ def _altcoin_scanner_run(refresh: int = 0):
                     candle_errors += 1
                     row["candleError"] = type(candle_error).__name__
                     row["rejectReason"] = "CANDLE_DATA_UNAVAILABLE"
-        metrics_source = "Binance TH 1m closed candles; 420 highest-volume eligible USDT pairs"
+        metrics_source = f"Binance TH 1m closed candles; top {ALTCOIN_SCAN_MAX_PAIRS} by 24h quote volume; discovery floor {ALTCOIN_SCAN_MIN_QUOTE_VOLUME:.0f} USDT"
     else:
         metrics_source = provider + " ticker snapshot only; Paper entries disabled without Binance candles"
 
@@ -2551,7 +2561,8 @@ def _altcoin_scanner_run(refresh: int = 0):
         "metricsSource": metrics_source,
         "candidates": selected,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "coverage": provider + " Spot USDT pairs; all eligible pairs counted; top 420 by 24h quote volume evaluated; minimum 250,000 USDT",
+        "coverage": provider + f" Spot USDT pairs; all eligible pairs counted; top {ALTCOIN_SCAN_MAX_PAIRS} by 24h quote volume evaluated; discovery floor {ALTCOIN_SCAN_MIN_QUOTE_VOLUME:.0f} USDT; FAST entry floor {ALTCOIN_ENTRY_MIN_QUOTE_VOLUME:.0f} USDT",
+        "scanConfig": {"minQuoteVolumeUSDT": ALTCOIN_SCAN_MIN_QUOTE_VOLUME, "entryMinQuoteVolumeUSDT": ALTCOIN_ENTRY_MIN_QUOTE_VOLUME, "maxPairsEvaluated": ALTCOIN_SCAN_MAX_PAIRS, "workers": ALTCOIN_SCAN_WORKERS, "discoveryLimit": ALTCOIN_DISCOVERY_LIMIT},
         "metricsNote": (
             "BALANCED_EMA_PULLBACK_ATR remains the conservative live-entry gate. OPPORTUNITY_SCAN is a separate wider discovery/Paper signal requiring positive 5m/15m momentum, 1m momentum above -0.15%, RVOL >= 1.0, spread <= 0.35%, confirmation, and ATR stop 0.8-2.0%. Opportunity signals do not authorize live orders."
             if provider == "Binance TH Spot API" else
