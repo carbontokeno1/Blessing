@@ -41,7 +41,7 @@ class BlessingPrecisionMomentumTests(unittest.TestCase):
             "symbol": "ETHUSDT", "exchangeSymbol": "ETHUSDT",
             "source": "Binance TH Spot API", "price": 101.0,
             "ema20": 100.5, "ema50": 99.5,
-            "m1": 0.08, "m5": 0.32, "m15": 0.55,
+            "m1": 0.08, "m5": 0.55, "m15": 0.90,
             "rvol": 2.4, "spreadPct": 0.20, "atrStopPct": 1.1,
             "candleAgeSeconds": 15, "trendAligned": True,
             "breakoutRetest": True, "btcMarketBias": "neutral",
@@ -100,8 +100,9 @@ class BlessingPrecisionMomentumTests(unittest.TestCase):
         }
         # No open positions; today's realized net PnL is above the 3% target.
         sb_rest.side_effect = [
-            [],
-            [{"realized_pnl": 3.10}],
+            [],  # positions in this portfolio
+            [],  # combined open crypto positions
+            [{"realized_pnl": 3.10}],  # realized PnL today
         ]
         result = blessing_app._dual_try_adaptive_entry(
             {"id": "AUTO-CRYPTO", "config": {"crypto_daily_profit_target_pct": 3.0}},
