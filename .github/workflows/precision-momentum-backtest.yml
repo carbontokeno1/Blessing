@@ -15,7 +15,7 @@ permissions:
 jobs:
   historical-paper-backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40 # allow bounded historical pagination
     env:
       BACKTEST_DAYS: "14"
       BACKTEST_SYMBOLS: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,LTCUSDT,AVAXUSDT"
