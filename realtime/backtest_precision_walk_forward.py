@@ -34,22 +34,40 @@ def main():
                 bearish = bool(bf and (bf["m15"] < 0 or bf["m60"] < 0))
             btc_flags[bar["t"]] = bearish
 
+    # Build independent candidate streams. Test replay gets only an 80-bar
+    # pre-split warm-up window; no pre-split trade can occupy a test slot or
+    # cause the per-symbol simulator to skip a post-split signal.
+    first_test_index = {
+        symbol: next((i for i, bar in enumerate(bars) if bar["t"] >= split), len(bars))
+        for symbol, bars in data.items()
+    }
     results, all_trades = {}, {}
     for mode in ("adaptive_baseline", "precision", "precision_selective"):
-        candidates = []
+        train_candidates, test_candidates = [], []
         for symbol, bars in data.items():
-            candidates.extend(bt.simulate(symbol, bars, btc_flags, mode))
-        # Training candidates must also close before the boundary. Test entries
-        # begin at the boundary; indicator history is naturally prior-only.
-        train = [t for t in candidates if t["entry_time"] < split and t["exit_time"] <= split]
-        test = [t for t in candidates if t["entry_time"] >= split]
+            full_stream = bt.simulate(symbol, bars, btc_flags, mode)
+            train_candidates.extend(
+                t for t in full_stream
+                if t["entry_time"] < split and t["exit_time"] <= split
+            )
+            cut = first_test_index[symbol]
+            warm_start = max(0, cut - 80)
+            test_bars = bars[warm_start:]
+            test_stream = bt.simulate(symbol, test_bars, btc_flags, mode)
+            test_candidates.extend(t for t in test_stream if t["entry_time"] >= split)
+
+        train_replay = bt.portfolio_simulate(train_candidates)
+        test_replay = bt.portfolio_simulate(test_candidates)
         results[mode] = {
-            "train": {k:v for k,v in bt.portfolio_simulate(train).items() if k not in ("daily","closed_positions")},
-            "test_out_of_sample": {k:v for k,v in bt.portfolio_simulate(test).items() if k not in ("daily","closed_positions")},
-            "candidate_signals_train": len(train),
-            "candidate_signals_test": len(test)
+            "train": {k:v for k,v in train_replay.items() if k not in ("daily","closed_positions")},
+            "test_out_of_sample": {k:v for k,v in test_replay.items() if k not in ("daily","closed_positions")},
+            "candidate_signals_train": len(train_candidates),
+            "candidate_signals_test": len(test_candidates)
         }
-        all_trades[mode] = [("train", t) for t in bt.portfolio_simulate(train)["closed_positions"]] + [("test_out_of_sample", t) for t in bt.portfolio_simulate(test)["closed_positions"]]
+        all_trades[mode] = (
+            [("train", t) for t in train_replay["closed_positions"]]
+            + [("test_out_of_sample", t) for t in test_replay["closed_positions"]]
+        )
 
     os.makedirs("backtest-output", exist_ok=True)
     summary = {
@@ -66,7 +84,7 @@ def main():
             "position_sizing": "0.5% equity risk per trade, max 3 positions, 20% reserve",
             "daily_guards": "2% realized loss stop; 3% realized profit pause",
             "capital": "100,000 THB-equivalent units; simulated percentage returns, not a live forecast",
-            "method": "signals computed chronologically from prior candles; train trades crossing split excluded; test uses second half only",
+            "method": "independent train/test portfolio replays; test starts with 80 pre-split candles for indicator warm-up only; no train positions or per-symbol trade-skip state carry into test",
             "limitations": "feature approximation, not tick-level execution; spread is a fixed proxy; results are not a live forecast"
         },
         "results": results
