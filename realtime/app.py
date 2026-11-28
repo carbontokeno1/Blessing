@@ -3951,6 +3951,16 @@ def admin_member_portfolios_report(request: Request):
         "refreshIntervalSeconds": 10, "liveTradingEnabled": False,
         "totals": totals, "portfolios": reports,
         "dualPaperPortfolios": dual_reports, "dualPaperTotals": dual_totals,
+        "cryptoPaperStrategy": {
+            "name": "BLESSING_FAST_MOMENTUM",
+            "workerStatus": DUAL_PAPER_WORKER_STATE.get("status"),
+            "lastCycleAt": DUAL_PAPER_WORKER_STATE.get("lastCycleAt"),
+            "lastError": DUAL_PAPER_WORKER_STATE.get("lastError"),
+            "entriesOpenedLastCycle": DUAL_PAPER_WORKER_STATE.get("entriesOpened", 0),
+            "cryptoCandidates": DUAL_PAPER_WORKER_STATE.get("cryptoCandidates", 0),
+            "scan": dict(DUAL_PAPER_WORKER_STATE.get("cryptoScanDiagnostics") or {}),
+            "liveTradingEnabled": False,
+        },
         "dataNote": "Paper equity uses saved cash plus current position values. Live portfolios are locked and do not show allocated plans as real balances.",
     }
 
@@ -6249,6 +6259,7 @@ def _dual_paper_worker_cycle():
             "updatedAt": crypto_scan.get("updatedAt"), "ageSeconds": round(crypto_age, 1),
             "evaluated": int(crypto_scan.get("evaluated") or 0),
             "paperStrategyCandidateCount": int(crypto_scan.get("paperStrategyCandidateCount") or 0),
+            "fastEntryCount": int(crypto_scan.get("fastEntryCount") or 0),
             "opportunityEntryCount": int(crypto_scan.get("opportunityEntryCount") or 0),
             "signalDiagnostics": crypto_scan.get("signalDiagnostics") or {},
             "paperStrategyCounts": crypto_scan.get("paperStrategyCounts") or {},
@@ -6270,6 +6281,7 @@ def _dual_paper_worker_cycle():
                 decision = _blessing_fast_momentum_decision(row_context)
                 if decision:
                     crypto_candidates[row["symbol"]] = (row_context, decision)
+            DUAL_PAPER_WORKER_STATE["cryptoScanDiagnostics"]["fastCandidateCount"] = len(crypto_candidates)
         with UNIVERSE_LOCK:
             stock_scan = dict(UNIVERSE_STATE)
         try:
