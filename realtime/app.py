@@ -5530,24 +5530,42 @@ def paper_trading_report(market: str, request: Request, period: str = "30d"):
         raise HTTPException(status_code=400, detail="INVALID_REPORT_PERIOD")
 
     prefix = "paper_bot" if market_key == "crypto" else "stock_paper"
-    settings_rows = _sb_rest(prefix + "_settings", {
-        "select":"enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,updated_at",
-        "user_id":"eq." + uid, "limit":"1"
-    })
+    # These four independent Supabase reads used to run one after another.
+    # Fetch them concurrently so report latency is close to the slowest query,
+    # rather than the sum of all four network round trips.
+    report_started = time.perf_counter()
     account_select = ("starting_balance,cash_balance,realized_pnl,fees_paid,status,starting_balance_thb,initial_fx_rate"
                       if market_key == "crypto" else
                       "starting_balance,cash_balance,realized_pnl,fees_paid,status")
-    account_rows = _sb_rest(prefix + "_accounts", {
-        "select":account_select, "user_id":"eq." + uid, "limit":"1"
-    })
-    positions = _sb_rest(prefix + "_positions", {
-        "select":"id,symbol,position_side,quantity,entry_price,current_price,entry_fee,exit_fee,realized_pnl,unrealized_pnl,status,opened_at,closed_at,close_reason,signal_score",
-        "user_id":"eq." + uid, "order":"opened_at.desc", "limit":"1000"
-    })
-    orders = _sb_rest(prefix + "_orders", {
-        "select":"id,position_id,symbol,side,quantity,price,notional,fee,status,reason,realized_pnl,created_at",
-        "user_id":"eq." + uid, "order":"created_at.desc", "limit":"1000"
-    })
+    report_queries = {
+        "settings": (prefix + "_settings", {
+            "select":"enabled,mode,starting_balance,order_budget,max_open_positions,take_profit_pct,stop_loss_pct,daily_loss_limit_pct,updated_at",
+            "user_id":"eq." + uid, "limit":"1"
+        }),
+        "accounts": (prefix + "_accounts", {
+            "select":account_select, "user_id":"eq." + uid, "limit":"1"
+        }),
+        "positions": (prefix + "_positions", {
+            "select":"id,symbol,position_side,quantity,entry_price,current_price,entry_fee,exit_fee,realized_pnl,unrealized_pnl,status,opened_at,closed_at,close_reason,signal_score",
+            "user_id":"eq." + uid, "order":"opened_at.desc", "limit":"1000"
+        }),
+        "orders": (prefix + "_orders", {
+            "select":"id,position_id,symbol,side,quantity,price,notional,fee,status,reason,realized_pnl,created_at",
+            "user_id":"eq." + uid, "order":"created_at.desc", "limit":"1000"
+        }),
+    }
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as report_pool:
+        report_futures = {
+            key: report_pool.submit(_sb_rest, table, params)
+            for key, (table, params) in report_queries.items()
+        }
+        settings_rows = report_futures["settings"].result()
+        account_rows = report_futures["accounts"].result()
+        positions = report_futures["positions"].result()
+        orders = report_futures["orders"].result()
+    log.info("Paper report reads complete market=%s elapsed_ms=%d rows=%d",
+             market_key, int((time.perf_counter()-report_started)*1000),
+             len(positions or []) + len(orders or []))
     positions = positions or []
     orders = orders or []
     account = account_rows[0] if account_rows else {}
