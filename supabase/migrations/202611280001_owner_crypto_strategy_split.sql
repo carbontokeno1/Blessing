@@ -1,7 +1,8 @@
 -- Split the BLESSING owner's existing Crypto Paper portfolio into two isolated strategy portfolios.
 -- The FAST portfolio is created disabled; enable it only after the backend understands strategy_key.
 ALTER TABLE public.blessing_dual_portfolios
-  ADD COLUMN IF NOT EXISTS strategy_key text NOT NULL DEFAULT 'PRECISION';
+  ADD COLUMN IF NOT EXISTS strategy_key text NOT NULL DEFAULT 'PRECISION',
+  ADD COLUMN IF NOT EXISTS strategy_started_at timestamptz NOT NULL DEFAULT now();
 
 DO $$
 BEGIN
@@ -48,10 +49,13 @@ BEGIN
       AND strategy_key = 'FAST'
   ) THEN
     UPDATE public.blessing_dual_portfolios
-    SET initial_capital = v_portfolio.initial_capital / 2,
+    SET initial_capital = v_portfolio.cash_balance / 2,
         cash_balance = v_portfolio.cash_balance / 2,
-        peak_equity = COALESCE(v_portfolio.peak_equity, v_portfolio.initial_capital) / 2,
+        realized_pnl = 0,
+        fees_paid = 0,
+        peak_equity = v_portfolio.cash_balance / 2,
         strategy_key = 'PRECISION',
+        strategy_started_at = now(),
         updated_at = now()
     WHERE id = v_portfolio.id;
 
@@ -62,10 +66,10 @@ BEGIN
       max_drawdown_pct, max_open_positions, peak_equity, strategy_key
     ) VALUES (
       v_owner, 'crypto', 'binance_th', 'USDT',
-      v_portfolio.initial_capital / 2, v_portfolio.cash_balance / 2,
+      v_portfolio.cash_balance / 2, v_portfolio.cash_balance / 2,
       0, 0, 'paper', false, 20,
       0.5, 2, 6, 5, 3,
-      COALESCE(v_portfolio.peak_equity, v_portfolio.initial_capital) / 2,
+      v_portfolio.cash_balance / 2,
       'FAST'
     );
   END IF;
