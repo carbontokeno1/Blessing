@@ -52,7 +52,6 @@ class BlessingPrecisionMomentumTests(unittest.TestCase):
         self.row["source"] = "OKX"
         self.assertIsNone(blessing_app._blessing_precision_momentum_decision(self.row))
 
-
     @patch.object(blessing_app, "_dual_market_price", return_value=101.0)
     @patch.object(blessing_app, "_dual_rpc_order")
     @patch.object(blessing_app, "_sb_rest")
@@ -67,13 +66,13 @@ class BlessingPrecisionMomentumTests(unittest.TestCase):
             "risk_per_trade_pct": 0.5,
             "max_open_positions": 3,
         }
-        # No open positions; today's realized PnL is already above the 0.5% target.
+        # No open positions; today's realized net PnL is above the 3% target.
         sb_rest.side_effect = [
             [],
-            [{"realized_pnl": 0.60}],
+            [{"realized_pnl": 3.10}],
         ]
         result = blessing_app._dual_try_adaptive_entry(
-            {"id": "AUTO-CRYPTO", "config": {"crypto_daily_profit_target_pct": 0.5}},
+            {"id": "AUTO-CRYPTO", "config": {"crypto_daily_profit_target_pct": 3.0}},
             portfolio, {"symbol": "ETHUSDT", "atrStopPct": 1.0}, "crypto"
         )
         self.assertIsNone(result)
