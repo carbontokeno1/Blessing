@@ -6043,7 +6043,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
 
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
     if market == "crypto":
-        # Stop opening NEW positions after a modest realized, net-of-fees daily target.
+        # Stop opening NEW positions after the 3% realized, net-of-fees daily target.
         # Existing positions remain untouched and continue to be managed by their own TP/SL.
         daily_profit_target_pct = max(
             0.10, min(5.00, float(strategy_config.get("crypto_daily_profit_target_pct", 3.0)))
