@@ -119,7 +119,7 @@ def simulate(symbol, bars, btc_flags, mode):
             b=bars[min(j,len(bars)-1)]
             exit_price=b["c"]*(1-SLIPPAGE_SIDE_PCT/100); exit_time=b["ct"]
         gross=(exit_price/entry-1)*100
-        net=gross-2*FEE_SIDE_PCT
+        net=gross-2*FEE_SIDE_PCT-SPREAD_PROXY_PCT
         trades.append({"symbol":symbol,"entry_time":entry_bar["t"],"exit_time":exit_time,"entry_price":entry,"gross_pct":gross,"net_pct":net,"stop_pct":stop_pct,"reason":reason})
         i=max(i+1,j+1)
     return trades
@@ -151,7 +151,7 @@ def portfolio_simulate(candidates, initial_capital=100000.0):
         if d["pnl"]<=-d["start_equity"]*daily_loss_pct/100 or d["pnl"]>=d["start_equity"]*daily_target_pct/100:
             halted.add(day); continue
         if len(opened)>=max_positions: continue
-        stop_loss_pct=t["stop_pct"]+2*(FEE_SIDE_PCT+SLIPPAGE_SIDE_PCT)
+        stop_loss_pct=t["stop_pct"]+2*(FEE_SIDE_PCT+SLIPPAGE_SIDE_PCT)+SPREAD_PROXY_PCT
         if stop_loss_pct<=0: continue
         risk_cash=equity*risk_pct/100
         notional=min(risk_cash/(stop_loss_pct/100),equity*(1-reserve_pct/100)-invested)
