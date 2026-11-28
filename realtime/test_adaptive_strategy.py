@@ -10,7 +10,10 @@ class AdaptiveStrategyTests(unittest.TestCase):
             "m1": 0.2, "m5": 0.8, "m15": 1.2, "m60": 2.1,
             "rvol": 2.0, "spreadPct": 0.1, "breakout": True,
         })
-        self.assertEqual(result["regime"], "uptrend_breakout")
+        # Regime labels distinguish direction; breakout confirmation is
+        # represented by strategy + allowEntry rather than a separate regime.
+        self.assertEqual(result["regime"], "uptrend")
+        self.assertEqual(result["strategy"], "trend_momentum")
         self.assertTrue(result["allowEntry"])
 
     def test_downtrend_and_high_volatility_block_entries(self):
@@ -21,13 +24,12 @@ class AdaptiveStrategyTests(unittest.TestCase):
 
     def test_cost_filter_can_reject_otherwise_good_signal(self):
         result = adaptive_decision("stocks", {
-            "symbol": "AAPL", "m1": .01, "m5": .02, "rvol": 2,
+            "symbol": "AAPL", "m1": .01, "m5": .02, "m15": .03, "rvol": 2,
             "spreadPct": .2, "breakout": True,
         }, fee_bps=20, slippage_bps=20)
         self.assertFalse(result["costFilterPassed"])
         self.assertEqual(result["decision"], "PAPER_WATCH")
         self.assertFalse(result["entryAllowed"])
-
 
     def test_binance_th_history_requires_live_horizons_and_calculates_rvol(self):
         now = 2_000_000.0
@@ -35,7 +37,6 @@ class AdaptiveStrategyTests(unittest.TestCase):
         for second in range(3601):
             stamp = now - 3600 + second
             price = 100 * (1 + second * 0.00001)
-            # Baseline cumulative volume increases at 1.7 units/second; last minute doubles.
             volume = 300000 + second * 1.7 + max(0, second - 3540) * 1.7
             history.append((stamp, price, volume, price * 0.999, price * 1.001))
         candidates = build_binance_th_candidates({"BTCUSDT": history}, now=now)
@@ -47,12 +48,12 @@ class AdaptiveStrategyTests(unittest.TestCase):
 
     def test_cross_market_opportunity_score_rewards_stronger_net_edge(self):
         crypto = adaptive_decision("crypto", {
-            "symbol": "BTCUSDT", "m1": .25, "m5": .80, "m15": .5, "m60": .4,
+            "symbol": "BTCUSDT", "m1": .25, "m5": .80, "m15": .5,
             "rvol": 3.0, "spreadPct": .05, "breakout": True,
         }, fee_bps=10, slippage_bps=5)
         stock = adaptive_decision("stocks", {
-            "symbol": "AAPL", "m1": .20, "m5": .40, "rvol": 2.0,
-            "spreadPct": .08, "breakout": True,
+            "symbol": "AAPL", "m1": .20, "m5": .40, "m15": .30,
+            "rvol": 2.0, "spreadPct": .08, "breakout": True,
         }, fee_bps=10, slippage_bps=5)
         self.assertEqual(crypto["decision"], "PAPER_CANDIDATE")
         self.assertEqual(stock["decision"], "PAPER_CANDIDATE")
