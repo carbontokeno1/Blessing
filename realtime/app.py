@@ -2037,6 +2037,55 @@ def _moderate_crypto_entry_metrics(row: dict):
 
 
 
+def _blessing_fast_momentum_decision(row: dict):
+    """Fast momentum/breakout selector for the isolated Crypto Paper worker only."""
+    try:
+        price = Decimal(str(row.get("price") or row.get("lastPrice") or "0"))
+        m1 = Decimal(str(row.get("m1") if row.get("m1") is not None else "-999"))
+        m5 = Decimal(str(row.get("m5") if row.get("m5") is not None else "-999"))
+        rvol = Decimal(str(row.get("rvol") if row.get("rvol") is not None else "0"))
+        spread = Decimal(str(row.get("spreadPct") if row.get("spreadPct") is not None else "999"))
+        stop = Decimal(str(row.get("atrStopPct") if row.get("atrStopPct") is not None else "0"))
+        candle_age = Decimal(str(row.get("candleAgeSeconds") if row.get("candleAgeSeconds") is not None else "999999"))
+        score = int(row.get("score") or 0)
+    except Exception:
+        return None
+
+    symbol = str(row.get("symbol") or "").upper()
+    if (price <= 0 or not symbol.endswith("USDT")
+            or str(row.get("exchangeSymbol") or "").upper() != symbol
+            or str(row.get("source") or "") != "Binance TH Spot API"):
+        return None
+    # Reuse the scanner's explicit FAST predicate, then independently recheck
+    # its core inputs and execution-quality/risk boundaries at the Paper gate.
+    if row.get("fastEntry") is not True or row.get("breakout") is not True:
+        return None
+    if not (m1 > 0 and m5 > 0 and rvol >= Decimal("2")):
+        return None
+    if not (Decimal("0") < spread <= Decimal("0.50")):
+        return None
+    if not (Decimal("0.8") <= stop <= Decimal("2.0")):
+        return None
+    if candle_age > Decimal("90"):
+        return None
+
+    return {
+        "decision": "PAPER_CANDIDATE",
+        "side": "long",
+        "opportunityScore": max(60, min(100, score)),
+        "liveEntryScore": 0,
+        "liveEntryModel": "PAPER_ONLY_BLESSING_FAST_MOMENTUM",
+        "strategy": "BLESSING_FAST_MOMENTUM",
+        "strategySetup": "VOLUME_BREAKOUT",
+        "marketRegime": "FAST_MOMENTUM",
+        "netEdgeProxyPct": None,
+        "estimatedRoundTripCostPct": None,
+        "fastMomentumPct": float(m5),
+        "relativeVolume": float(rvol),
+        "breakoutConfirmed": True,
+    }
+
+
 def _blessing_precision_momentum_decision(row: dict):
     """Strict long-only selector for the isolated Dual Crypto Paper engine."""
     try:
@@ -3902,6 +3951,16 @@ def admin_member_portfolios_report(request: Request):
         "refreshIntervalSeconds": 10, "liveTradingEnabled": False,
         "totals": totals, "portfolios": reports,
         "dualPaperPortfolios": dual_reports, "dualPaperTotals": dual_totals,
+        "cryptoPaperStrategy": {
+            "name": "BLESSING_FAST_MOMENTUM",
+            "workerStatus": DUAL_PAPER_WORKER_STATE.get("status"),
+            "lastCycleAt": DUAL_PAPER_WORKER_STATE.get("lastCycleAt"),
+            "lastError": DUAL_PAPER_WORKER_STATE.get("lastError"),
+            "entriesOpenedLastCycle": DUAL_PAPER_WORKER_STATE.get("entriesOpened", 0),
+            "cryptoCandidates": DUAL_PAPER_WORKER_STATE.get("cryptoCandidates", 0),
+            "scan": dict(DUAL_PAPER_WORKER_STATE.get("cryptoScanDiagnostics") or {}),
+            "liveTradingEnabled": False,
+        },
         "dataNote": "Paper equity uses saved cash plus current position values. Live portfolios are locked and do not show allocated plans as real balances.",
     }
 
@@ -6122,7 +6181,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         "p_user_id":user_id,"p_market":market,"p_symbol":symbol,"p_side":order_side,
         "p_quantity":quantity,"p_price":fill_price,"p_stop_loss_price":stop_price,
         "p_take_profit_price":target_price,"p_position_id":None,
-        "p_idempotency_key":"ADAPT14-"+str(experiment["id"])[:8]+"-"+market+"-"+symbol+"-"+direction+"-"+str(int(time.time()//60))
+        "p_idempotency_key":("FASTPAPER-" if market == "crypto" else "ADAPT14-")+str(experiment["id"])[:8]+"-"+market+"-"+symbol+"-"+direction+"-"+str(int(time.time()//60))
     })
     DUAL_PAPER_WORKER_STATE.setdefault("actions",[]).append({
         "at":datetime.now(timezone.utc).isoformat(),"action":order_side,"direction":direction,
@@ -6196,10 +6255,11 @@ def _dual_paper_worker_cycle():
             and 0 <= crypto_age <= 90
         )
         DUAL_PAPER_WORKER_STATE["cryptoScanDiagnostics"] = {
-            "status": crypto_scan.get("status"), "provider": crypto_scan.get("provider"),
+            "strategy": "BLESSING_FAST_MOMENTUM", "status": crypto_scan.get("status"), "provider": crypto_scan.get("provider"),
             "updatedAt": crypto_scan.get("updatedAt"), "ageSeconds": round(crypto_age, 1),
             "evaluated": int(crypto_scan.get("evaluated") or 0),
             "paperStrategyCandidateCount": int(crypto_scan.get("paperStrategyCandidateCount") or 0),
+            "fastEntryCount": int(crypto_scan.get("fastEntryCount") or 0),
             "opportunityEntryCount": int(crypto_scan.get("opportunityEntryCount") or 0),
             "signalDiagnostics": crypto_scan.get("signalDiagnostics") or {},
             "paperStrategyCounts": crypto_scan.get("paperStrategyCounts") or {},
@@ -6218,9 +6278,10 @@ def _dual_paper_worker_cycle():
             DUAL_PAPER_WORKER_STATE["cryptoScanDiagnostics"]["btcMarketBias"] = btc_market_bias
             for row in (crypto_scan.get("candidates") or []):
                 row_context = {**row, "btcMarketBias": btc_market_bias}
-                decision = _blessing_precision_momentum_decision(row_context)
+                decision = _blessing_fast_momentum_decision(row_context)
                 if decision:
                     crypto_candidates[row["symbol"]] = (row_context, decision)
+            DUAL_PAPER_WORKER_STATE["cryptoScanDiagnostics"]["fastCandidateCount"] = len(crypto_candidates)
         with UNIVERSE_LOCK:
             stock_scan = dict(UNIVERSE_STATE)
         try:

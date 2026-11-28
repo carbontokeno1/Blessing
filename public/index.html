@@ -1938,6 +1938,7 @@ if(recoveryMode){showRecoveryForm()}else{await enter(session)}
 #ownerCenterIntegrated .centerSplit{display:grid;grid-template-columns:1.1fr .9fr;gap:12px}
 #ownerCenterIntegrated .centerPanel{background:#0b1425;border:1px solid #2b3a55;border-radius:13px;padding:13px;min-width:0}
 #ownerCenterIntegrated .centerPanel h3{margin:0 0 10px;color:var(--gold)}
+#ownerCenterIntegrated .fastGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin:10px 0}#ownerCenterIntegrated .fastMetric{background:#0a1221;border:1px solid #263750;border-radius:10px;padding:10px;min-width:0}#ownerCenterIntegrated .fastMetric small{display:block;color:var(--muted);font-size:11px}#ownerCenterIntegrated .fastMetric b{display:block;font-size:17px;margin-top:4px;overflow-wrap:anywhere}#ownerCenterIntegrated .fastChart{width:100%;height:170px;display:block}#ownerCenterIntegrated .fastTable{overflow:auto}#ownerCenterIntegrated .fastTable table{min-width:640px}
 #ownerCenterIntegrated .activityList{display:grid;gap:7px;max-height:230px;overflow:auto}
 #ownerCenterIntegrated .activityItem{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #26334d;font-size:12px}
 #ownerCenterIntegrated .activityItem:last-child{border:0}
@@ -1974,6 +1975,10 @@ if(recoveryMode){showRecoveryForm()}else{await enter(session)}
   <div class="centerPanel"><h3>รายละเอียดแยก Paper / Live</h3><div id="centerBreakdown" class="muted">กำลังโหลด...</div></div>
   <div class="centerPanel"><h3>กิจกรรม / Log ล่าสุด</h3><div id="centerActivity" class="activityList"><div class="muted">กำลังโหลด...</div></div><div id="centerUpdated" class="syncLine">เวลาอัปเดต: —</div></div>
  </div>
+ <section id="fastCryptoPerformance" class="centerPanel" style="margin-top:12px">
+  <h3>FAST · CRYPTO PAPER PERFORMANCE</h3>
+  <div class="muted">กำลังโหลดข้อมูลพอร์ตและสัญญาณ FAST จากระบบจริง...</div>
+ </section>
  <div class="syncLine">หมายเหตุ: LIVE เป็น Standby เท่านั้น ไม่มี Equity / P&L จริงให้แสดงจนกว่าจะเชื่อมบัญชีและเปิดใช้ระบบ Live อย่างเป็นทางการ</div>
 </section>
 <div class="card" id="tradingControls" style="display:none"><div class="memberHead"><div><h2>สมาชิก 5 คน · พอร์ต 20 รายการ</h2><div class="muted">สมาชิก 01–05 · คนละ 4 พอร์ต · แสดงสถานะและข้อมูลรายพอร์ตเพียงชุดเดียว</div></div><span class="tag">SUPER ADMIN ONLY</span></div><div class="muted">LIVE เป็น Standby เท่านั้น สวิตช์นี้ไม่ส่งคำสั่งซื้อขายเงินจริง</div><div id="tradingMembers" class="tradeGrid"></div></div>
@@ -2006,6 +2011,45 @@ async function adminApi(path,method='GET',body){
 }
 function money(v,c='THB'){return Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c}
 function stamp(v){if(!v)return '—';try{return new Date(v).toLocaleString('th-TH',{dateStyle:'short',timeStyle:'medium'})}catch{return String(v)}}
+function renderFastCryptoPaper(report){
+ const host=$('fastCryptoPerformance');if(!host)return;
+ const meta=report.cryptoPaperStrategy||{},scan=meta.scan||{};
+ const accounts=(report.dualPaperPortfolios||[]).filter(x=>x.market==='crypto');
+ host.replaceChildren();
+ const title=document.createElement('h3');title.textContent='FAST · CRYPTO PAPER PERFORMANCE';host.append(title);
+ const status=document.createElement('div');status.className='muted';
+ const worker=String(meta.workerStatus||'unknown').toUpperCase();
+ status.textContent='Strategy '+(meta.name||'BLESSING_FAST_MOMENTUM')+' · Worker '+worker+' · Scanner '+(scan.fresh?'FRESH':'WAITING / STALE')+' · Binance TH · Paper only · Last cycle '+stamp(meta.lastCycleAt);
+ host.append(status);
+ const diag=document.createElement('div');diag.className='muted';
+ diag.textContent='สัญญาณ FAST: m1 และ m5 เป็นบวก · RVOL ≥ 2 · ทะลุกรอบราคา · Spread ≤ 0.50% · ATR stop 0.8–2.0% · แท่งราคาไม่เกิน 90 วินาที · ผู้สมัคร '+Number(scan.fastCandidateCount||0)+' / '+Number(scan.evaluated||0)+' คู่ · เปิดรายการรอบล่าสุด '+Number(meta.entriesOpenedLastCycle||0);
+ host.append(diag);
+ if(meta.lastError){const err=document.createElement('div');err.className='status';err.textContent='Worker error: '+meta.lastError;host.append(err)}
+ if(!accounts.length){const empty=document.createElement('div');empty.className='status';empty.textContent='ยังไม่พบ Crypto Dual Paper portfolio ในรายงาน';host.append(empty);return}
+ for(const account of accounts){
+  const cur=account.currency||'USDT',grid=document.createElement('div');grid.className='fastGrid';
+  const metrics=[['Equity',money(account.equity,cur)],['Net P/L (สะสม)',(Number(account.netPnl||0)>=0?'+':'')+money(account.netPnl,cur)],['Realized',money(account.realizedPnl,cur)],['Unrealized',money(account.unrealizedPnl,cur)],['Fees',money(account.fees,cur)],['Open Positions',String(account.openPositions||0)]];
+  for(const [label,value] of metrics){const box=document.createElement('div');box.className='fastMetric';const sm=document.createElement('small');sm.textContent=label;const b=document.createElement('b');b.textContent=value;box.append(sm,b);grid.append(box)}
+  host.append(grid);
+  const note=document.createElement('div');note.className='muted';note.textContent=(account.memberLabel||'Crypto Paper account')+' · '+(account.enabled?'Portfolio enabled':'Portfolio paused')+' · ยอด P/L สะสมรวมรายการก่อนเปลี่ยนมา FAST ด้วย ไม่ใช่ผล FAST ล้วน';host.append(note);
+  const chart=document.createElementNS('http://www.w3.org/2000/svg','svg');chart.setAttribute('viewBox','0 0 640 170');chart.setAttribute('class','fastChart');chart.setAttribute('role','img');chart.setAttribute('aria-label','Crypto Paper equity history');
+  const series=Array.isArray(account.performanceSeries)?account.performanceSeries:[];
+  if(series.length>1){
+   const vals=series.map(x=>Number(x.equity)||0),min=Math.min(...vals),max=Math.max(...vals),span=Math.max(0.000001,max-min);
+   const pts=vals.map((v,i)=>{const x=18+i*(604/Math.max(1,vals.length-1));const y=145-((v-min)/span)*118;return x.toFixed(1)+','+y.toFixed(1)}).join(' ');
+   const axis=document.createElementNS(chart.namespaceURI,'line');axis.setAttribute('x1','18');axis.setAttribute('x2','622');axis.setAttribute('y1','145');axis.setAttribute('y2','145');axis.setAttribute('stroke','#52637c');chart.append(axis);
+   const poly=document.createElementNS(chart.namespaceURI,'polyline');poly.setAttribute('points',pts);poly.setAttribute('fill','none');poly.setAttribute('stroke','#f4b942');poly.setAttribute('stroke-width','3');poly.setAttribute('stroke-linecap','round');poly.setAttribute('stroke-linejoin','round');chart.append(poly);
+   const label=document.createElementNS(chart.namespaceURI,'text');label.setAttribute('x','18');label.setAttribute('y','15');label.setAttribute('fill','#91a4be');label.setAttribute('font-size','11');label.textContent='Equity history · '+fmt(min,2)+' – '+fmt(max,2)+' '+cur;chart.append(label);
+  }else{const empty=document.createElementNS(chart.namespaceURI,'text');empty.setAttribute('x','18');empty.setAttribute('y','85');empty.setAttribute('fill','#91a4be');empty.setAttribute('font-size','13');empty.textContent='ยังไม่มีข้อมูลกราฟเพียงพอ';chart.append(empty)}
+  host.append(chart);
+  const tableWrap=document.createElement('div');tableWrap.className='fastTable';
+  const table=document.createElement('table');table.innerHTML='<thead><tr><th>เวลา</th><th>เหรียญ</th><th>Side</th><th>ราคา</th><th>Fee</th><th>Realized P/L</th><th>เหตุผล</th></tr></thead>';
+  const tbody=document.createElement('tbody');
+  for(const order of (account.recentOrders||[]).slice(0,8)){const tr=document.createElement('tr');const vals=[stamp(order.createdAt),order.symbol||'—',String(order.side||'—').toUpperCase(),fmt(order.price,6),fmt(order.fee,4),order.realizedPnl==null?'—':fmt(order.realizedPnl,4),order.reason||'—'];for(const v of vals){const td=document.createElement('td');td.textContent=String(v);tr.append(td)}tbody.append(tr)}
+  if(!tbody.children.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=7;td.textContent='ยังไม่มีรายการซื้อขาย';tr.append(td);tbody.append(tr)}
+  table.append(tbody);tableWrap.append(table);host.append(tableWrap);
+ }
+}
 function renderCenter(report,rows){
  const paper=rows.filter(x=>x.mode==='paper'),live=rows.filter(x=>x.mode==='live');
  const paperOn=paper.filter(x=>x.enabled).length,liveReady=live.filter(x=>x.live_ready).length,liveOff=live.length-liveReady,paperOff=paper.length-paperOn,totalOff=paperOff+liveOff;
@@ -2037,6 +2081,7 @@ function renderCenter(report,rows){
  $('centerBreakdown').replaceChildren(breakdownFragment);
  $('centerActivity').replaceChildren(activityFragment)
  $('centerUpdated').textContent='เวลาอัปเดตข้อมูล: '+stamp(report.refreshedAt)+' · Refresh ทุก 60 วินาที';
+  renderFastCryptoPaper(report);
 }
 async function loadMomentumSummary(){
  const box=$('tradingMembers');
