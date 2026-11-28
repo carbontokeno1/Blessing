@@ -131,5 +131,10 @@ class BlessingFastCryptoPaperTests(unittest.TestCase):
         self.assertIsNone(blessing_app._blessing_fast_momentum_decision(self.row))
 
 
+class BlessingCryptoOnlyModeTests(unittest.TestCase):
+    def test_dual_paper_stock_new_entries_remain_paused(self):
+        self.assertFalse(blessing_app.DUAL_PAPER_STOCK_ENTRIES_ENABLED)
+
+
 if __name__ == "__main__":
     unittest.main()
