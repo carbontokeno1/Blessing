@@ -1955,14 +1955,14 @@ def _binance_1m_klines(symbol: str):
 
 
 def _moderate_crypto_entry_metrics(row: dict):
-    """Regime-adaptive Crypto Paper selector; does not authorize LIVE orders."""
+    """Adaptive regime selector for Crypto Paper only; long-only and never authorizes LIVE orders."""
     try:
         price = Decimal(str(row.get("price") or row.get("lastPrice") or "0"))
         stop = Decimal(str(row.get("atrStopPct") or "0"))
         spread = Decimal(str(row.get("spreadPct") or "999"))
-        m1 = Decimal(str(row.get("m1") if row.get("m1") is not None else "-999"))
         m5 = Decimal(str(row.get("m5") if row.get("m5") is not None else "-999"))
         m15 = Decimal(str(row.get("m15") if row.get("m15") is not None else "-999"))
+        m60 = Decimal(str(row.get("m60") if row.get("m60") is not None else "-999"))
         rvol = Decimal(str(row.get("rvol") or "0"))
         ema20 = Decimal(str(row.get("ema20") or "0"))
         ema50 = Decimal(str(row.get("ema50") or "0"))
@@ -1971,45 +1971,70 @@ def _moderate_crypto_entry_metrics(row: dict):
         candle_age = Decimal(str(row.get("candleAgeSeconds") if row.get("candleAgeSeconds") is not None else "999999"))
     except Exception:
         return None
+
     symbol = str(row.get("symbol") or "").upper()
     if price <= 0 or not symbol.endswith("USDT") or str(row.get("exchangeSymbol") or "").upper() != symbol:
         return None
-    # A cached 24h ticker may remain in the universe, but entry requires a recent closed candle.
     if candle_age > Decimal("120"):
         return None
-    if not (Decimal("0") < spread <= Decimal("0.35")) or not (Decimal("0.8") <= stop <= Decimal("2.0")):
+    if not (Decimal("0") < spread <= Decimal("0.30")) or not (Decimal("0.8") <= stop <= Decimal("2.0")):
         return None
+
     btc_bias = str(row.get("btcMarketBias") or "neutral").lower()
-    long_trend = row.get("trendAligned") is True
-    long_momentum = m5 > Decimal("0.03") and m15 > Decimal("0.08") and m1 > Decimal("-0.25")
-    long_confirm = row.get("pullbackReclaim") is True or row.get("breakout") is True or (ema20 > 0 and price > ema20 and m1 > 0)
+    ema_gap = abs(ema20 - ema50) / price * Decimal("100") if price > 0 else Decimal("999")
+    trend_regime = bool(row.get("trendAligned") is True and ema20 > ema50
+                        and m15 > Decimal("0.08") and m60 > Decimal("0"))
+    sideways_regime = bool(ema20 > 0 and ema50 > 0 and ema_gap <= Decimal("0.25")
+                           and abs(m5) <= Decimal("0.35") and abs(m15) <= Decimal("0.60")
+                           and Decimal("0.5") <= range_width <= Decimal("3.5"))
+
     direction = None
     setup = None
-    if long_trend and long_momentum and long_confirm and rvol >= Decimal("1.0"):
-        direction, setup = "long", "PULLBACK" if row.get("pullbackReclaim") else "BREAKOUT" if row.get("breakout") else "TREND"
-    ema_gap = abs(ema20 - ema50) / price * Decimal("100") if price > 0 else Decimal("999")
-    range_regime = ema20 > 0 and ema50 > 0 and ema_gap <= Decimal("0.25") and abs(m5) <= Decimal("0.35") and abs(m15) <= Decimal("0.60") and Decimal("0.5") <= range_width <= Decimal("3.5")
-    if direction is None and range_regime and rvol >= Decimal("1.1"):
-        if row.get("rangeLongReversal") is True and rsi <= Decimal("32"):
-            direction, setup = "long", "RANGE_SUPPORT_REVERSAL"
-    if direction == "long" and btc_bias == "bearish": return None
-    if direction and btc_bias == "neutral" and rvol < Decimal("1.2"): return None
-    if not direction: return None
-    expected_move = abs(m5) + abs(m15)
+    regime = "NO_TRADE"
+
+    # Trending market: wait for a confirmed pullback/reclaim instead of chasing strength.
+    if trend_regime and btc_bias != "bearish":
+        if (row.get("pullbackReclaim") is True and Decimal("44") <= rsi <= Decimal("66")
+                and Decimal("0.85") <= rvol <= Decimal("2.8")
+                and m5 > Decimal("0") and m15 > Decimal("0.08")):
+            direction, setup, regime = "long", "TREND_PULLBACK", "TREND"
+
+    # Sideways market: buy only a confirmed rejection near the lower range boundary.
+    if direction is None and sideways_regime and btc_bias != "bearish":
+        if (row.get("rangeLongReversal") is True and Decimal("25") <= rsi <= Decimal("38")
+                and rvol >= Decimal("1.15") and m5 > Decimal("-0.15")):
+            direction, setup, regime = "long", "RANGE_SUPPORT_REVERSAL", "SIDEWAYS"
+
+    # Breakout market: require a successful retest of the former range high.
+    if direction is None and btc_bias != "bearish":
+        if (row.get("breakoutRetest") is True and m5 > Decimal("0.05")
+                and m15 > Decimal("0.10") and rsi <= Decimal("68")
+                and rvol >= Decimal("1.25")):
+            direction, setup, regime = "long", "BREAKOUT_RETEST", "BREAKOUT"
+
+    if not direction:
+        return None
+
+    expected_move = max(Decimal("0"), m5) + max(Decimal("0"), m15)
     estimated_cost = Decimal("0.30") + spread
-    if expected_move < estimated_cost * Decimal("1.15"): return None
-    trend_points = 25 if long_trend else 15
-    momentum_points = 20 if long_momentum else 10
-    volume_points = min(15, int(rvol * Decimal("6")))
-    spread_points = 10 if spread <= Decimal("0.20") else 6
-    risk_points = 10 if stop <= Decimal("1.5") else 6
-    score = min(100, trend_points + momentum_points + 20 + volume_points + spread_points + risk_points)
-    minimum_score = 70 if setup and setup.startswith("RANGE_") else 75
-    if score < minimum_score: return None
-    return {"decision":"PAPER_CANDIDATE", "side":direction, "opportunityScore":score,
-            "liveEntryScore":0, "liveEntryModel":"PAPER_ONLY_REGIME_ADAPTIVE", "strategy":setup,
+    if expected_move < estimated_cost * Decimal("1.35"):
+        return None
+
+    trend_points = 25 if trend_regime else 15 if sideways_regime else 10
+    confirmation_points = 25 if setup in ("TREND_PULLBACK", "BREAKOUT_RETEST") else 20
+    volume_points = min(20, int(rvol * Decimal("8")))
+    spread_points = 15 if spread <= Decimal("0.15") else 10
+    risk_points = 15 if stop <= Decimal("1.5") else 10
+    score = min(100, trend_points + confirmation_points + volume_points + spread_points + risk_points)
+    if score < 75:
+        return None
+
+    return {"decision":"PAPER_CANDIDATE", "side":"long", "opportunityScore":score,
+            "liveEntryScore":0, "liveEntryModel":"PAPER_ONLY_ADAPTIVE_REGIME",
+            "strategy":setup, "marketRegime":regime,
             "netEdgeProxyPct":float(expected_move-estimated_cost), "btcMarketBias":btc_bias,
             "estimatedRoundTripCostPct":float(estimated_cost)}
+
 
 def _crypto_three_strategy_decision(row: dict):
     """Long-only member Crypto Paper selector; short selling is intentionally disabled."""
@@ -2017,9 +2042,8 @@ def _crypto_three_strategy_decision(row: dict):
     if not decision:
         return None
     label = {
-        "PULLBACK": "Trend Pullback",
-        "BREAKOUT": "Momentum Breakout",
-        "TREND": "Trend Momentum",
+        "TREND_PULLBACK": "Trend Pullback",
+        "BREAKOUT_RETEST": "Breakout Retest",
         "RANGE_SUPPORT_REVERSAL": "Range Support Reversal",
     }.get(decision.get("strategy"), "Adaptive Momentum")
     return {
@@ -2029,7 +2053,7 @@ def _crypto_three_strategy_decision(row: dict):
         "paperOnly": True,
         "liveEntryAllowed": False,
         "atrStopPct": row.get("atrStopPct"),
-        "note": "Long-only Paper signal; confirmed candle trend, volume, spread and ATR filters required.",
+        "note": "Adaptive regime Paper signal; trend pullback, range support reversal or breakout retest; long-only.",
     }
 
 
@@ -2049,9 +2073,22 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     previous = bars[-21:-1] if len(bars) >= 21 else []
     avg_quote_volume = sum(b["quoteVolume"] for b in previous) / len(previous) if previous else 0
     rvol = latest["quoteVolume"] / avg_quote_volume if latest and avg_quote_volume > 0 else None
-    prior_highs = [b["high"] for b in bars[-21:-1] if b.get("high") is not None]
-    prior_lows = [b["low"] for b in bars[-21:-1] if b.get("low") is not None]
-    breakout = bool(latest and len(prior_highs) >= 10 and latest["close"] > max(prior_highs))
+    prior_highs = [b["high"] for b in bars[-26:-6] if b.get("high") is not None]
+    prior_lows = [b["low"] for b in bars[-26:-6] if b.get("low") is not None]
+    breakout_level = max(prior_highs) if len(prior_highs) >= 10 else 0
+    breakout = bool(latest and breakout_level > 0 and latest["close"] > breakout_level)
+    # Retest must hold the former range high, then close back above it.
+    retest_bars = bars[-6:-1]
+    breakout_retest_touch = bool(
+        breakout_level > 0 and retest_bars
+        and any(breakout_level * 0.997 <= float(b.get("low") or 0) <= breakout_level * 1.004 for b in retest_bars)
+    )
+    previous_close_for_retest = float(bars[-2].get("close") or 0) if len(bars) >= 2 else 0
+    breakout_retest = bool(
+        latest and breakout_level > 0 and breakout_retest_touch
+        and float(latest.get("close") or 0) > breakout_level * 1.001
+        and previous_close_for_retest <= breakout_level * 1.004
+    )
     breakdown = bool(latest and len(prior_lows) >= 10 and latest["close"] < min(prior_lows))
 
     def ema(values, period):
@@ -2180,7 +2217,7 @@ def _altcoin_metrics(row: dict, bars: list[dict]) -> dict:
     )
     return {
         "m1": m1, "m5": m5, "m15": m15, "m60": m60,
-        "rvol": rvol, "breakout": breakout,
+        "rvol": rvol, "breakout": breakout, "breakoutRetest": breakout_retest,
         "volumeSpike": bool(rvol is not None and rvol >= 1.3),
         "spreadPct": spread, "score": score, "fastEntry": fast_entry,
         "ema20": ema20, "ema50": ema50, "trendAligned": trend_aligned,
