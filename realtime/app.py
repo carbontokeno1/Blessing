@@ -2119,6 +2119,72 @@ def _blessing_precision_momentum_decision(row: dict):
     }
 
 
+
+def _blessing_fast_crypto_decision(row: dict):
+    """Fast, breakout-led long-only selector for the isolated owner Crypto Paper portfolio."""
+    try:
+        price = Decimal(str(row.get("price") or row.get("lastPrice") or "0"))
+        m1 = Decimal(str(row.get("m1") if row.get("m1") is not None else "-999"))
+        m5 = Decimal(str(row.get("m5") if row.get("m5") is not None else "-999"))
+        m15 = Decimal(str(row.get("m15") if row.get("m15") is not None else "-999"))
+        rvol = Decimal(str(row.get("rvol") if row.get("rvol") is not None else "0"))
+        spread = Decimal(str(row.get("spreadPct") if row.get("spreadPct") is not None else "999"))
+        stop = Decimal(str(row.get("atrStopPct") if row.get("atrStopPct") is not None else "0"))
+        candle_age = Decimal(str(row.get("candleAgeSeconds") if row.get("candleAgeSeconds") is not None else "999999"))
+        ema20 = Decimal(str(row.get("ema20") or "0"))
+        ema50 = Decimal(str(row.get("ema50") or "0"))
+    except Exception:
+        return None
+    symbol = str(row.get("symbol") or "").upper()
+    if (price <= 0 or not symbol.endswith("USDT")
+            or str(row.get("exchangeSymbol") or "").upper() != symbol
+            or str(row.get("source") or "") != "Binance TH Spot API"):
+        return None
+    if candle_age > Decimal("90") or not (Decimal("0") < spread <= Decimal("0.50")):
+        return None
+    if not (Decimal("0.8") <= stop <= Decimal("1.5")):
+        return None
+    if row.get("trendAligned") is not True or ema20 <= ema50 or ema20 <= 0:
+        return None
+    if str(row.get("btcMarketBias") or "neutral").lower() == "bearish":
+        return None
+    if not (m1 > Decimal("0") and m5 >= Decimal("0.20") and m15 >= Decimal("0.35")):
+        return None
+    if rvol < Decimal("2.0") or row.get("breakoutRetest") is not True:
+        return None
+    extension_pct = (price - ema20) / price * Decimal("100")
+    if not (Decimal("0") <= extension_pct <= Decimal("1.75")):
+        return None
+    expected_move_proxy = (
+        max(m1, Decimal("0")) * Decimal("0.20")
+        + max(m5, Decimal("0")) * Decimal("0.45")
+        + max(m15, Decimal("0")) * Decimal("0.35")
+    )
+    estimated_cost = Decimal("0.30") + spread
+    net_edge_proxy = expected_move_proxy - estimated_cost
+    if net_edge_proxy < estimated_cost * Decimal("0.15"):
+        return None
+    score = (
+        20 + 20 + 20
+        + (15 if rvol >= Decimal("2.5") else 12)
+        + (15 if spread <= Decimal("0.25") else 10)
+        + (10 if stop <= Decimal("1.25") else 8)
+    )
+    if score < 80:
+        return None
+    return {
+        "decision": "PAPER_CANDIDATE", "side": "long",
+        "opportunityScore": score, "liveEntryScore": 0,
+        "liveEntryModel": "PAPER_ONLY_BLESSING_FAST_BREAKOUT",
+        "strategy": "BLESSING_FAST_BREAKOUT",
+        "strategySetup": "FAST_BREAKOUT_RETEST",
+        "marketRegime": "FAST_MOMENTUM",
+        "netEdgeProxyPct": float(net_edge_proxy),
+        "estimatedRoundTripCostPct": float(estimated_cost),
+        "btcMarketBias": str(row.get("btcMarketBias") or "neutral").lower(),
+    }
+
+
 def _crypto_three_strategy_decision(row: dict):
     """Long-only member Crypto Paper selector; short selling is intentionally disabled."""
     decision = _moderate_crypto_entry_metrics(row)
@@ -6014,6 +6080,13 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     max_open_positions = max(1, min(3, int(portfolio.get("max_open_positions") or 3)))
     if len(positions) >= max_open_positions:
         return None
+    if market == "crypto":
+        combined_open_positions = _sb_rest("blessing_dual_positions", {
+            "select":"id","user_id":"eq."+user_id,"market":"eq.crypto",
+            "status":"eq.open","limit":"1000"
+        }) or []
+        if len(combined_open_positions) >= 3:
+            return None
     position_value = sum(
         (float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
          + float(p.get("unrealized_pnl") or 0) + float(p.get("entry_fee") or 0))
@@ -6044,19 +6117,33 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
 
     strategy_config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
     if market == "crypto":
-        # Stop opening NEW positions after the 3% realized, net-of-fees daily target.
-        # Existing positions remain untouched and continue to be managed by their own TP/SL.
-        daily_profit_target_pct = max(
-            0.10, min(5.00, float(strategy_config.get("crypto_daily_profit_target_pct", 3.0)))
-        )
-        daily_profit_target = float(portfolio.get("initial_capital") or 0) * daily_profit_target_pct / 100.0
-        if daily_profit_target > 0 and realized_today >= daily_profit_target:
+        # Owner's two half-portfolios share one 3% daily realized-net target.
+        daily_profit_target_pct = max(0.10, min(5.00, float(strategy_config.get("crypto_daily_profit_target_pct", 3.0))))
+        if uid == "62835b65-13eb-4d99-9647-c4b22bd61ef3":
+            strategy_portfolios = _sb_rest("blessing_dual_portfolios", {
+                "select":"id,initial_capital,strategy_started_at","user_id":"eq." + uid,
+                "market":"eq.crypto","mode":"eq.paper","limit":"10"
+            }) or []
+            strategy_ids = [str(p["id"]) for p in strategy_portfolios]
+            combined_initial = sum(float(p.get("initial_capital") or 0) for p in strategy_portfolios)
+            strategy_start_values = [str(p.get("strategy_started_at")) for p in strategy_portfolios if p.get("strategy_started_at")]
+            guard_start = max([day_start_utc] + strategy_start_values) if strategy_start_values else day_start_utc
+            closed_today_all = _sb_rest("blessing_dual_positions", {
+                "select":"realized_pnl","portfolio_id":"in.(" + ",".join(strategy_ids) + ")",
+                "user_id":"eq." + uid,"market":"eq.crypto","status":"eq.closed",
+                "closed_at":"gte." + guard_start,"limit":"1000"
+            }) if strategy_ids else []
+            realized_for_guard = sum(float(row.get("realized_pnl") or 0) for row in (closed_today_all or []))
+            daily_profit_target = combined_initial * daily_profit_target_pct / 100.0
+        else:
+            daily_profit_target = float(portfolio.get("initial_capital") or 0) * daily_profit_target_pct / 100.0
+            realized_for_guard = realized_today
+        if daily_profit_target > 0 and realized_for_guard >= daily_profit_target:
             DUAL_PAPER_WORKER_STATE["dailyProfitGuard"] = {
-                "market": "crypto", "status": "target_reached",
-                "realizedNetPnlToday": round(realized_today, 8),
-                "target": round(daily_profit_target, 8),
-                "targetPct": daily_profit_target_pct,
-                "newEntriesPaused": True,
+                "market":"crypto","status":"target_reached",
+                "realizedNetPnlToday":round(realized_for_guard,8),
+                "target":round(daily_profit_target,8),"targetPct":daily_profit_target_pct,
+                "newEntriesPaused":True,
             }
             return None
     if market == "stocks":
@@ -6067,17 +6154,20 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
     else:
         stop_pct = float(candidate.get("atrStopPct") or strategy_config.get("crypto_stop_loss_pct", 1.5))
         stop_pct = min(2.0, max(0.8, stop_pct))
-        # Long-only target: at least +3% or 2R, capped at +5%.
-        target_pct = min(5.0, max(3.0, stop_pct * 2.0))
+        if str(strategy_config.get("strategy_key") or "").upper() == "FAST":
+            target_pct = min(3.5, max(1.8, stop_pct * 1.6))
+        else:
+            target_pct = min(5.0, max(3.0, stop_pct * 2.0))
 
     all_portfolios = _sb_rest("blessing_dual_portfolios", {
-        "select":"id,market,cash_balance,initial_capital",
-        "user_id":"eq."+user_id,"mode":"eq.paper","limit":"2"
+        "select":"id,market,strategy_key,cash_balance,initial_capital",
+        "user_id":"eq."+user_id,"market":"eq.crypto" if market == "crypto" else "eq.stocks",
+        "mode":"eq.paper","limit":"10"
     }) or []
     portfolio_ids = [str(row["id"]) for row in all_portfolios]
     all_positions = _sb_rest("blessing_dual_positions", {
-        "select":"portfolio_id,side,quantity,current_price,entry_price,entry_fee,unrealized_pnl",
-        "user_id":"eq."+user_id,"status":"eq.open","limit":"1000"
+        "select":"portfolio_id,market,side,quantity,current_price,entry_price,entry_fee,unrealized_pnl,stop_loss_price",
+        "user_id":"eq."+user_id,"market":"eq."+market,"status":"eq.open","limit":"1000"
     }) or []
     cash_balance = float(portfolio.get("cash_balance") or 0)
     total_cash = sum(float(row.get("cash_balance") or 0) for row in all_portfolios)
@@ -6096,9 +6186,10 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         # Risk 0.5% of equity per trade; total open stop risk may not exceed 1.5%.
         open_risk = sum(
             abs(float(p.get("entry_price") or 0) - float(p.get("stop_loss_price") or p.get("entry_price") or 0))
-            * float(p.get("quantity") or 0) for p in positions
+            * float(p.get("quantity") or 0) for p in all_positions
         )
-        aggregate_risk_remaining = max(0.0, equity * 0.015 - open_risk)
+        combined_equity = total_cash + total_exposure
+        aggregate_risk_remaining = max(0.0, combined_equity * 0.015 - open_risk)
         risk_budget = min(equity * 0.005, aggregate_risk_remaining)
         if risk_budget <= 0:
             return None
@@ -6249,31 +6340,49 @@ def _dual_paper_worker_cycle():
         # All enabled member portfolios run independently; no experiment-row gate.
             # Crypto Paper: every enabled member portfolio runs automatically without an experiment gate.
         enabled_crypto_portfolios = _sb_rest("blessing_dual_portfolios", {
-            "select":"id,user_id,market,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity",
+            "select":"id,user_id,market,strategy_key,initial_capital,cash_balance,realized_pnl,fees_paid,mode,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_weekly_loss_pct,max_drawdown_pct,max_open_positions,peak_equity",
             "market":"eq.crypto","mode":"eq.paper","enabled":"eq.true","limit":"1000"
         }) or []
-        if crypto_fresh and crypto_candidates:
-            ranked_crypto_candidates = sorted(crypto_candidates.items(),
-                key=lambda item: float(item[1][1].get("opportunityScore") or 0), reverse=True)
-            for portfolio in enabled_crypto_portfolios:
-                uid = str(portfolio["user_id"])
-                crypto_experiment = {"id":"AUTO-CRYPTO", "config":{"crypto_stop_loss_pct":1.5,
-                    "crypto_take_profit_pct":3,"crypto_daily_profit_target_pct":3.0,
-                    "max_notional_pct":100,"max_total_allocation_pct":100}}
-                for symbol,(raw,decision) in ranked_crypto_candidates:
-                    cooldown_key = uid + ":crypto:" + symbol
-                    if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
-                        continue
-                    try:
-                        result = _dual_try_adaptive_entry(crypto_experiment, portfolio, {**raw, **decision}, "crypto")
-                        if result:
-                            entries_opened += 1
-                            selected_markets.setdefault(uid, {}).setdefault("crypto", []).append({
-                                "symbol":symbol,"opportunityScore":float(decision.get("opportunityScore") or 0),
-                                "netEdgeProxyPct":decision.get("netEdgeProxyPct")})
-                            DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key] = time.time()
-                    except Exception as exc:
-                        log.info("Automatic crypto entry skipped %s (%s) detail=%s", symbol, type(exc).__name__, str(getattr(exc, "detail", None) or exc)[:180])
+        if crypto_fresh:
+            fast_candidates = {}
+            for row in (crypto_scan.get("candidates") or []):
+                row_context = {**row, "btcMarketBias": btc_market_bias}
+                decision = _blessing_fast_crypto_decision(row_context)
+                if decision:
+                    fast_candidates[row["symbol"]] = (row_context, decision)
+            DUAL_PAPER_WORKER_STATE["cryptoScanDiagnostics"]["fastCandidateCount"] = len(fast_candidates)
+            DUAL_PAPER_WORKER_STATE["cryptoScanDiagnostics"]["precisionCandidateCount"] = len(crypto_candidates)
+        else:
+            fast_candidates = {}
+        candidate_sets = {"FAST": fast_candidates, "PRECISION": crypto_candidates}
+        for portfolio in enabled_crypto_portfolios:
+            uid = str(portfolio["user_id"])
+            strategy_key = str(portfolio.get("strategy_key") or "PRECISION").upper()
+            ranked_crypto_candidates = sorted(
+                candidate_sets.get(strategy_key, {}).items(),
+                key=lambda item: float(item[1][1].get("opportunityScore") or 0), reverse=True
+            )
+            crypto_experiment = {"id":"AUTO-CRYPTO-" + strategy_key, "config":{
+                "crypto_stop_loss_pct":1.5,"crypto_take_profit_pct":3,
+                "crypto_daily_profit_target_pct":3.0,"max_notional_pct":100,
+                "max_total_allocation_pct":100,"strategy_key":strategy_key}}
+            for symbol,(raw,decision) in ranked_crypto_candidates:
+                cooldown_key = uid + ":crypto:" + strategy_key + ":" + symbol
+                if time.time() - DUAL_ADAPTIVE_ENTRY_COOLDOWNS.get(cooldown_key, 0) < 300:
+                    continue
+                try:
+                    result = _dual_try_adaptive_entry(crypto_experiment, portfolio, {**raw, **decision}, "crypto")
+                    if result:
+                        entries_opened += 1
+                        selected_markets.setdefault(uid, {}).setdefault("crypto", []).append({
+                            "strategy":strategy_key,"symbol":symbol,
+                            "opportunityScore":float(decision.get("opportunityScore") or 0),
+                            "netEdgeProxyPct":decision.get("netEdgeProxyPct")})
+                        DUAL_ADAPTIVE_ENTRY_COOLDOWNS[cooldown_key] = time.time()
+                except Exception as exc:
+                    log.info("Automatic crypto %s entry skipped %s (%s) detail=%s",
+                             strategy_key, symbol, type(exc).__name__,
+                             str(getattr(exc, "detail", None) or exc)[:180])
 
         # Stock Paper automation is controlled only by the user's portfolio START/STOP button.
         # The worker keeps scanning while enabled, enters only qualifying candidates, and
@@ -8233,3 +8342,146 @@ def th_stock_market_health():
             "configured": bool(SET_MARKET_DATA_API_KEY),
             "readOnly": True,
         }
+
+
+@app.get("/owner/crypto-strategy-report")
+def owner_crypto_strategy_report(request: Request, period: str = "30d"):
+    """Owner-only, read-only FAST vs Precision Crypto Paper dashboard."""
+    user = _binance_th_owner_auth(request)
+    uid = str(user.get("id") or "")
+    if uid != "62835b65-13eb-4d99-9647-c4b22bd61ef3":
+        raise HTTPException(status_code=403, detail="เฉพาะเจ้าของ BLESSING เท่านั้น")
+    if period not in ("24h", "7d", "30d", "all"):
+        raise HTTPException(status_code=400, detail="INVALID_REPORT_PERIOD")
+
+    portfolios = _sb_rest("blessing_dual_portfolios", {
+        "select":"id,strategy_key,strategy_started_at,initial_capital,cash_balance,realized_pnl,fees_paid,enabled,reserve_cash_pct,risk_per_trade_pct,max_daily_loss_pct,max_open_positions,peak_equity,updated_at",
+        "user_id":"eq." + uid, "market":"eq.crypto", "mode":"eq.paper",
+        "order":"strategy_key.asc", "limit":"10"
+    }) or []
+    ids = [str(row["id"]) for row in portfolios]
+    if not ids:
+        return {"ok":True,"updatedAt":datetime.now(timezone.utc).isoformat(),
+                "period":period,"strategies":[],"totals":{},"series":[],"recentTrades":[]}
+
+    positions = _sb_rest("blessing_dual_positions", {
+        "select":"id,portfolio_id,symbol,side,quantity,entry_price,current_price,stop_loss_price,take_profit_price,entry_fee,exit_fee,unrealized_pnl,realized_pnl,status,opened_at,closed_at,close_reason",
+        "portfolio_id":"in.(" + ",".join(ids) + ")","user_id":"eq." + uid,
+        "market":"eq.crypto","order":"opened_at.desc","limit":"5000"
+    }) or []
+    orders = _sb_rest("blessing_dual_orders", {
+        "select":"id,portfolio_id,symbol,side,quantity,price,notional,fee,status,reason,realized_pnl,created_at",
+        "portfolio_id":"in.(" + ",".join(ids) + ")","user_id":"eq." + uid,
+        "market":"eq.crypto","order":"created_at.desc","limit":"5000"
+    }) or []
+
+    now = datetime.now(timezone.utc)
+    spans = {"24h":timedelta(hours=24),"7d":timedelta(days=7),"30d":timedelta(days=30)}
+    cutoff = now - spans[period] if period != "all" else None
+    portfolio_map = {str(p["id"]):p for p in portfolios}
+    strategies = []
+    combined_series = {}
+    recent_trades = []
+    totals = {"capital":0.0,"cash":0.0,"marketValue":0.0,"equity":0.0,
+              "netPnl":0.0,"realizedPnl":0.0,"unrealizedPnl":0.0,
+              "openPositions":0,"closedTrades":0,"feesPaid":0.0}
+
+    for key in ("FAST","PRECISION"):
+        portfolio = next((p for p in portfolios if str(p.get("strategy_key") or "PRECISION").upper() == key), None)
+        if not portfolio:
+            continue
+        pid = str(portfolio["id"])
+        own_positions = [p for p in positions if str(p.get("portfolio_id")) == pid]
+        own_orders_all = [o for o in orders if str(o.get("portfolio_id")) == pid]
+        opened = [p for p in own_positions if p.get("status") == "open"]
+        strategy_started_at = datetime.fromisoformat(str(portfolio.get("strategy_started_at") or portfolio.get("updated_at") or now.isoformat()).replace("Z","+00:00"))
+        closed_all = [p for p in own_positions if p.get("status") == "closed" and p.get("closed_at")]
+        closed_period = []
+        for row in closed_all:
+            try:
+                closed_at = datetime.fromisoformat(str(row["closed_at"]).replace("Z","+00:00"))
+                if closed_at >= strategy_started_at and (cutoff is None or closed_at >= cutoff):
+                    closed_period.append(row)
+            except Exception:
+                continue
+        own_orders = []
+        for row in own_orders_all:
+            try:
+                order_at = datetime.fromisoformat(str(row.get("created_at") or "").replace("Z","+00:00"))
+                if order_at >= strategy_started_at and (cutoff is None or order_at >= cutoff):
+                    own_orders.append(row)
+            except Exception:
+                continue
+        market_value = sum(float(p.get("quantity") or 0) * float(p.get("current_price") or p.get("entry_price") or 0) for p in opened)
+        cash = float(portfolio.get("cash_balance") or 0)
+        capital = float(portfolio.get("initial_capital") or 0)
+        equity = cash + market_value
+        net_pnl = equity - capital
+        realized = float(portfolio.get("realized_pnl") or 0)
+        unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in opened)
+        wins = [p for p in closed_period if float(p.get("realized_pnl") or 0) > 0]
+        losses = [p for p in closed_period if float(p.get("realized_pnl") or 0) < 0]
+        gross_profit = sum(float(p.get("realized_pnl") or 0) for p in wins)
+        gross_loss = abs(sum(float(p.get("realized_pnl") or 0) for p in losses))
+        daily = {}
+        for row in closed_period:
+            try:
+                day = datetime.fromisoformat(str(row["closed_at"]).replace("Z","+00:00")).astimezone(ZoneInfo("Asia/Bangkok")).date().isoformat()
+                daily[day] = daily.get(day, 0.0) + float(row.get("realized_pnl") or 0)
+            except Exception:
+                continue
+        cumulative = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        strategy_series = []
+        for day in sorted(daily):
+            cumulative += daily[day]
+            peak = max(peak, cumulative)
+            max_dd = max(max_dd, peak - cumulative)
+            strategy_series.append({"date":day,"realizedPnl":round(cumulative,8),
+                                    "dailyPnl":round(daily[day],8)})
+            combined_series.setdefault(day, {})[key] = round(cumulative,8)
+        strategy = {
+            "key":key,"portfolioId":pid,"enabled":bool(portfolio.get("enabled")),
+            "capital":round(capital,8),"cash":round(cash,8),
+            "marketValue":round(market_value,8),"equity":round(equity,8),
+            "netPnl":round(net_pnl,8),"returnPct":round(net_pnl/capital*100,4) if capital else 0,
+            "realizedPnl":round(realized,8),"unrealizedPnl":round(unrealized,8),
+            "feesPaid":round(float(portfolio.get("fees_paid") or 0),8),
+            "openPositions":len(opened),"closedTrades":len(closed_period),
+            "winRatePct":round(len(wins)/len(closed_period)*100,2) if closed_period else 0,
+            "profitFactor":round(gross_profit/gross_loss,4) if gross_loss else (None if not gross_profit else "infinite"),
+            "maxDrawdownRealized":round(max_dd,8),
+            "series":strategy_series,
+            "openPositionRows":opened,
+            "risk":{"reserveCashPct":float(portfolio.get("reserve_cash_pct") or 0),
+                    "riskPerTradePct":float(portfolio.get("risk_per_trade_pct") or 0),
+                    "maxDailyLossPct":float(portfolio.get("max_daily_loss_pct") or 0),
+                    "maxOpenPositions":int(portfolio.get("max_open_positions") or 0)}
+        }
+        strategies.append(strategy)
+        for field in ("capital","cash","marketValue","equity","netPnl","realizedPnl","unrealizedPnl","feesPaid"):
+            totals[field] += float(strategy[field if field != "feesPaid" else "feesPaid"])
+        totals["openPositions"] += len(opened)
+        totals["closedTrades"] += len(closed_period)
+        recent_trades.extend([{**o,"strategyKey":key} for o in own_orders])
+
+    recent_trades.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    dates = sorted(combined_series)
+    series = []
+    fast_running = 0.0
+    precision_running = 0.0
+    for day in dates:
+        if "FAST" in combined_series[day]:
+            fast_running = combined_series[day]["FAST"]
+        if "PRECISION" in combined_series[day]:
+            precision_running = combined_series[day]["PRECISION"]
+        series.append({"date":day,"fast":fast_running,"precision":precision_running})
+    return {
+        "ok":True,"updatedAt":now.isoformat(),"period":period,
+        "currency":"USDT","strategies":strategies,"totals":totals,
+        "series":series,"recentTrades":recent_trades[:100],
+        "openPositions":[{"strategyKey":s["key"],**p} for s in strategies for p in s["openPositionRows"]],
+        "notes":{"chart":"กราฟแสดงกำไรสะสมจากรายการปิดสถานะในช่วงที่เลือก (Realized P/L); ตัวเลข Equity รวมมูลค่าสถานะเปิด",
+                 "execution":"Paper only; no live orders"}
+    }

@@ -36,6 +36,38 @@ class BlessingPrecisionMomentumTests(unittest.TestCase):
         self.assertEqual(result["liveEntryScore"], 0)
         self.assertEqual(result["liveEntryModel"], "PAPER_ONLY_BLESSING_PRECISION_MOMENTUM")
 
+    def test_fast_breakout_retest_is_paper_only(self):
+        row = {
+            "symbol": "ETHUSDT", "exchangeSymbol": "ETHUSDT",
+            "source": "Binance TH Spot API", "price": 101.0,
+            "ema20": 100.5, "ema50": 99.5,
+            "m1": 0.08, "m5": 0.55, "m15": 0.90,
+            "rvol": 2.4, "spreadPct": 0.20, "atrStopPct": 1.1,
+            "candleAgeSeconds": 15, "trendAligned": True,
+            "breakoutRetest": True, "btcMarketBias": "neutral",
+        }
+        result = blessing_app._blessing_fast_crypto_decision(row)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["strategy"], "BLESSING_FAST_BREAKOUT")
+        self.assertEqual(result["side"], "long")
+        self.assertEqual(result["liveEntryScore"], 0)
+        self.assertEqual(result["liveEntryModel"], "PAPER_ONLY_BLESSING_FAST_BREAKOUT")
+
+    def test_fast_requires_volume_breakout_and_tight_spread(self):
+        row = {
+            "symbol": "ETHUSDT", "exchangeSymbol": "ETHUSDT",
+            "source": "Binance TH Spot API", "price": 101.0,
+            "ema20": 100.5, "ema50": 99.5,
+            "m1": 0.08, "m5": 0.32, "m15": 0.55,
+            "rvol": 1.9, "spreadPct": 0.20, "atrStopPct": 1.1,
+            "candleAgeSeconds": 15, "trendAligned": True,
+            "breakoutRetest": True, "btcMarketBias": "neutral",
+        }
+        self.assertIsNone(blessing_app._blessing_fast_crypto_decision(row))
+        row["rvol"] = 2.4
+        row["spreadPct"] = 0.51
+        self.assertIsNone(blessing_app._blessing_fast_crypto_decision(row))
+
     def test_bearish_btc_bias_blocks_altcoin_entries(self):
         self.row["btcMarketBias"] = "bearish"
         self.assertIsNone(blessing_app._blessing_precision_momentum_decision(self.row))
@@ -68,8 +100,9 @@ class BlessingPrecisionMomentumTests(unittest.TestCase):
         }
         # No open positions; today's realized net PnL is above the 3% target.
         sb_rest.side_effect = [
-            [],
-            [{"realized_pnl": 3.10}],
+            [],  # positions in this portfolio
+            [],  # combined open crypto positions
+            [{"realized_pnl": 3.10}],  # realized PnL today
         ]
         result = blessing_app._dual_try_adaptive_entry(
             {"id": "AUTO-CRYPTO", "config": {"crypto_daily_profit_target_pct": 3.0}},
