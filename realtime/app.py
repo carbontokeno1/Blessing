@@ -8468,10 +8468,15 @@ def owner_crypto_strategy_report(request: Request, period: str = "30d"):
 
     recent_trades.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
     dates = sorted(combined_series)
-    series = [{"date":day,
-               "fast":combined_series[day].get("FAST",0.0),
-               "precision":combined_series[day].get("PRECISION",0.0)}
-              for day in dates]
+    series = []
+    fast_running = 0.0
+    precision_running = 0.0
+    for day in dates:
+        if "FAST" in combined_series[day]:
+            fast_running = combined_series[day]["FAST"]
+        if "PRECISION" in combined_series[day]:
+            precision_running = combined_series[day]["PRECISION"]
+        series.append({"date":day,"fast":fast_running,"precision":precision_running})
     return {
         "ok":True,"updatedAt":now.isoformat(),"period":period,
         "currency":"USDT","strategies":strategies,"totals":totals,
