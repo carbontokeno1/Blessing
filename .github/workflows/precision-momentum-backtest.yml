@@ -1,4 +1,4 @@
-name: BLESSING 14-day Precision Momentum backtest
+name: BLESSING 30-day Precision Momentum backtest
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40 # allow bounded historical pagination
     env:
-      BACKTEST_DAYS: "14"
+      BACKTEST_DAYS: "30"
       BACKTEST_SYMBOLS: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,LTCUSDT,AVAXUSDT"
       FEE_SIDE_PCT: "0.10"
       SLIPPAGE_SIDE_PCT: "0.05"
