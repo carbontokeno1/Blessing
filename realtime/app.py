@@ -6046,7 +6046,7 @@ def _dual_try_adaptive_entry(experiment: dict, portfolio: dict, candidate: dict,
         # Stop opening NEW positions after a modest realized, net-of-fees daily target.
         # Existing positions remain untouched and continue to be managed by their own TP/SL.
         daily_profit_target_pct = max(
-            0.10, min(1.00, float(strategy_config.get("crypto_daily_profit_target_pct", 0.5)))
+            0.10, min(5.00, float(strategy_config.get("crypto_daily_profit_target_pct", 3.0)))
         )
         daily_profit_target = float(portfolio.get("initial_capital") or 0) * daily_profit_target_pct / 100.0
         if daily_profit_target > 0 and realized_today >= daily_profit_target:
@@ -6257,7 +6257,7 @@ def _dual_paper_worker_cycle():
             for portfolio in enabled_crypto_portfolios:
                 uid = str(portfolio["user_id"])
                 crypto_experiment = {"id":"AUTO-CRYPTO", "config":{"crypto_stop_loss_pct":1.5,
-                    "crypto_take_profit_pct":3,"crypto_daily_profit_target_pct":0.5,
+                    "crypto_take_profit_pct":3,"crypto_daily_profit_target_pct":3.0,
                     "max_notional_pct":100,"max_total_allocation_pct":100}}
                 for symbol,(raw,decision) in ranked_crypto_candidates:
                     cooldown_key = uid + ":crypto:" + symbol
