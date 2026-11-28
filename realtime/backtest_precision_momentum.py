@@ -14,26 +14,31 @@ SPREAD_PROXY_PCT = float(os.getenv("SPREAD_PROXY_PCT", "0.10"))
 ROUND_TRIP_COST = 2 * (FEE_SIDE_PCT + SLIPPAGE_SIDE_PCT) + SPREAD_PROXY_PCT
 
 def fetch_klines(symbol, start_ms, end_ms):
+    # Binance TH can reject wide historical windows; request 12-hour slices
+    # (720 one-minute bars, below the documented 1000-bar maximum).
     rows, cursor = [], start_ms
+    slice_ms = 12 * 60 * 60 * 1000
     while cursor < end_ms:
-        params = urlencode({"symbol":symbol,"interval":"1m","startTime":cursor,"endTime":end_ms,"limit":1000})
+        slice_end = min(end_ms, cursor + slice_ms - 1)
+        params = urlencode({"symbol":symbol,"interval":"1m","startTime":cursor,"endTime":slice_end,"limit":1000})
         req = Request(BASE + "/api/v1/klines?" + params, headers={"Accept":"application/json","User-Agent":"BLESSING-paper-backtest/1.0"})
-        with urlopen(req, timeout=20) as response:
-            payload = json.loads(response.read().decode())
+        try:
+            with urlopen(req, timeout=20) as response:
+                payload = json.loads(response.read().decode())
+        except Exception as exc:
+            detail = ""
+            if hasattr(exc, "read"):
+                try: detail = exc.read().decode(errors="replace")[:400]
+                except Exception: pass
+            raise RuntimeError(f"Binance TH kline request failed for {symbol} [{cursor},{slice_end}]: {exc} {detail}") from exc
         data = payload.get("data") if isinstance(payload,dict) else payload
-        if not isinstance(data,list) or not data: break
-        batch=[]
+        if not isinstance(data,list):
+            raise RuntimeError(f"Unexpected kline payload for {symbol}: {str(payload)[:300]}")
         for r in data:
             if isinstance(r,list) and len(r)>=8:
-                batch.append({"t":int(r[0]),"o":float(r[1]),"h":float(r[2]),"l":float(r[3]),"c":float(r[4]),"v":float(r[5]),"ct":int(r[6]),"qv":float(r[7])})
-        if not batch: break
-        rows.extend(batch)
-        nxt=batch[-1]["t"]+60000
-        if nxt<=cursor: break
-        cursor=nxt
-        if len(batch)<1000: break
+                rows.append({"t":int(r[0]),"o":float(r[1]),"h":float(r[2]),"l":float(r[3]),"c":float(r[4]),"v":float(r[5]),"ct":int(r[6]),"qv":float(r[7])})
+        cursor = slice_end + 1
         time.sleep(0.08)
-    # Deduplicate and keep only fully closed candles.
     now=int(time.time()*1000)
     return [x for _,x in sorted({x["t"]:x for x in rows}.items()) if x["ct"]<now]
 
